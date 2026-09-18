@@ -1,0 +1,22 @@
+# name: test/sql/tresor.test
+# description: The extension loads, and the tresor ATTACH type is registered (specs/001)
+# group: [sql]
+
+require tresor
+
+query I
+SELECT tresor_version() IS NOT NULL;
+----
+true
+
+# the ATTACH type is ours: both spellings reach tresor's attach, which is not implemented yet -
+# the error proves the routing, specs/002 replaces it with the real attach
+statement error
+ATTACH 'tresor:https://secrets.example.invalid' AS corp;
+----
+<REGEX>:.*tresor: attaching a secrets service is not implemented yet.*
+
+statement error
+ATTACH 'https://secrets.example.invalid' AS corp (TYPE tresor);
+----
+<REGEX>:.*tresor: attaching a secrets service is not implemented yet.*
