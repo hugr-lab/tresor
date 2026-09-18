@@ -1,0 +1,136 @@
+# CI, layout after hugr-lab/mssql-ducklake and duckdb-acl: lint + a Linux build-and-test on every PR,
+# a representative macOS build on merges to main and manual runs. Full platform coverage lives in
+# distribution.yml, the docs site in docs-build.yml / pages.yml.
+#
+# tresor rides the 2.0 line at duckdb-acl's duckdb commit (see CLAUDE.md): on a server they load into
+# one DuckDB. A red build means our code or a deliberate pin bump.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      # duckdb's pinned formatter (scripts/format.py: clang_format==11.0.1), called by full path so no
+      # runner binary can shadow it. .clang-format is a real copy: this job checks out no submodules.
+      - name: Install duckdb's pinned clang-format
+        run: |
+          python3 -m venv /tmp/cf
+          /tmp/cf/bin/pip install clang_format==11.0.1
+      - name: clang-format check
+        run: |
+          find src \( -name '*.cpp' -o -name '*.hpp' \) -print0 \
+            | xargs -0 /tmp/cf/bin/clang-format --dry-run --Werror
+      - name: yamllint
+        run: |
+          pip install yamllint
+          yamllint .github/workflows
+      - name: No absolute internal doc links
+        run: python3 scripts/ci/check_docs_links.py
+
+  build-test-linux:
+    name: Build + test (linux_amd64)
+    runs-on: ubuntu-24.04
+    env:
+      GEN: ninja
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache
+
+      # the lint job checks format against the repo's own .clang-format copy; this job has the
+      # submodules, so it is the one that can tell when that copy drifts from duckdb's
+      - name: clang-format config is in sync with duckdb
+        run: diff <(tail -n +2 .clang-format) duckdb/.clang-format
+
+      - name: Restore ccache
+        uses: actions/cache@v6
+        with:
+          path: .ccache
+          key: ccache-linux_amd64-${{ hashFiles('.gitmodules') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-linux_amd64-${{ hashFiles('.gitmodules') }}-
+            ccache-linux_amd64-
+
+      - name: Build
+        run: |
+          EXT_FLAGS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache" make
+          ccache -s
+
+      # the artifact must LOAD, not only compile - and an ATTACH 'tresor:...' alone must load it
+      - name: The artifact loads
+        run: scripts/ci/smoke_load.sh
+
+      # the floor keeps a suite that silently skipped everything from passing
+      - name: Unit suites
+        run: |
+          build/release/test/unittest 'test/sql/*' 2>&1 | tee suite.log
+          scripts/ci/assert_ran.sh suite.log 2 12
+
+      - name: Upload extension artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: tresor-linux_amd64
+          path: build/release/extension/tresor/tresor.duckdb_extension
+
+  # Representative second platform; PRs stay on the Linux job to keep them fast
+  build-test-osx:
+    name: Build + test (osx_arm64)
+    runs-on: macos-14
+    if: ${{ github.event_name != 'pull_request' }}
+    env:
+      GEN: ninja
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: brew install ninja ccache
+
+      - name: Restore ccache
+        uses: actions/cache@v6
+        with:
+          path: .ccache
+          key: ccache-osx_arm64-${{ hashFiles('.gitmodules') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-osx_arm64-${{ hashFiles('.gitmodules') }}-
+            ccache-osx_arm64-
+
+      - name: Build
+        run: |
+          EXT_FLAGS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache" make
+          ccache -s
+
+      - name: The artifact loads
+        run: scripts/ci/smoke_load.sh
+
+      - name: Unit suites
+        run: |
+          build/release/test/unittest 'test/sql/*' 2>&1 | tee suite.log
+          scripts/ci/assert_ran.sh suite.log 2 12
+
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: tresor-osx_arm64
+          path: build/release/extension/tresor/tresor.duckdb_extension

@@ -2,7 +2,9 @@
 # description: The extension loads, and the tresor ATTACH type is registered (specs/001)
 # group: [sql]
 
-require tresor
+# a DONT_LINK loadable is invisible to `require` - loaded by build path, the runner's pattern
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
 
 query I
 SELECT tresor_version() IS NOT NULL;
@@ -10,13 +12,25 @@ SELECT tresor_version() IS NOT NULL;
 true
 
 # the ATTACH type is ours: both spellings reach tresor's attach, which is not implemented yet -
-# the error proves the routing, specs/002 replaces it with the real attach
+# the error proves the routing; specs/002 replaces it with the real attach. The path names the
+# service WITHOUT a scheme (https is implied), like quack's `quack:host:port`.
 statement error
-ATTACH 'tresor:https://secrets.example.invalid' AS corp;
+ATTACH 'tresor:secrets.example.invalid' AS corp;
 ----
 <REGEX>:.*tresor: attaching a secrets service is not implemented yet.*
 
 statement error
-ATTACH 'https://secrets.example.invalid' AS corp (TYPE tresor);
+ATTACH 'secrets.example.invalid:8443/v1' AS corp (TYPE tresor);
 ----
 <REGEX>:.*tresor: attaching a secrets service is not implemented yet.*
+
+# why no scheme: before it looks at the type, duckdb's ATTACH treats an http(s):// path as a remote
+# database FILE - it demands httpfs and forces READ_ONLY (DatabaseManager::AttachDatabase,
+# FileSystem::IsRemoteFile). A scheme would drag both into every tresor attach.
+statement ok
+SET autoload_known_extensions = false;
+
+statement error
+ATTACH 'tresor:https://secrets.example.invalid' AS corp;
+----
+<REGEX>:.*requires extension 'httpfs'.*

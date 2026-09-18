@@ -1,0 +1,33 @@
+# name: test/sql/attach_loads_extension.test
+# description: ATTACH 'tresor:...' loads the INSTALLED extension by prefix, with no LOAD (specs/001)
+# group: [sql]
+
+# The design's single entry point: duckdb resolves an unknown ATTACH type to an extension of the
+# same name and loads it if it is installed (DatabaseManager::GetDatabaseType), even with
+# autoloading off - so the ATTACH is the only statement a user writes. Proven here from a clean,
+# isolated extension directory, into which the build's own artifact is installed.
+
+statement ok
+SET extension_directories = ['__TEST_DIR__/tresor_extensions'];
+
+statement ok
+SET autoload_known_extensions = false;
+
+statement ok
+INSTALL tresor FROM '__BUILD_DIRECTORY__/repository';
+
+query I
+SELECT loaded FROM duckdb_extensions() WHERE extension_name = 'tresor';
+----
+false
+
+# the ATTACH alone reaches tresor's attach - so the extension was loaded by it
+statement error
+ATTACH 'tresor:secrets.example.invalid' AS corp;
+----
+<REGEX>:.*tresor: attaching a secrets service is not implemented yet.*
+
+query I
+SELECT loaded FROM duckdb_extensions() WHERE extension_name = 'tresor';
+----
+true

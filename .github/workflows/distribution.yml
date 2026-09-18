@@ -1,0 +1,30 @@
+# The build community-extensions runs, run here first: the very reusable workflow they call, with the
+# same inputs, on every platform they cover. Like duckdb-acl, it builds against the 2.0 LINE
+# (`duckdb_version: v2.0-cyanoptera`, the branch head) rather than our submodule pin - an early warning
+# for drift before we bump the pin.
+name: Distribution build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+concurrency:
+  group: distribution-${{ github.ref }}
+  # runs fill the caches; a cancelled one leaves nothing behind for the next
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build extension binaries
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
+    with:
+      extension_name: tresor
+      duckdb_version: v2.0-cyanoptera
+      ci_tools_version: main
+      # wasm is out: the login needs a loopback listener / device polling and an HTTPS client, and a
+      # browser-hosted duckdb has neither sockets nor a place for a redirect to land
+      exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads'

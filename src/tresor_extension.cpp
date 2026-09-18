@@ -19,7 +19,7 @@ namespace duckdb {
 namespace {
 
 void TresorVersionFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	result.Reference(Value(TresorExtension().Version()));
+	result.Reference(Value(TresorExtension().Version()), count_t(args.size()));
 }
 
 unique_ptr<Catalog> TresorAttach(optional_ptr<StorageExtensionInfo> storage_info, ClientContext &context,
@@ -40,8 +40,7 @@ void LoadInternal(ExtensionLoader &loader) {
 	StorageExtension::Register(config, "tresor", std::move(storage));
 
 	loader.SetDescription("Client for an external secrets service: one OIDC login, role-based secrets");
-	loader.RegisterFunction(
-	    ScalarFunction(Identifier("tresor_version"), {}, LogicalType::VARCHAR, TresorVersionFun));
+	loader.RegisterFunction(ScalarFunction(Identifier("tresor_version"), {}, LogicalType::VARCHAR, TresorVersionFun));
 }
 
 } // namespace
