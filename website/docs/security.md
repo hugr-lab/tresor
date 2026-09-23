@@ -18,23 +18,29 @@ things beyond roles:
 - **Dynamic, personal credentials** for people: a tagged STS session, a temporary database user, a
   token issued on the user's behalf. The resource sees the person, the audit trail names them, and
   revoking the person at the identity provider revokes the access.
-- **Use without seeing**, through a server: with a `shared` delegation rule a server uses a secret on
-  a user's behalf while the user never receives it — the production password stays on the server,
-  every use is audited under the user's name.
+- **Use without seeing**, through a server: an administrator grants a secret to a server's role, and
+  the server uses it for its users' statements while they never receive it. The production password
+  stays on the server, and every use is audited under the user's name.
+- **Only administrators manage.** Users do not create or share secrets in the service, so nobody
+  but an administrator can put a secret where others' lookups find it (no planting).
 
 ## What a server must never do
 
-A server acting for users **never adds its own authority** to a user's request. Every call it makes
-on a user's behalf carries the user's delegation grant; the service checks the user's rights, the
-delegation rule, and that this server may act for users at all. A delegated secret is never resolved
-with the server's own identity when the user's is missing — that would make every user a confused
-deputy of the server. On a duckdb-acl node, tresor holds to this per statement. A statement that acl
-publishes as running under a user's session is served through that session's grant, or gets nothing
-from the service. It never falls back to the node's own identity, whether the grant is pending,
-failed or revoked, or the attachment does not act for sessions at all. The session is what acl
-publishes on the statement's connection. A lookup made without a connection (a background
-refresh), or on an internal connection some extension opens, runs as the node. Keep such work out of
-users' reach with acl's function gate.
+A server acting for users **never adds its own authority** to a user's request beyond what an
+administrator granted it. Every call it makes on a user's behalf carries the user's delegation
+grant. The service answers with the server's own grants for the user's statement, and passes
+management through only for a user who is an administrator, where its policy allows. On a duckdb-acl
+node, tresor holds to this per statement. A statement that acl publishes as running under a user's
+session is served through that session's grant, or gets nothing from the service. It never falls
+back to the node's bare identity, whether the grant is pending, failed or revoked, or the attachment
+does not act for sessions at all. The session is what acl publishes on the statement's connection. A
+lookup made without a connection (a background refresh), or on an internal connection some extension
+opens, runs as the node. Keep such work out of users' reach with acl's function gate.
+
+The node's secrets are kept from users by **acl's function gate, not by the credentials**. A user
+who could name the node's paths directly (`read_parquet`, `COPY`, `ATTACH`, a replacement scan, any
+extension's URL-fetching function) would read them with the node's grants. Keep acl's `readers`
+category closed to users; it is closed by default.
 
 On a server, lock the configuration so users cannot widen what the process reveals:
 `allow_unredacted_secrets = false`, `lock_configuration = true`, and no `CREATE SECRET` for

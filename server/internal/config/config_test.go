@@ -13,8 +13,8 @@ issuers:
     audience: duckdb-secrets
 policy:
   admins: [role:secrets_admin]
-  create:
-    - {principal: role:analysts, names: ["team_a_*"]}
+  actors:
+    - {principal: client:node, verbs: [use]}
 `
 
 func TestGood(t *testing.T) {
@@ -38,11 +38,13 @@ func TestRefused(t *testing.T) {
 		"an unknown key": good + "\nextra: 1\n",
 		"a symmetric algorithm": strings.Replace(good, "audience: duckdb-secrets",
 			"audience: duckdb-secrets\n    algorithms: [HS256]", 1),
-		"no audience":            strings.Replace(good, "    audience: duckdb-secrets\n", "", 1),
-		"a bad principal":        strings.Replace(good, "role:secrets_admin", "secrets_admin", 1),
-		"a store without a key":  good + "store: {path: x.enc}\n",
-		"an actor with no verbs": good + "  actors:\n    - {principal: client:quiet, verbs: []}\n",
-		"no issuers":             "listen: 127.0.0.1:1\npublic_url: http://127.0.0.1:1\n",
+		"no audience":             strings.Replace(good, "    audience: duckdb-secrets\n", "", 1),
+		"a bad principal":         strings.Replace(good, "role:secrets_admin", "secrets_admin", 1),
+		"a store without a key":   good + "store: {path: x.enc}\n",
+		"an actor with no verbs":  strings.Replace(good, "verbs: [use]", "verbs: []", 1),
+		"an actor's unknown verb": strings.Replace(good, "verbs: [use]", "verbs: [use, fly]", 1),
+		"the old create policy":   good + "  create:\n    - {principal: role:analysts, names: [\"*\"]}\n",
+		"no issuers":              "listen: 127.0.0.1:1\npublic_url: http://127.0.0.1:1\n",
 	}
 	for name, doc := range cases {
 		if _, err := Parse([]byte(doc)); err == nil {

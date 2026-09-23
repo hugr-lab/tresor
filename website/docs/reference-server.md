@@ -22,10 +22,10 @@ It is **not meant for production**: one process, one encrypted file, no high ava
     audience;
   - asymmetric algorithms only.
 
-- Delegation: rules, grant exchange, the `Delegation` header, and actor policy. Only `shared` rules
-  are supported.
+- Delegation: grant exchange, the `Delegation` header, and actor policy (tresor specs/009: under a
+  grant a server uses its own grants for the user, and passes management through only for admins).
 
-Dynamic secrets and `user`-mode delegation are not implemented (`capabilities.dynamic` is false). Issuers must be https unless they are on loopback: their signing keys are
+Dynamic secrets are not implemented (`capabilities.dynamic` is false). Issuers must be https unless they are on loopback: their signing keys are
 fetched from them.
 
 ## Run it
@@ -54,13 +54,11 @@ issuers:
     groups_claim: groups
     service: {claim: client_id}          # what marks a client-credentials token (see below)
 policy:
-  admins: [role:secrets_admin]
-  create:
-    - {principal: role:analysts, names: ["team_a_*"]}
-    - {principal: client:etl, names: ["*"]}
-  actors:                                # servers that may act for users, and with which verbs
-    - {principal: client:acl-node, verbs: [use]}                     # none listed: not allowed
-    - {principal: client:ops-node, issuer: https://login.corp.example/realms/main, verbs: [use, annotate]}
+  admins: [role:secrets_admin, client:etl]   # the only principals that manage secrets and grant use
+  actors:                                    # servers that may act for users
+    - {principal: client:acl-node, verbs: [use]}      # its own grants, for its users' statements
+    - {principal: client:ops-node, issuer: https://login.corp.example/realms/main,
+       verbs: [use, create, update, delete, annotate, grant]}   # admins may manage through it
 ```
 
 ## Who may do what
@@ -74,28 +72,29 @@ policy:
   - Keycloak: `{claim: client_id}`. The `service_account` scope sets it on client-credentials
     tokens only.
   - Entra: `{claim: idtyp, equals: app}`.
-- **Verbs on a secret.** An admin holds every verb on every secret. The owner holds every verb on
-  its own secret; the owner is the `subject:` that created it, a service's included. Everyone else
-  holds the verbs of the grants made to their principals, and can grant on only the verbs they hold.
+- **Verbs on a secret** (tresor specs/009). `use` comes only from a grant to one of the caller's
+  roles or groups; grants name `role:` or `group:` principals, with `use` only. Admins
+  (`policy.admins`) hold the management verbs on every secret, and create, but an admin role implies
+  no `use`: an admin uses a secret when one of its roles is granted it. Users create and grant
+  nothing.
 - **`client:` names are shared.** They carry no issuer, so with several issuers a `client:etl` in a
-  policy or grant matches the `etl` of each. Name services by `subject:` where that matters.
-- **Creating** is allowed to admins and to the `policy.create` rules, by name pattern.
+  policy matches the `etl` of each.
 - **Invisible secrets.** A secret you hold no verb on answers 404, exactly like one that does not
   exist.
 
 ## Delegation
 
-- **Rules.** A secret's rules (`delegate` verb) name servers (`client:` principals) and users; only
-  `shared` mode is supported.
 - **Actors.** A server listed in `policy.actors`, optionally pinned to the issuer of its token,
   exchanges a person's token for a grant. The grant lives in memory only (8 h at most, and at most
   100 000 grants), is bound to that server, and is never logged.
 - **Revocation.** Admins revoke by actor or subject (`DELETE /v1/delegations?actor=…`), and users
   revoke their own grants.
 - **Under a grant:**
-  - every check uses the user's principals;
-  - the actor's `verbs` only take away (management verbs are denied unless listed);
-  - material needs a rule.
+  - `use` is the **server's own** (its roles' grants), for the grant's user: nothing beyond what an
+    admin granted the server;
+  - a management verb (or `create`) passes only for a user who is an admin, and only if the actor's
+    `verbs` list it;
+  - everything else is `403 actor_not_allowed`.
 
 ## Identity provider setup (Keycloak)
 

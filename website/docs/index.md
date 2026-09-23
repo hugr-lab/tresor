@@ -33,15 +33,14 @@ lookup, then writes.
 - **The ATTACH is the whole setup.** DuckDB loads an installed extension by the prefix of the path it
   is asked to attach, so `ATTACH 'tresor:…'` is the only statement a user writes: discovery, login and
   mounting happen inside it.
-- **Your role decides, the service enforces.** What you may see, use, create, share or delegate is
-  decided by the service from your token — the same through the CLI as through a server acting for
-  you.
-- **Management is SQL.** `CREATE PERSISTENT SECRET … IN corp` stores into the service; grants,
-  delegation and annotations are functions of the attached catalog.
+- **Your role decides, the service enforces.** You use what an administrator granted your roles —
+  the same through the CLI as through a server acting for you, which serves you its own grants.
+- **Management is SQL, for administrators.** `CREATE PERSISTENT SECRET … IN corp` stores into the
+  service; grants and annotations are functions of the attached catalog.
 
 ## Where to next
 
 - [Getting started](./getting-started.md) — the first attach, for a person and for a service.
-- [Concepts](./concepts.md) — the attached catalog, lookup, persistence, delegation.
+- [Concepts](./concepts.md) — the attached catalog, lookup, persistence, acting for users.
 - [Protocol](./protocol.md) — the specification a secrets service implements.
 - [Security model](./security.md) — what a role can and cannot protect, and why delegation matters.

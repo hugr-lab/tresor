@@ -162,10 +162,37 @@ SELECT principal, verbs FROM corp.grant_secret('written_one', 'role:sales', ['us
 ----
 role:sales	[use]
 
+# granted again: the same grant, replaced under its id (specs/005)
 query II
-SELECT principal, verbs FROM corp.grant_secret('written_one', 'role:sales', ['use', 'annotate']);
+SELECT principal, verbs FROM corp.grant_secret('written_one', 'role:sales', ['use']);
 ----
-role:sales	[use, annotate]
+role:sales	[use]
+
+# a grant gives use to a role or a group, and only use (specs/009): refused before any request
+statement error
+CALL corp.grant_secret('written_one', 'role:sales', ['use', 'annotate']);
+----
+a grant gives use, and only use
+
+statement error
+CALL corp.grant_secret('written_one', 'subject:https://idp|alice', ['use']);
+----
+a grant names a role: or a group: principal
+
+statement error
+CALL corp.grant_secret('written_one', 'client:etl', ['use']);
+----
+a grant names a role: or a group: principal
+
+query II
+SELECT principal, verbs FROM corp.grant_secret('written_one', 'group:ops', ['use']);
+----
+group:ops	[use]
+
+query II
+SELECT principal, verbs FROM corp.revoke_secret('written_one', 'group:ops');
+----
+group:ops	[use]
 
 query III
 SELECT count(*), min(principal), min(id) LIKE 'g-%' FROM corp.grants('written_one');
@@ -175,7 +202,7 @@ SELECT count(*), min(principal), min(id) LIKE 'g-%' FROM corp.grants('written_on
 query II
 SELECT principal, verbs FROM corp.revoke_secret('written_one', 'role:sales');
 ----
-role:sales	[use, annotate]
+role:sales	[use]
 
 statement error
 CALL corp.revoke_secret('written_one', 'role:sales');
@@ -185,7 +212,7 @@ role:sales holds no grant on the secret written_one
 statement error
 CALL corp.grant_secret('written_one', 'role:sales', []);
 ----
-needs at least one verb
+a grant gives use, and only use
 
 statement error
 CALL corp.annotate_secret('no_such_secret', 'x');

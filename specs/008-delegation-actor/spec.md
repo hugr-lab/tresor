@@ -1,6 +1,6 @@
 # Spec 008: tresor as the actor — a duckdb-acl session's secrets are its user's
 
-- **Status**: implemented
+- **Status**: implemented; under a grant the service now answers with the node's rights - [009](../009-permissions-v2/spec.md)
 - **Date**: 2026-09-23
 - **Author**: VGSML (with Claude)
 

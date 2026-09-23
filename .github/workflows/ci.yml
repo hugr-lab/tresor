@@ -137,7 +137,7 @@ jobs:
         run: |
           set -o pipefail   # a failing script must fail the step, whatever the summary line says
           scripts/ci/test_attach.sh 2>&1 | tee attach.log
-          scripts/ci/assert_ran.sh attach.log 8 330 'require-env TRESOR_TEST_PORT|require httpfs|require acl_stub'
+          scripts/ci/assert_ran.sh attach.log 7 330 'require-env TRESOR_TEST_PORT|require httpfs|require acl_stub'
 
       # the reference server next to a real Keycloak (specs/003): the conformance suite, a real
       # browser login (PKCE, Keycloak's redirect checks) and a real client-credentials grant
@@ -151,7 +151,7 @@ jobs:
           set -o pipefail   # a failing script must fail the step, whatever the summary line says
           TRESOR_ACL_EXTENSION="$PWD/build/release/extension/acl/acl.duckdb_extension" \
             scripts/ci/test_keycloak.sh 2>&1 | tee keycloak.log
-          scripts/ci/assert_ran.sh keycloak.log 5 55 'require-env TRESOR_CONFORMANCE'
+          scripts/ci/assert_ran.sh keycloak.log 4 45 'require-env TRESOR_CONFORMANCE'
           grep -q "with duckdb-acl, a session's statements ran as its user" keycloak.log
 
       - name: Upload extension artifact
@@ -221,7 +221,7 @@ jobs:
         run: |
           set -o pipefail   # a failing script must fail the step, whatever the summary line says
           scripts/ci/test_attach.sh 2>&1 | tee attach.log
-          scripts/ci/assert_ran.sh attach.log 8 330 'require-env TRESOR_TEST_PORT|require httpfs|require acl_stub'
+          scripts/ci/assert_ran.sh attach.log 7 330 'require-env TRESOR_TEST_PORT|require httpfs|require acl_stub'
 
       - name: Upload extension artifact
         uses: actions/upload-artifact@v7

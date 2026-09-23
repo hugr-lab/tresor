@@ -12,9 +12,8 @@ issuers:
     # a client-credentials token carries Keycloak's client_id session note (the service_account scope)
     service: {claim: client_id}
 policy:
-  admins: [role:secrets_admin]
-  create:
-    - {principal: role:analysts, names: ["team_a_*"]}
-    - {principal: client:etl, names: ["*"]}
-  actors:                                    # servers that may act for users (specs/007)
-    - {principal: client:acl-node, verbs: [use]}
+  # only admins manage secrets and grant their use, to roles and groups (tresor specs/009); the etl service
+  # is one, for the conformance suite
+  admins: [role:secrets_admin, client:etl]
+  actors:                                    # servers that may act for users (specs/007, 009)
+    - {principal: client:acl-node, verbs: [use, create, update, delete, annotate, grant]}   # admins manage through it

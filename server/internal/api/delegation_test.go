@@ -19,37 +19,19 @@ func (f *fixture) grantFor(actorToken, userToken string) (string, reply) {
 
 func TestDelegation(t *testing.T) {
 	f := newFixture(t, "")
-	node := f.idp.Service(t, "duckdb-secrets", "node")
-	adminNode := f.idp.Service(t, "duckdb-secrets", "admin-node")
-	rogue := f.idp.Service(t, "duckdb-secrets", "rogue")
+	node := f.idp.Service(t, "duckdb-secrets", "node", "nodes")
+	other := f.idp.Service(t, "duckdb-secrets", "other-node")
+	rogue := f.idp.Service(t, "duckdb-secrets", "rogue", "nodes")
 
-	// the owner (etl) creates a secret and delegates it to the node for analysts, shared
-	if r := f.do("PUT", "/v1/secrets/crm_prod", f.etl, s3Secret); r.status != 201 {
-		t.Fatalf("create: %d", r.status)
-	}
-	if r := f.do("POST", "/v1/secrets/crm_prod/delegations", f.alice, `{"actors":["client:node"],"subjects":["role:analysts"],"mode":"shared"}`); r.status != 404 {
-		t.Fatalf("a rule by someone who cannot see the secret: %d", r.status)
-	}
-	for name, body := range map[string]string{
-		"user mode":       `{"actors":["client:node"],"subjects":["role:analysts"],"mode":"user"}`,
-		"no actors":       `{"actors":[],"subjects":["role:analysts"],"mode":"shared"}`,
-		"a person actor":  `{"actors":["role:x"],"subjects":["role:analysts"],"mode":"shared"}`,
-		"a bad subject":   `{"actors":["client:node"],"subjects":["analysts"],"mode":"shared"}`,
-		"an unknown mode": `{"actors":["client:node"],"subjects":["role:analysts"],"mode":"always"}`,
-	} {
-		if r := f.do("POST", "/v1/secrets/crm_prod/delegations", f.etl, body); r.status != 422 {
-			t.Errorf("%s: %d %s", name, r.status, r.body)
-		}
-	}
-	r := f.do("POST", "/v1/secrets/crm_prod/delegations", f.etl, `{"actors":["client:node"],"subjects":["role:analysts"],"mode":"shared","ttl":600}`)
-	if r.status != 201 {
-		t.Fatalf("add rule: %d %s", r.status, r.body)
-	}
-	ruleID := r.json(t)["id"].(string)
-	var rules []map[string]any
-	_ = json.Unmarshal(f.do("GET", "/v1/secrets/crm_prod/delegations", f.etl, "").body, &rules)
-	if len(rules) != 1 || rules[0]["id"] != ruleID || rules[0]["mode"] != "shared" {
-		t.Fatalf("rules: %v", rules)
+	// an admin creates what the node serves, and grants it to the node's role; another only to analysts
+	f.do("PUT", "/v1/secrets/lake", f.etl, s3Secret)
+	f.do("PUT", "/v1/secrets/lake/grants/nodes", f.etl, `{"principal":"role:nodes","verbs":["use"]}`)
+	f.do("PUT", "/v1/secrets/analysts_only", f.etl, s3Secret)
+	f.do("PUT", "/v1/secrets/analysts_only/grants/a", f.etl, `{"principal":"role:analysts","verbs":["use"]}`)
+
+	// the node uses its own, as itself
+	if r := f.do("GET", "/v1/secrets/lake", node, ""); r.status != 200 {
+		t.Fatalf("the node's own: %d", r.status)
 	}
 
 	// the exchange: only a service the policy lets act for users
@@ -71,67 +53,86 @@ func TestDelegation(t *testing.T) {
 	}
 	carolGrant, _ := f.grantFor(node, f.carol)
 
-	// material through the grant: alice holds no `use`, the shared rule is what lets the node use it
-	if r := f.do("GET", "/v1/secrets/crm_prod", f.alice, ""); r.status != 404 {
+	// under a grant the node's own rights apply (specs/009): what the node was granted, for any of its users
+	for name, g := range map[string]string{"alice": aliceGrant, "carol": carolGrant} {
+		if m := f.do("GET", "/v1/secrets/lake", node, "", "Delegation", g); m.status != 200 || m.json(t)["params"] == nil {
+			t.Fatalf("%s through the node: %d %s", name, m.status, m.body)
+		}
+	}
+	// ... and nothing more: a secret alice uses herself is not the node's, not through her grant either
+	if r := f.do("GET", "/v1/secrets/analysts_only", f.alice, ""); r.status != 200 {
 		t.Fatalf("alice alone: %d", r.status)
 	}
-	m := f.do("GET", "/v1/secrets/crm_prod", node, "", "Delegation", aliceGrant)
-	if m.status != 200 || m.json(t)["params"] == nil {
-		t.Fatalf("delegated material: %d %s", m.status, m.body)
-	}
-	// ... but not for carol, whom no rule names
-	if r := f.do("GET", "/v1/secrets/crm_prod", node, "", "Delegation", carolGrant); r.status != 404 {
-		t.Fatalf("carol through the node: %d", r.status)
-	}
-	// the node alone has no business with it
-	if r := f.do("GET", "/v1/secrets/crm_prod", node, ""); r.status != 404 {
-		t.Fatalf("the node on its own: %d", r.status)
+	if r := f.do("GET", "/v1/secrets/analysts_only", node, "", "Delegation", aliceGrant); r.status != 404 {
+		t.Fatalf("alice's own through the node: %d", r.status)
 	}
 	// a grant presented by another actor is no grant
-	if r := f.do("GET", "/v1/secrets/crm_prod", adminNode, "", "Delegation", aliceGrant); r.status != 401 {
+	if r := f.do("GET", "/v1/secrets/lake", other, "", "Delegation", aliceGrant); r.status != 401 {
 		t.Fatalf("a stolen grant: %d", r.status)
 	}
 
-	// whoami and the listing under the grant: the user, with the actor named
+	// whoami and the listing under the grant: the user, with the actor named; the node's secrets
 	w := f.do("GET", "/v1/whoami", node, "", "Delegation", aliceGrant).json(t)
-	if w["subject"] != "alice-id" || w["actor"] != "client:node" {
+	if w["subject"] != "alice-id" || w["actor"] != "client:node" || w["permissions"].(map[string]any)["create"] != false {
 		t.Fatalf("whoami: %v", w)
 	}
 	var list []map[string]any
 	_ = json.Unmarshal(f.do("GET", "/v1/secrets", node, "", "Delegation", aliceGrant).body, &list)
-	if len(list) != 1 || list[0]["name"] != "crm_prod" || list[0]["permissions"].([]any)[0] != "use" {
+	if len(list) != 1 || list[0]["name"] != "lake" || list[0]["permissions"].([]any)[0] != "use" {
 		t.Fatalf("listing: %v", list)
 	}
 
-	// a rule for another actor delegates nothing to this one
-	f.do("PUT", "/v1/secrets/other", f.etl, s3Secret)
-	f.do("POST", "/v1/secrets/other/delegations", f.etl, `{"actors":["client:admin-node"],"subjects":["role:analysts"],"mode":"shared"}`)
-	if r := f.do("GET", "/v1/secrets/other", node, "", "Delegation", aliceGrant); r.status != 404 {
-		t.Fatalf("a rule for another actor: %d", r.status)
+	// nothing is managed through a server that may not pass it on - not even for an admin
+	adminGrant, _ := f.grantFor(node, f.admin)
+	for _, g := range []string{aliceGrant, adminGrant} {
+		for _, probe := range [][3]string{
+			{"PATCH", "/v1/secrets/lake", `{"comment":"x"}`},
+			{"PUT", "/v1/secrets/lake", s3Secret},
+			{"PUT", "/v1/secrets/new", s3Secret},
+			{"PUT", "/v1/secrets/lake/grants/x", `{"principal":"role:x","verbs":["use"]}`},
+			{"DELETE", "/v1/secrets/lake", ""},
+		} {
+			if r := f.do(probe[0], probe[1], node, probe[2], "Delegation", g); r.status != 403 ||
+				r.problemType(t) != "actor_not_allowed" {
+				t.Errorf("%s %s under a grant: %d %s", probe[0], probe[1], r.status, r.body)
+			}
+		}
+	}
+	// administration through a server that may pass it on (specs/009): only for a user who is an admin
+	adminNode := f.idp.Service(t, "duckdb-secrets", "admin-node")
+	viaAdmin, _ := f.grantFor(adminNode, f.admin)
+	viaAlice, _ := f.grantFor(adminNode, f.alice)
+	if w := f.do("GET", "/v1/whoami", adminNode, "", "Delegation", viaAdmin).json(t); w["permissions"].(map[string]any)["create"] != true {
+		t.Fatalf("an admin through an admin node may create: %v", w)
+	}
+	if r := f.do("PUT", "/v1/secrets/made_via_node", adminNode, s3Secret, "Delegation", viaAdmin); r.status != 201 ||
+		r.json(t)["owner"] != "subject:"+f.idp.URL+"|bob-id" {
+		t.Fatalf("create through the node, owned by the admin: %d %s", r.status, r.body)
+	}
+	if r := f.do("PUT", "/v1/secrets/made_via_node/grants/n", adminNode, `{"principal":"role:nodes","verbs":["use"]}`,
+		"Delegation", viaAdmin); r.status != 200 {
+		t.Fatalf("grant through the node: %d %s", r.status, r.body)
+	}
+	if r := f.do("GET", "/v1/secrets/made_via_node", node, ""); r.status != 200 {
+		t.Fatalf("the grant took: %d", r.status)
+	}
+	for _, probe := range [][3]string{
+		{"PUT", "/v1/secrets/by_alice", s3Secret},
+		{"PUT", "/v1/secrets/made_via_node/grants/x", `{"principal":"role:x","verbs":["use"]}`},
+		{"DELETE", "/v1/secrets/made_via_node", ""},
+	} {
+		if r := f.do(probe[0], probe[1], adminNode, probe[2], "Delegation", viaAlice); r.status != 403 && r.status != 404 {
+			t.Errorf("a user who is no admin, through an admin node, %s %s: %d %s", probe[0], probe[1], r.status, r.body)
+		}
 	}
 
-	// management through a grant: the user's verbs, only those the actor may exercise
-	f.do("PUT", "/v1/secrets/team_a_mine", f.alice, s3Secret)
-	if r := f.do("PATCH", "/v1/secrets/team_a_mine", node, `{"comment":"x"}`, "Delegation", aliceGrant); r.status != 403 || r.problemType(t) != "actor_not_allowed" {
-		t.Fatalf("annotate via a use-only actor: %d %s", r.status, r.body)
-	}
-	if r := f.do("GET", "/v1/secrets/team_a_mine", node, "", "Delegation", aliceGrant); r.status != 403 || r.problemType(t) != "not_delegable" {
-		t.Fatalf("the user's own secret without a rule: %d %s", r.status, r.body)
-	}
-	adminGrant, _ := f.grantFor(adminNode, f.alice)
-	if r := f.do("PATCH", "/v1/secrets/team_a_mine", adminNode, `{"comment":"x"}`, "Delegation", adminGrant); r.status != 200 {
-		t.Fatalf("annotate via an actor allowed to: %d %s", r.status, r.body)
-	}
-	if r := f.do("PUT", "/v1/secrets/team_a_new", node, s3Secret, "Delegation", aliceGrant); r.status != 403 {
-		t.Fatalf("create through a grant (a management verb): %d", r.status)
-	}
 	// a grant cannot mint grants
 	if r := f.do("POST", "/v1/delegations", node, `{"subject_token":"`+f.carol+`"}`, "Delegation", aliceGrant); r.status != 403 {
 		t.Fatalf("an exchange under a grant: %d", r.status)
 	}
 
 	// revoke: by its actor; afterwards the grant is gone
-	if r := f.do("DELETE", "/v1/delegations/"+aliceGrant, adminNode, ""); r.status != 404 {
+	if r := f.do("DELETE", "/v1/delegations/"+aliceGrant, other, ""); r.status != 404 {
 		t.Fatalf("revoke by another actor: %d", r.status)
 	}
 	if r := f.do("DELETE", "/v1/delegations/"+aliceGrant, node, ""); r.status != 204 {
@@ -140,62 +141,8 @@ func TestDelegation(t *testing.T) {
 	if r := f.do("GET", "/v1/whoami", node, "", "Delegation", aliceGrant); r.status != 401 {
 		t.Fatalf("a revoked grant: %d", r.status)
 	}
-
-	// remove the rule: the secret is no longer delegated
-	if r := f.do("DELETE", "/v1/secrets/crm_prod/delegations/"+ruleID, f.etl, ""); r.status != 204 {
-		t.Fatalf("remove rule: %d", r.status)
-	}
-	fresh, _ := f.grantFor(node, f.alice)
-	if r := f.do("GET", "/v1/secrets/crm_prod", node, "", "Delegation", fresh); r.status != 404 {
-		t.Fatalf("after the rule went: %d", r.status)
-	}
-	if strings.Contains(f.logs.String(), fresh) || strings.Contains(f.logs.String(), aliceGrant) {
+	if strings.Contains(f.logs.String(), aliceGrant) || strings.Contains(f.logs.String(), carolGrant) {
 		t.Fatal("a grant id reached the log")
-	}
-}
-
-// the review's findings, pinned
-
-// a rule's use never becomes a standing grant: not for the user, not for the server itself
-func TestRuleUseIsNotGrantable(t *testing.T) {
-	f := newFixture(t, "")
-	mgr := f.idp.Service(t, "duckdb-secrets", "mgr-node")
-	carol := "subject:" + f.idp.URL + "|carol-id"
-	f.do("PUT", "/v1/secrets/s", f.etl, s3Secret)
-	f.do("PUT", "/v1/secrets/s/grants/c", f.etl, `{"principal":"`+carol+`","verbs":["grant"]}`)
-	f.do("POST", "/v1/secrets/s/delegations", f.etl, `{"actors":["client:mgr-node"],"subjects":["`+carol+`"],"mode":"shared"}`)
-	g, _ := f.grantFor(mgr, f.carol)
-	if r := f.do("GET", "/v1/secrets/s", mgr, "", "Delegation", g); r.status != 200 {
-		t.Fatalf("the rule works: %d", r.status)
-	}
-	for _, principal := range []string{carol, "client:mgr-node"} {
-		r := f.do("PUT", "/v1/secrets/s/grants/x", mgr, `{"principal":"`+principal+`","verbs":["use"]}`, "Delegation", g)
-		if r.status != 403 {
-			t.Fatalf("granting a rule's use to %s: %d %s", principal, r.status, r.body)
-		}
-	}
-	if r := f.do("GET", "/v1/secrets/s", f.carol, ""); r.status != 403 {
-		t.Fatalf("carol alone: %d", r.status)
-	}
-	if r := f.do("GET", "/v1/secrets/s", mgr, ""); r.status != 404 {
-		t.Fatalf("the node alone: %d", r.status)
-	}
-}
-
-// delegate alone is not more than use: a rule's author must hold use
-func TestDelegateAloneCannotDelegate(t *testing.T) {
-	f := newFixture(t, "")
-	node := f.idp.Service(t, "duckdb-secrets", "node")
-	carol := "subject:" + f.idp.URL + "|carol-id"
-	f.do("PUT", "/v1/secrets/s", f.etl, s3Secret)
-	f.do("PUT", "/v1/secrets/s/grants/c", f.etl, `{"principal":"`+carol+`","verbs":["delegate"]}`)
-	r := f.do("POST", "/v1/secrets/s/delegations", f.carol, `{"actors":["client:node"],"subjects":["`+carol+`"],"mode":"shared"}`)
-	if r.status != 403 {
-		t.Fatalf("a rule by delegate alone: %d %s", r.status, r.body)
-	}
-	g, _ := f.grantFor(node, f.carol)
-	if r := f.do("GET", "/v1/secrets/s", node, "", "Delegation", g); r.status == 200 {
-		t.Fatal("material through a rule its author could not write")
 	}
 }
 
@@ -256,33 +203,16 @@ func TestRevocation(t *testing.T) {
 
 func TestUnderAGrant(t *testing.T) {
 	f := newFixture(t, "")
-	node := f.idp.Service(t, "duckdb-secrets", "node")
-	f.do("PUT", "/v1/secrets/team_a_seen", f.alice, s3Secret)
+	node := f.idp.Service(t, "duckdb-secrets", "node", "nodes")
 	f.do("PUT", "/v1/secrets/lent", f.etl, s3Secret)
-	f.do("POST", "/v1/secrets/lent/delegations", f.etl, `{"actors":["client:node"],"subjects":["role:analysts"],"mode":"shared","ttl":120}`)
+	f.do("PUT", "/v1/secrets/lent/grants/n", f.etl, `{"principal":"role:nodes","verbs":["use"]}`)
 	g, _ := f.grantFor(node, f.alice)
-	// a secret the user sees but the node may not act on: listed with [] (never null)
 	var list []map[string]any
 	_ = json.Unmarshal(f.do("GET", "/v1/secrets", node, "", "Delegation", g).body, &list)
 	for _, d := range list {
 		if d["permissions"] == nil {
 			t.Fatalf("permissions null: %v", d)
 		}
-	}
-	// the rule's ttl bounds the material's life
-	m := f.do("GET", "/v1/secrets/lent", node, "", "Delegation", g).json(t)
-	expires, err := time.Parse(time.RFC3339, m["expires_at"].(string))
-	if err != nil || time.Until(expires) > 2*time.Minute+5*time.Second {
-		t.Fatalf("expires_at from the rule's ttl: %v", m["expires_at"])
-	}
-	// whoami: what the user may create through this node - nothing, the policy lists no create
-	w := f.do("GET", "/v1/whoami", node, "", "Delegation", g).json(t)
-	if w["permissions"].(map[string]any)["create"] != false {
-		t.Fatalf("create under a use-only actor: %v", w)
-	}
-	// the owner sees the rules summarised
-	if d := f.do("GET", "/v1/secrets/lent", f.etl, "").json(t)["delegation"]; d == nil {
-		t.Fatal("the rules' summary for the owner")
 	}
 	// expiry: move the server's clock past the grant
 	f.srv.now = func() time.Time { return time.Now().Add(2 * time.Hour) }

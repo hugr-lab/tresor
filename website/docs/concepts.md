@@ -14,8 +14,8 @@ title: Concepts
    FROM corp` deletes there. `SET default_secret_storage = 'corp'` makes the service the default for
    persistent secrets.
 2. **A catalog of functions** — `corp.secrets()`, `corp.whoami()`, `corp.grants(…)`,
-   `corp.delegations(…)`, `corp.annotate_secret(…)`, `corp.grant_secret(…)`, `corp.add_delegation(…)` —
-   the view and the management surface.
+   `corp.annotate_secret(…)`, `corp.grant_secret(…)`, `corp.revoke_secret(…)` — the view, and the
+   management surface for administrators.
 3. **A login.** The identity the attach established is what every call to the service carries.
 
 Several services can be attached at once; each is its own storage and its own catalog.
@@ -30,33 +30,29 @@ secrets among them are refreshed through httpfs's own `REFRESH auto` when they r
 
 ## What your role may do
 
-The service decides, per secret, which of these verbs you hold — and shows them in
-`corp.secrets()`:
+Two kinds of callers, and one rule each:
 
-| Verb | Meaning |
-| --- | --- |
-| `create` | create new secrets (service-wide, possibly limited to name patterns) |
-| `use` | receive the material yourself |
-| `update` / `delete` | replace or remove |
-| `annotate` | describe |
-| `grant` | give or take verbs from others |
-| `delegate` | set up delegation |
+- **Users use.** You use exactly the secrets an administrator granted to one of your roles or
+  groups (`role:…`, `group:…` from your token). You do not create or share secrets in the service:
+  keep your own in your DuckDB (`CREATE SECRET`). `corp.secrets()` shows `permissions = [use]`.
+- **Administrators manage.** They create, change, annotate and delete secrets, and grant `use` to
+  roles and groups. An administrative role does not imply `use`: to use a secret, an administrator
+  grants it to one of their own roles, like anyone else.
 
-## Delegation
+Nobody but an administrator can put a secret where your lookups find it, so nobody can plant one on
+your paths.
 
-A server — a DuckDB node behind a gateway, a data platform — sometimes works **on behalf of** a
-user: reading an API with the user's rights, writing to the user's area of object storage. A
-secret is **not delegated** unless the service has a rule for it. A delegation rule says which
-servers may act, for which users, how:
+## Acting for users
 
-- **`user`** — the service issues a credential of the user's own (a tagged STS session, a temporary
-  database user, a token on the user's behalf): the resource sees the person.
-- **`shared`** — the server receives a shared secret, only to act for that user, and every use is
-  audited under the user's name. The user needs no `use` verb: they can **use a secret without ever
-  seeing it**, which is only possible through a server.
-
-A server acting for a user never adds its own authority: every call carries the user's identity,
-and the service checks the user's rights, the rule, and that the server may act for users at all.
+A server (a DuckDB node behind a gateway, a data platform) runs statements **for** its users. It
+holds a role of its own, and an administrator grants that role what the server serves: its lake,
+its catalogs, its databases. When a user's session opens, the server obtains a **delegation grant**
+for them. Through it:
+- **the user gets exactly the server's secrets** for the statements the server runs for them, and
+  nothing more. The server never adds the user's rights to its own, nor its own to the user's
+  beyond what an administrator granted it;
+- **an administrator can manage through the server:** only a user who is an administrator, and only
+  what the service's policy lets that server pass on.
 
 ### On a duckdb-acl node
 
@@ -72,13 +68,15 @@ ATTACH 'tresor:secrets.example' AS corp (SECRET node, ACT_FOR_SESSIONS true);
 When a user's acl session opens, tresor:
 1. exchanges the session's token at the identity provider for one meant for the service;
 2. trades that token for a delegation grant;
-3. uses the grant for every statement of the session: secret lookups, `corp.secrets()`,
-   `corp.whoami()` (which answers the user, with `actor` = the node);
+3. uses the grant for every statement of the session: secret lookups (the node's secrets, served for
+   the user's statement), `corp.secrets()`, `corp.whoami()` (which answers the user, with `actor` =
+   the node), and an administrator's management;
 4. revokes the grant when the session ends.
 
-A statement under a session sees **its user's** secrets or none, never the node's. If the grant is
-still pending, lookups wait up to `SESSION_GRANT_WAIT` seconds (10 by default). If the exchange or
-the grant failed, lookups in `corp` find nothing and explicit calls fail with the reason.
+A statement under a session never runs with the node's bare identity: always through the session's
+grant, or not at all. If the grant is still pending, lookups wait up to `SESSION_GRANT_WAIT` seconds
+(10 by default). If the exchange or the grant failed, lookups in `corp` find nothing and explicit
+calls fail with the reason.
 
 | Option | Default | |
 | --- | --- | --- |

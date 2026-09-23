@@ -30,6 +30,9 @@ type Caller struct {
 	// principal. The rest of the Caller is the user's, as taken at the grant's exchange.
 	Actor       string
 	ActorIssuer string // the issuer of the actor's token
+	// ActorPrincipals are the actor's own (specs/009): under a grant the service applies the actor's
+	// permissions, never the user's - the user gets nothing beyond what the server was granted.
+	ActorPrincipals []string
 }
 
 // Client is the caller's client: principal (a service), or "".

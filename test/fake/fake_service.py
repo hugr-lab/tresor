@@ -19,10 +19,9 @@ a sqllogictest can only steer the fake through what it attaches:
     broken     logs in and lists its secrets, but every material fetch answers 503: a lookup that picks
                one of them fails closed, and nothing else is disturbed
     nolist     logs in, but its secrets list answers 503: nothing to attach
-    acting     the actor's service (specs/008): its own secrets, and delegation grants - the node sees
-               node_lake, shared_lake and stats (whose comment counts exchanges, grants, revocations and live
-               grants), a session's user through a grant sees only what a rule delegates to the node for them
-               (shared_lake too, with other material); writes under a grant are the actor policy's refusal
+    acting     the actor's service (specs/008, 009): the node's secrets (node_lake, shared_lake, and stats, whose
+               comment counts exchanges, grants, revocations and live grants) and delegation grants - under a
+               grant the node's own rights apply, for the grant's user; writes under a grant are refused
     shifty     like acting, but its discovery names another audience ("payroll-api") than the node's token has
 
 Every realm serves the same secrets (SECRETS below) to every identity. A descriptor's comment counts
@@ -131,7 +130,6 @@ SECRETS = {
 }
 FETCHED = {}  # secret name -> material fetches
 WRITES = {}  # secret name -> PUT / DELETE / PATCH the service received for it
-RULE_IDS = [0]  # delegation rule ids, never reused
 
 # --- acting for acl sessions (specs/008) ---------------------------------------------------------------
 # tokens an acl node received from its users: meant for the node (never accepted by the service), exchanged
@@ -146,8 +144,6 @@ NODE_TOKENS = {
 REFUSED_NODE_TOKEN = "node-token-dave"  # the IdP refuses to exchange it
 GRANTS = {}  # grant id -> {"actor": subject, "user": identity, "expires": epoch}
 STATS = {"exchanges": 0, "grants": 0, "revoked": 0}
-# what a rule delegates to client:etl, per user: the secret's name -> its key id
-DELEGATED = {"alice": {"alice_lake": "ALICE", "shared_lake": "ALICE-SHARED"}, "erin": {"alice_lake": "ERIN"}}
 
 
 def descriptor(name, sec):
@@ -159,7 +155,7 @@ def descriptor(name, sec):
         "owner": sec.get("owner", "role:admins"),
         "created_at": "2026-09-01T10:00:00Z", "updated_at": "2026-09-10T08:30:00Z",
         "version": str(sec.get("version", 7)),
-        "dynamic": sec.get("dynamic", False), "permissions": sec["permissions"], "delegation": None,
+        "dynamic": sec.get("dynamic", False), "permissions": sec["permissions"],
     }
 
 
@@ -353,14 +349,6 @@ class Handler(BaseHTTPRequestHandler):
                 with LOCK:
                     self.send(200, [descriptor(n, s) for n, s in SECRETS.items()])
                 return
-            if rest.endswith("/delegations"):
-                with LOCK:
-                    sec = SECRETS.get(urllib.parse.unquote(rest[len("/v1/secrets/"):-len("/delegations")]))
-                    if sec is None:
-                        self.problem(404, "not_found", "no secret")
-                        return
-                    self.send(200, list(sec.get("rules", {}).values()))
-                return
             if rest.endswith("/grants"):
                 sec = SECRETS.get(urllib.parse.unquote(rest[len("/v1/secrets/"):-len("/grants")]))
                 if sec is None:
@@ -430,30 +418,30 @@ class Handler(BaseHTTPRequestHandler):
                             "actor": actor, "expires_at": "2030-01-01T00:00:00Z",
                             "permissions": {"create": identity["create"]}})
             return
-        if actor:  # the user, through a grant: only what a rule delegates to this actor for them
-            names = DELEGATED.get(identity["subject"], {})
-            listing = {n: {"type": "s3", "scope": ["s3://shared" if n == "shared_lake" else "s3://acting"],
-                           "permissions": ["use"], "owner": "role:admins", "params": {"key_id": k},
-                           "redact_keys": []} for n, k in names.items()}
-        else:
-            with LOCK:
-                stats = "exchanges %d grants %d revoked %d live %d" % (
-                    STATS["exchanges"], STATS["grants"], STATS["revoked"], len(GRANTS))
-            listing = {
-                "node_lake": {"type": "s3", "scope": ["s3://acting"], "permissions": ["use"],
-                              "params": {"key_id": "NODE"}, "redact_keys": []},
-                "shared_lake": {"type": "s3", "scope": ["s3://shared"], "permissions": ["use"],
-                                "params": {"key_id": "NODE-SHARED"}, "redact_keys": []},
-                "stats": {"type": "http", "scope": ["https://stats.invalid"], "permissions": [], "comment": stats,
-                          "params": {}, "redact_keys": []},
-            }
+        # the node's own secrets - under a grant too (specs/009): a grant acts with the actor's rights, for its user
+        with LOCK:
+            stats = "exchanges %d grants %d revoked %d live %d" % (
+                STATS["exchanges"], STATS["grants"], STATS["revoked"], len(GRANTS))
+        listing = {
+            "node_lake": {"type": "s3", "scope": ["s3://acting"], "permissions": ["use"],
+                          "params": {"key_id": "NODE"}, "redact_keys": []},
+            "shared_lake": {"type": "s3", "scope": ["s3://shared"], "permissions": ["use"],
+                            "params": {"key_id": "NODE-SHARED"}, "redact_keys": []},
+            "stats": {"type": "http", "scope": ["https://stats.invalid"], "permissions": [], "comment": stats,
+                      "params": {}, "redact_keys": []},
+        }
         if rest == "/v1/secrets":
             self.send(200, [descriptor(n, sec) for n, sec in listing.items()])
             return
+        if rest.endswith("/grants"):  # managing grants is an admin's; nothing is managed through the node here
+            if actor:
+                self.problem(403, "actor_not_allowed", "this server may not grant for users")
+            else:
+                self.send(200, [])
+            return
         name = urllib.parse.unquote(rest[len("/v1/secrets/"):]) if rest.startswith("/v1/secrets/") else None
         if name not in listing or "use" not in listing[name]["permissions"]:
-            self.problem(403, "not_delegable", "no rule delegates this secret") if actor else \
-                self.problem(404, "not_found", "no secret")
+            self.problem(404, "not_found", "no secret")
             return
         sec = listing[name]
         self.send(200, dict(descriptor(name, sec), params=sec["params"], redact_keys=[], expires_at=None))
@@ -586,13 +574,6 @@ class Handler(BaseHTTPRequestHandler):
         parts = [urllib.parse.unquote(p) for p in rest[len("/v1/secrets/"):].split("/")]
         with LOCK:
             sec = SECRETS.get(parts[0])
-            if len(parts) == 3 and parts[1] == "delegations":
-                if sec is None or parts[2] not in sec.get("rules", {}):
-                    self.problem(404, "not_found", "no such rule")
-                    return
-                del sec["rules"][parts[2]]
-                self.send(204, b"", "text/plain")
-                return
             if sec is None or (len(parts) == 3 and parts[2] not in sec.get("grants", {})):
                 self.problem(404, "not_found", "no such secret or grant")
                 return
@@ -634,32 +615,6 @@ class Handler(BaseHTTPRequestHandler):
             self.acting_post_grant()
             return
         if rest.startswith("/v1/secrets/") and self.refuse_delegated_write(realm):
-            return
-        if rest.startswith("/v1/secrets/") and rest.endswith("/delegations"):
-            if not self.authorised():
-                return
-            name = urllib.parse.unquote(rest[len("/v1/secrets/"):-len("/delegations")])
-            body = self.body()
-            with LOCK:
-                sec = SECRETS.get(name)
-                if sec is None:
-                    self.problem(404, "not_found", "no secret")
-                    return
-                if body.get("mode") != "shared":
-                    self.problem(422, "invalid_secret", "only shared rules here")
-                    return
-                # as the reference server: actors are services, subjects are principals
-                if not body.get("actors") or not body.get("subjects") or \
-                        any(not a.startswith("client:") for a in body["actors"]) or \
-                        any(":" not in p for p in body["subjects"]):
-                    self.problem(422, "invalid_secret", "a rule names services as actors and principals as subjects")
-                    return
-                rules = sec.setdefault("rules", {})
-                RULE_IDS[0] += 1
-                rule_id = "d-%d" % RULE_IDS[0]
-                rules[rule_id] = dict(body, id=rule_id)
-                WRITES[name] = WRITES.get(name, 0) + 1
-                self.send(201, rules[rule_id])
             return
         form = self.form()
         if realm not in ISSUERS:
