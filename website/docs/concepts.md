@@ -76,19 +76,21 @@ When a user's acl session opens, tresor:
    `corp.whoami()` (which answers the user, with `actor` = the node);
 4. revokes the grant when the session ends.
 
-Under a session, a secret lookup on a path **the node holds a secret for** is served the node's own
-secret. That is what its catalogs (ducklake, iceberg, attached databases) read, and no user can
-redirect it. **Every other path** is served the user's delegated secret: whatever a rule lets this
-node use for them, such as an http API or another acl node through quack. If the grant is still
-pending, those lookups wait up to `SESSION_GRANT_WAIT` seconds (10 by default); the node's paths
-never wait. Without a usable grant, only the node's paths are served. Explicit calls
-(`corp.whoami()`, `corp.secrets()`, writes) are always the user's, through the grant, or fail with
-the reason. Keep one attachment per service on a node: across two attachments, DuckDB's own rule
-picks.
+The node looks up **only the secrets it owns**: what its admin created through it (in acl's native
+context). Nothing a user creates or grants to the node, and nothing the node's admin role can merely
+reach, enters its lookups, so users cannot plant a secret on the node's paths. Those secrets serve its
+catalogs (ducklake, iceberg, attached databases), in a user's session too. A **personal** secret of
+the node's (`personal: true`, e.g. a quack or http secret for another server) is never the node's to
+use. Under a session it is minted for the session's user through the grant; outside a session it is
+not served. **The node never gets a user's secrets.** Personal lookups wait up to
+`SESSION_GRANT_WAIT` seconds (10 by default) for a new session's grant; the node's own never wait.
+Explicit calls (`corp.whoami()`, `corp.secrets()`, writes) are always the user's, through the grant,
+or fail with the reason. Keep one attachment per service on a node: across two attachments, DuckDB's
+own rule picks.
 
-This applies only to statements duckdb-acl runs under a session, through a service-login attachment.
-A person's attachment serves nothing under a session. Everywhere else the ordinary rule holds: a
-person's attachment serves that person's secrets, and a node's own work is served the node's.
+A person's attachment serves nothing under an acl session. Outside acl sessions, every attachment
+but a node's follows the ordinary rule. A person's attachment serves that person's secrets, personal
+ones minted for them.
 
 | Option | Default | |
 | --- | --- | --- |

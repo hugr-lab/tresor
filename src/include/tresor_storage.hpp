@@ -28,6 +28,7 @@ struct Descriptor {
 	string owner;
 	vector<string> permissions;
 	bool dynamic = false;
+	bool personal = false; // material minted per user: only through a user's own login or a grant (specs/009)
 	string updated_at;
 	string version;
 
@@ -120,6 +121,13 @@ private:
 	static Caller NodeOf(const Caller &caller);
 	//! Under an acl session, does this attachment serve the node's own secrets: only a service login does.
 	static bool ServesNodeUnderSessions(const Caller &caller);
+	//! Does this attachment's lookup consider `d` for `who`'s statement: a node's own secrets only, personal
+	//! ones only for a session (specs/009); the ordinary rule for anyone else outside a session.
+	bool Serves(const Caller &who, const Descriptor &d);
+	//! The material of `d` for `who`: the attachment's own, or - a personal secret under a session - minted for
+	//! the session's user through its grant, in the session's view.
+	unique_ptr<const BaseSecret> MaterialFor(const Caller &who, View &view, const Descriptor &d,
+	                                         optional_ptr<CatalogTransaction> transaction);
 	bool Refused(View &view, const Descriptor &d);
 	//! The best match of one view (a caller's), with its material; no match when the caller has none.
 	SecretMatch MatchIn(const Caller &caller, const string &path, const string &type,

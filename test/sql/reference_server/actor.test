@@ -42,7 +42,7 @@ CREATE SECRET node (TYPE tresor, SCOPE 'tresor:elsewhere', FLOW 'client_credenti
 statement ok
 ATTACH 'tresor:{TRESOR_KC_HOST}' AS node (INSECURE_HTTP true, SECRET node, ACT_FOR_SESSIONS true);
 
-# as itself, the node holds nothing on the secret
+# as itself, the node holds nothing on the owner's secret
 query II
 SELECT list_contains(roles, 'client:acl-node'), actor IS NULL FROM node.whoami();
 ----
@@ -52,6 +52,11 @@ query I
 SELECT count(*) FROM which_secret('https://kc-actor.example/x', 'http') WHERE storage = 'node';
 ----
 0
+
+# the node's own secret, created through it (its admin, outside any session): what its catalogs read
+statement ok
+CREATE OR REPLACE PERSISTENT SECRET node_lake IN node (TYPE http, SCOPE 'https://node-lake.example',
+    BEARER_TOKEN 'n', EXTRA_HTTP_HEADERS MAP {'X-Owner': 'node'});
 
 # alice's session opens: her token is exchanged at Keycloak, the exchanged one traded for a grant
 query I
@@ -67,15 +72,27 @@ SELECT list_contains(roles, 'role:analysts'), list_contains(roles, 'client:acl-n
 ----
 true	false	client:acl-node
 
+# under the session the node's lookups are its own secrets (specs/009): the node's, not the owner's delegated one
 query II
-SELECT name, storage FROM which_secret('https://kc-actor.example/x', 'http') WHERE storage = 'node';
+SELECT name, storage FROM which_secret('https://node-lake.example/x', 'http');
 ----
-kc_actor_lake	node
+node_lake	node
 
 query I
-SELECT tresor_secret_param('kc_actor_lake', 'extra_http_headers');
+SELECT tresor_secret_param('node_lake', 'extra_http_headers');
 ----
-MAP(VARCHAR, VARCHAR) {X-Team=analysts}
+MAP(VARCHAR, VARCHAR) {X-Owner=node}
+
+query I
+SELECT count(*) FROM which_secret('https://kc-actor.example/x', 'http');
+----
+0
+
+# explicit calls are the user's, through the grant: she sees the secret delegated to the node for her
+query I
+SELECT count(*) FROM node.secrets() WHERE name = 'kc_actor_lake';
+----
+1
 
 # the session ends: the grant is revoked at the service
 statement ok
@@ -96,6 +113,9 @@ no delegation grant here
 
 statement ok
 SET acl_stub_session = '';
+
+statement ok
+DROP PERSISTENT SECRET node_lake FROM node;
 
 statement ok
 DETACH node;

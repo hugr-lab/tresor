@@ -53,6 +53,14 @@ public:
 	LoginFlow Flow() const {
 		return flow;
 	}
+	//! Who logged in, as the service owns things: `subject:<issuer>|<sub>` (from whoami at ATTACH). A node
+	//! acting for acl sessions uses only the secrets this principal owns (specs/009).
+	const string &Principal() const {
+		return principal;
+	}
+	void SetPrincipal(string principal_p) {
+		principal = std::move(principal_p);
+	}
 
 	//! A call to the service's API (`path` is relative to `api`, starting with '/'). A token about to
 	//! expire is renewed first; a 401 renews once and retries once (protocol, Errors). Throws when the
@@ -79,6 +87,7 @@ private:
 	oidc::TokenSet tokens;
 	int64_t issued_at = 0; // when `tokens` arrived: the renewal margin is at most half their life
 	string client_secret;  // client_credentials only: the re-mint needs it
+	string principal;      // set once, at ATTACH, before the session is shared
 	bool closed = false;
 	bool logged_out = false; // the IdP ended the login (invalid_grant): only a new ATTACH helps
 };

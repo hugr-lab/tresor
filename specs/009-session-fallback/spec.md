@@ -1,4 +1,4 @@
-# Spec 009: under an acl session, the node's secret on its own paths, the delegated one elsewhere
+# Spec 009: a node looks up only its own secrets — personal ones minted for the session's user
 
 - **Status**: implemented
 - **Date**: 2026-09-23
@@ -8,118 +8,133 @@
 ## Summary
 
 On a duckdb-acl node a user's statement needs two kinds of credentials:
-- **delegated ones,** for what the user reaches as themselves: an http API, another acl node through
-  quack. They go through the session's grant;
 - **the node's own,** for what the node serves: its ducklake (the object store and the metadata
-  database), its iceberg catalogs, its attached databases. The user never sees these.
+  database), its iceberg catalogs, its attached databases;
+- **the user's own token,** for what the user reaches as themselves: an http API, another acl node
+  through quack.
 
-Spec 008 served only the first kind under a session. A ducklake catalog of the node then failed for
-every user, or needed a grant on its bucket, which would hand users the raw files. This spec serves
-the node's own secret on the paths it covers, and the delegated one on every other path.
+Spec 008 served only the user's secrets under a session. A ducklake catalog of the node then failed
+for every user, or needed a grant on its bucket, which would hand users the raw files.
+
+With this spec, **a node looks up only the secrets it owns.** These are what its admin created
+through it (ACL NATIVE), and nothing a user creates or grants to the node. A **personal** secret
+among them (`personal: true`) is not the node's to use. Under a session it is minted for the
+session's user, through the session's grant. **The node never gets a user's secrets.**
 
 ## Where it applies
 
-Only to a statement that duckdb-acl runs under a session, looked up through an attachment with the
-node's **service login** (a `SECRET` of flow `client_credentials`). **In every other case the
-ordinary rule holds, unchanged:**
-- an attachment with a person's login serves that person's secrets;
-- a node's own work, outside any session, is served the node's.
+- **An attachment acting for acl sessions** (`ACT_FOR_SESSIONS`, a service login) is a node. Its
+  lookups consider only the secrets its login owns, both under a session and in its own work.
+- **Any other service login, under an acl session,** serves its own secrets the same way, without
+  personal ones.
+- **A person's attachment under an acl session** serves nothing.
+- **Outside an acl session** the ordinary rule holds for everyone but a node: a person's attachment
+  serves that person's secrets, personal ones minted for them; a service's serves its own.
 
 ## Design
 
-A secret lookup under an acl session (`LookupSecret`, `GetSecretByName`, `duckdb_secrets()`, and
-httpfs's refresh through the tresor provider):
-1. **The node's view,** with the node's own login. If one of its secrets covers the path (by name:
-   has the name), it serves. The paths of the node's catalogs are the node's: no secret of a user's
-   can redirect them. This step never waits for the session's grant.
-2. **Otherwise the session's view:** the secrets the service lists under the grant (what the user
-   may use, including what a rule delegates to this node for them). The best-scoped one whose
-   material comes back serves.
-   - A listed secret whose material the service refuses under the grant (`403 not_delegable`: the
-     user's own secret with no rule for this node) is skipped for the next candidate. It is
-     remembered, by name and version, for the session: neither the list nor later lookups pay for
-     it again.
-   - A session with no usable grant has no view, so it finds nothing here: `ACT_FOR_SESSIONS` off;
-     the grant pending past `SESSION_GRANT_WAIT`, failed, refused or expired; acl's state stamped
-     with another contract version.
-- **Only a service login serves the node's view under a session.** An attachment with a person's
-  login serves nothing under a session: neither their secrets nor anyone's.
-- **Explicit calls are unchanged.** `corp.whoami()`, `corp.secrets()`, writes and the management
-  functions under a session are the user's, through the grant, or refused. They never run as the
-  node, because they show or change the service's state.
+### What the node looks up
 
-`duckdb_secrets()` under a session lists the node's secrets, then the session's under other names:
-the order lookups by name take. Users therefore see the names and scopes of the node's secrets, but
-acl's gate keeps `duckdb_secrets()` from principals.
+- **Ownership.** At ATTACH, tresor learns its login's principal from `whoami`:
+  `subject:<issuer>|<subject>`, the protocol's ownership principal. A node's lookups
+  (`LookupSecret`, `GetSecretByName`, `duckdb_secrets()`, httpfs's refresh through the tresor
+  provider) consider only descriptors whose `owner` is that principal. A service whose whoami names
+  no issuer and subject cannot host a node: the ATTACH is refused.
+- **What owning excludes:**
+  - a user's secret granted to the node (`use` on `client:acl-node`);
+  - every secret an admin role reaches;
+  - a user's secret delegated to the node by a rule.
 
-**Across attachments.** The node-first order holds within one attachment. Two service-login
-attachments covering one path are decided by DuckDB's own rule (the longest scope, then the
-storages' tie-break: the first registered wins). Keep one attachment per service on a node.
+  None of them enters the node's lookups, so users cannot plant or redirect the node's paths. The
+  node's grants and admin role remain for management: in ACL NATIVE, its admin creates secrets,
+  grants them, and lists what is registered.
+- **Candidates.** Candidates are tried best-scoped first. One whose material the service refuses is
+  skipped for the next, and remembered by name and version.
 
-### What delegates a secret
+### Personal secrets
 
-The secret's owner decides, with a delegation rule (spec 007): "this node may act for these users".
-Nothing on the node chooses it, and there is no scope list to keep in step with the service. A
-delegated secret on a path the node also covers is not served: the node's wins there. To have a
-user's secret serve a path, do not give the node its own.
+- **Protocol.** A descriptor gains `personal: true` (`website/docs/protocol.md`, normative): the
+  material is minted per user. A service gives it only to a user's own login, or to an actor under a
+  delegation grant, minted for the grant's user.
+- **In a node's lookup:**
+  - **under a session:** its material is fetched with the session's grant (waited for up to
+    `SESSION_GRANT_WAIT`, and only here) and cached in the session's own view, never the node's.
+    With no usable grant, it is not served;
+  - **outside a session** it has no user, and is not served.
+- **Minting** these secrets in the reference server is spec 010.
+
+### Explicit calls
+
+`corp.whoami()`, `corp.secrets()`, writes and the management functions under a session are the
+user's, through the grant, or refused: unchanged. A user does not reach the node's management
+rights through it.
+
+**Across attachments.** Two attachments whose lookups cover one path are decided by DuckDB's own rule
+(the longest scope, then the storages' tie-break: the first registered wins). Keep one attachment per
+service on a node.
 
 ## Enforcement & security
 
-- **The boundary for the node's secrets is acl's gate, not the credentials.** Under a session, the
-  node's secrets serve any path they cover. A user who could name such a path directly would get
-  them: `read_parquet('s3://<lake bucket>/…')`, `COPY`, `ATTACH`, a replacement scan, or any
-  extension's function that fetches a URL. acl's function gate closes those (its `readers`
-  category is nobody's by default, and a function in no category is refused). The node's paths are
-  then reached only through the catalogs acl serves. Opening `readers` to users opens the node's
-  paths to them.
-- **Node first, so no user can redirect the node's paths.** Suppose a delegated secret won. A user
-  who may create and delegate secrets could put one on the node's lake bucket (`SCOPE
-  's3://<bucket>'`, an `ENDPOINT` of theirs) and delegate it to the node for themselves. The node's
-  ducklake writes, in that user's session, would then land on the user's endpoint while its
-  metadata commits them to the shared catalog. Scope length does not help, since a longer scope can
-  always be written. With the node first, a user's secret serves only paths the node has no
-  secret for.
-- **With no usable grant,** the node's paths are still the node's, and every other path finds
-  nothing. A delegated secret is never served with the node's identity.
-- **The delegated secret's material** still comes only through the grant, and the grant's rules on
-  the service (spec 007) still apply.
-- **A contract mismatch** (acl built from another `acl_connection` version) is served as a session
-  without a grant: the node's paths, nothing else, and explicit calls refused.
-- **A new session's first statements** do not wait for the grant on the node's paths. Only
-  delegated paths wait, up to `SESSION_GRANT_WAIT`.
+- **The node's paths cannot be redirected by users.** Suppose delegated or granted secrets were
+  looked up. A user could put a secret on the node's lake bucket, with an `ENDPOINT` of theirs, and
+  have it delegated or granted to the node. The node's ducklake writes would then land on the
+  user's endpoint while its metadata committed them to the shared catalog. Only what the node owns
+  is looked up.
+- **The node's secrets are guarded by acl's gate, not the credentials.** A user who could name the
+  node's paths directly would use the node's secrets for them: `read_parquet`, `COPY`, `ATTACH`, a
+  replacement scan, any extension's URL-fetching function. acl's `readers` category is nobody's by
+  default, and a function in no category is refused.
+- **A user's token only through the grant,** and only for personal secrets the node owns. It goes
+  where the secret's owner, the node's admin, said.
+- **A contract mismatch** (acl built from another `acl_connection` version) is served like a session
+  without a grant: the node's own non-personal secrets, and explicit calls refused.
+- **The node's paths do not wait** for a new session's grant. Only personal secrets do.
 
 ## Testing
 
-`test/sql/attach/actor.test`. The fake's `acting` realm gains `infra_lake` (the node's alone),
-delegated secrets on `s3://alice`, and `alice_own`, listed for alice but not delegated. Under a
-session:
-- the node's paths (`s3://infra`, and `s3://acting`, which a delegated secret cannot take) are served
-  the node's secrets, by path and by name;
-- `s3://alice` is served the delegated `alice_lake`;
-- a longer-scoped refused secret (`alice_own`) is skipped for the next candidate;
-- `duckdb_secrets()` lists the node's names, then the delegated ones;
-- a person's attachment serves nothing;
-- with no usable grant (closed, never opened, another issuer, IdP or service refusal, the grant
-  rejected, a contract mismatch), lookups are served the node's secrets only;
-- explicit calls stay refused with their reasons, and writes and management stay the user's.
+`test/sql/attach/actor.test`. In the fake's `acting` realm the node owns `node_lake`, `infra_lake`,
+`shared_lake` and the personal `user_lake`; mallory's `planted_lake` (longer-scoped on the node's
+path) is granted to it.
+- **Outside a session:**
+  - the node's own are served;
+  - `planted_lake` is not;
+  - the personal secret is not.
+- **Under a session:**
+  - the node's own paths are served;
+  - `planted_lake` never is;
+  - alice's own and delegated secrets are not;
+  - `user_lake` is minted for her (`USER-alice`);
+  - `duckdb_secrets()` shows only these.
+- **A person's attachment** serves nothing.
+- **With no usable grant:** the node's own, no personal secret.
+- **Explicit calls:** unchanged.
+
+**Keycloak** (`reference_server/actor.test`): the node creates `node_lake` in its own work, and under
+alice's session its lookup serves it. The owner's secret delegated to the node is not looked up,
+though alice's `node.secrets()` lists it. **Real duckdb-acl** (`test/acl/actor.sql`): the same
+through acl's virtual functions.
 
 ## The review's findings (applied)
 
-The first version served the delegated secret first. An independent review found:
-- **A user could redirect the node's paths** with a delegated secret on them (see above). The order
-  is now node first.
-- **A person's attachment served that person's secrets to every session.** Now only a service login
-  serves the node's view under a session.
-- **A refused delegated secret** hid shorter-scoped delegated ones, marked the list stale (two
-  requests per file of a scan), and made httpfs's refresh take another branch than the lookup. It
-  is now skipped for the next candidate, remembered by version, and the refresh follows the lookup's
-  order.
-- **The node's paths waited for the session's grant.** They no longer do.
-- **Docs.** The security page contradicted itself about the confused deputy, and the website left
-  out the per-attachment rule and what `duckdb_secrets()` shows. Both are fixed.
+Two designs came before this one: the delegated secret first, then the node's secret first. An
+independent review and the discussion that followed found:
+- **Delegated first let a user redirect the node's paths.**
+- **Node first still let users plant.** A secret a user granted to the node, or any secret the
+  node's admin role reached, joined the node's lookups.
+- **A person's attachment served that person's secrets to every session.**
+
+Hence: a node looks up only what it owns, personal secrets are minted through the grant, and a
+person's attachment serves nothing under a session. Smaller fixes:
+- a refused candidate is skipped and remembered;
+- the refresh follows the lookup;
+- the node's paths do not wait for a grant;
+- the docs are corrected.
 
 ## Follow-ups
 
-- spec 010: `mode: user` delegation in the reference server. The service exchanges the session's
-  token for a downstream audience, keeps the refresh token with the grant, and serves the
-  delegated secret (http `bearer_token`, quack `TOKEN`) as a dynamic one with a fresh access token.
+- **spec 010:** minting personal secrets in the reference server. A user's own login gets a token
+  exchanged on demand; a grant gets one exchanged at the grant with a refresh token, renewed from
+  it.
+- **spec 011:** secret planting for everyone. A service policy on who may grant `use` to whom (a
+  recommendation in the protocol, implemented in the reference server), and tresor looking up
+  only secrets of trusted owners.

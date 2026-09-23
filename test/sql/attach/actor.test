@@ -62,6 +62,18 @@ SELECT DISTINCT name FROM which_secret('s3://acting/x.parquet', 's3');
 ----
 node_lake
 
+# a node looks up only what it owns, in its own work too: not a user's secret granted to it
+query I
+SELECT DISTINCT name FROM which_secret('s3://acting/deep/x.parquet', 's3');
+----
+node_lake
+
+# and a personal secret has no user here
+query I
+SELECT count(*) FROM which_secret('s3://user/x.parquet', 's3');
+----
+0
+
 # --- a session: its user's secrets, through the grant -----------------------------------------------------
 
 # the observer is called (one: corp's), and returns at once - the exchange runs on tresor's own threads
@@ -78,6 +90,7 @@ SELECT subject, actor FROM corp.whoami();
 ----
 alice	client:etl
 
+# explicit calls are the user's, through the grant
 query I
 SELECT name FROM corp.secrets() ORDER BY name;
 ----
@@ -85,26 +98,7 @@ alice_lake
 alice_own
 shared_lake
 
-# a path the node does not cover: the session's delegated secret (specs/009)
-query II
-SELECT name, storage FROM which_secret('s3://alice/x.parquet', 's3');
-----
-alice_lake	corp
-
-# a longer-scoped secret of hers that is not delegated to this node (listed with use, its material refused):
-# skipped, and the next delegated candidate serves
-query II
-SELECT name, storage FROM which_secret('s3://alice/own/x.parquet', 's3');
-----
-alice_lake	corp
-
-query I
-SELECT tresor_secret_param('alice_lake', 'key_id');
-----
-VARCHAR ALICE
-
-# a path the node covers is the node's (specs/009) - what its catalogs read, never redirected by a secret of
-# a user's; users reach such paths only through what acl admits
+# the node's lookups (specs/009): only the secrets the node itself owns - what its catalogs read
 query II
 SELECT name, storage FROM which_secret('s3://acting/x.parquet', 's3');
 ----
@@ -120,23 +114,39 @@ SELECT tresor_secret_param('infra_lake', 'key_id');
 ----
 VARCHAR INFRA
 
-# by name too
 query I
 SELECT tresor_secret_param('node_lake', 'key_id');
 ----
 VARCHAR NODE
 
-# one name, both hold it: the node's, as for a path (and the same outside the session, below)
-query I
-SELECT DISTINCT tresor_secret_param('shared_lake', 'key_id');
+# a user's secret on the node's path - longer-scoped, granted to the node - never enters its lookups
+query II
+SELECT name, storage FROM which_secret('s3://acting/deep/x.parquet', 's3');
 ----
-VARCHAR NODE-SHARED
+node_lake	corp
 
-# what duckdb_secrets() shows under a session: the node's names, then the delegated ones under other names
+# nor do the user's own secrets, delegated or not: the node never gets a user's secrets
+query I
+SELECT count(*) FROM which_secret('s3://alice/x.parquet', 's3');
+----
+0
+
+# the node's personal secret: minted for the session's user, through the grant
+query II
+SELECT name, storage FROM which_secret('s3://user/x.parquet', 's3');
+----
+user_lake	corp
+
+query I
+SELECT tresor_secret_param('user_lake', 'key_id');
+----
+VARCHAR USER-alice
+
+# what duckdb_secrets() shows: what the node's lookups consider
 query I
 SELECT list(name ORDER BY name) FROM duckdb_secrets() WHERE storage = 'corp';
 ----
-[alice_lake, alice_own, infra_lake, node_lake, shared_lake, stats]
+[infra_lake, node_lake, shared_lake, stats, user_lake]
 
 # writes under a session go as the user through the grant: here the actor policy refuses them
 statement error
@@ -226,9 +236,9 @@ statement ok
 SET acl_stub_session = 's1';
 
 query I
-SELECT DISTINCT tresor_secret_param('alice_lake', 'key_id');
+SELECT DISTINCT tresor_secret_param('user_lake', 'key_id');
 ----
-VARCHAR ALICE
+VARCHAR USER-alice
 
 statement ok
 SET acl_stub_session = '';

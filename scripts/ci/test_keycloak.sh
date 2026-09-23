@@ -125,7 +125,7 @@ if [ -n "${TRESOR_ACL_EXTENSION:-}" ]; then
 		'^check:node-lake 0$'
 		'^check:opened true$'
 		'^check:session [0-9a-f-]{36}\|client:acl-node$'
-		'^check:session-lake acl_lake$'
+		'^check:session-lake node_lake$'
 		'^check:closed true$'
 	)
 	acl_ok=1

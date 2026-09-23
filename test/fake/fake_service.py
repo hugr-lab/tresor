@@ -160,6 +160,7 @@ def descriptor(name, sec):
         "created_at": "2026-09-01T10:00:00Z", "updated_at": "2026-09-10T08:30:00Z",
         "version": str(sec.get("version", 7)),
         "dynamic": sec.get("dynamic", False), "permissions": sec["permissions"], "delegation": None,
+        "personal": sec.get("personal", False),
     }
 
 
@@ -430,6 +431,14 @@ class Handler(BaseHTTPRequestHandler):
                             "actor": actor, "expires_at": "2030-01-01T00:00:00Z",
                             "permissions": {"create": identity["create"]}})
             return
+        node = "subject:%s/idp|client:etl" % self.base()  # the node's login, as the service owns things
+        if actor and rest == "/v1/secrets/user_lake":
+            # the node's personal secret, minted for the grant's user (specs/009, 010)
+            sec = {"type": "s3", "scope": ["s3://user"], "permissions": ["use"], "owner": node, "personal": True,
+                   "dynamic": True, "params": {"key_id": "USER-" + identity["subject"]}, "redact_keys": []}
+            self.send(200, dict(descriptor("user_lake", sec), params=sec["params"], redact_keys=[],
+                                expires_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 600))))
+            return
         if actor:  # the user, through a grant: only what a rule delegates to this actor for them
             names = DELEGATED.get(identity["subject"], {})
             listing = {n: {"type": "s3", "scope": ["s3://shared" if n == "shared_lake" else "s3://alice"],
@@ -445,20 +454,31 @@ class Handler(BaseHTTPRequestHandler):
                 stats = "exchanges %d grants %d revoked %d live %d" % (
                     STATS["exchanges"], STATS["grants"], STATS["revoked"], len(GRANTS))
             listing = {
-                "node_lake": {"type": "s3", "scope": ["s3://acting"], "permissions": ["use"],
+                "node_lake": {"type": "s3", "scope": ["s3://acting"], "permissions": ["use"], "owner": node,
                               "params": {"key_id": "NODE"}, "redact_keys": []},
-                "shared_lake": {"type": "s3", "scope": ["s3://shared"], "permissions": ["use"],
+                # a user's secret on the node's path, longer-scoped, granted to the node: never in its lookups
+                "planted_lake": {"type": "s3", "scope": ["s3://acting/deep"], "permissions": ["use"],
+                                 "owner": "subject:%s/idp|mallory" % self.base(),
+                                 "params": {"key_id": "PLANTED"}, "redact_keys": []},
+                # the node's personal secret: minted per user, only through a grant
+                "user_lake": {"type": "s3", "scope": ["s3://user"], "permissions": ["use"], "owner": node,
+                              "personal": True, "dynamic": True, "params": {}, "redact_keys": []},
+                "shared_lake": {"type": "s3", "scope": ["s3://shared"], "permissions": ["use"], "owner": node,
                                 "params": {"key_id": "NODE-SHARED"}, "redact_keys": []},
                 # the node's own, delegated to nobody: what its catalogs read, under a session too (specs/009)
-                "infra_lake": {"type": "s3", "scope": ["s3://infra"], "permissions": ["use"],
+                "infra_lake": {"type": "s3", "scope": ["s3://infra"], "permissions": ["use"], "owner": node,
                                "params": {"key_id": "INFRA"}, "redact_keys": []},
                 "stats": {"type": "http", "scope": ["https://stats.invalid"], "permissions": [], "comment": stats,
+                          "owner": node,
                           "params": {}, "redact_keys": []},
             }
         if rest == "/v1/secrets":
             self.send(200, [descriptor(n, sec) for n, sec in listing.items()])
             return
         name = urllib.parse.unquote(rest[len("/v1/secrets/"):]) if rest.startswith("/v1/secrets/") else None
+        if not actor and name in listing and listing[name].get("personal"):
+            self.problem(403, "no_verb", "a personal secret is minted for a user: through a grant")
+            return
         if name not in listing or "use" not in listing[name]["permissions"] or listing[name].get("not_delegable"):
             self.problem(403, "not_delegable", "no rule delegates this secret") if actor else \
                 self.problem(404, "not_found", "no secret")

@@ -26,14 +26,14 @@ things beyond roles:
 
 A server acting for users **never adds its own authority** to a user's request. Every call it makes
 for a user's resource carries the user's delegation grant; the service checks the user's rights, the
-delegation rule, and that this server may act for users at all. A delegated secret is never resolved
-with the server's own identity. On a duckdb-acl node, tresor holds to this per statement that acl
-publishes as running under a user's session:
-- **The node's own paths.** A path the node holds a secret for is served that secret: it is what the
-  node's catalogs read (ducklake, iceberg, attached databases). No user's secret can take such a path
-  over, so a user cannot redirect the node's lake writes to an endpoint of their own.
-- **Every other path** is served the user's **delegated** secret through the session's grant, or
-  nothing when there is no usable grant.
+delegation rule, and that this server may act for users at all. On a duckdb-acl node, tresor holds to
+this per statement:
+- **A node looks up only the secrets it owns** (created through it by its admin). A user's secret
+  never enters its lookups, whether the user created it, granted it to the node, or delegated it by
+  a rule, and neither does whatever the node's admin role can reach. So no user can plant a secret
+  on the node's paths or redirect its lake writes to an endpoint of their own.
+- **A personal secret of the node's** is minted for the session's user through the session's grant,
+  and never used as the node's own.
 - **Explicit calls** (whoami, listings, writes, management) are never the node's under a session.
 - **A person's attachment** serves nothing under a session.
 
@@ -42,8 +42,8 @@ who could name the lake's bucket directly (`read_parquet`, `COPY`, `ATTACH`, a r
 extension's URL-fetching function) would read it with the node's key. Keep acl's `readers` category
 closed to users; it is closed by default. Under a session, `duckdb_secrets()` would show the node's
 secret names and scopes; acl's gate keeps it from principals. If acl is built from another contract
-version, tresor cannot tell whose statement it is: it serves the node's paths only and refuses
-explicit calls.
+version, tresor cannot tell whose statement it is: it serves the node's own non-personal secrets
+only and refuses explicit calls.
 
 On a server, lock the configuration so users cannot widen what the process reveals:
 `allow_unredacted_secrets = false`, `lock_configuration = true`, and no `CREATE SECRET` for

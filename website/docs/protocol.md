@@ -159,6 +159,14 @@ type>", "value": <JSON>}`; a bare string is shorthand for `VARCHAR`. Nested valu
 `"dynamic": true` means the service generates `params` on every `GET` and returns an `expires_at`.
 A client caches the material until shortly before that time.
 
+`"personal": true` means the material is **minted for a user**, for example a token of theirs for a
+downstream server. A service gives it:
+- to a user's own login, minted for them;
+- to an actor under a delegation grant, minted for the grant's user.
+
+To any other caller (a service's own identity) it answers `403`. A personal secret is dynamic. A
+client asks for it only on a user's behalf, and never uses one minted for a user for anyone else.
+
 ### Conditional writes
 
 `PUT` carries the secret as `{type, provider, scope, params, redact_keys}` (and optionally

@@ -658,6 +658,20 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 		throw InvalidInputException("tresor: %s refused the login: %s", request.host,
 		                            DescribeProblem(whoami.status, whoami.body));
 	}
+	{
+		JsonDoc doc(whoami.body);
+		auto root = doc.Root();
+		auto issuer = Str(root, "issuer"), subject = Str(root, "subject");
+		if (!issuer.empty() && !subject.empty()) {
+			session->SetPrincipal("subject:" + issuer + "|" + subject); // the protocol's ownership principal
+		}
+	}
+	if (request.act_for_sessions && session->Principal().empty()) {
+		session->Close();
+		throw InvalidInputException("tresor: %s's whoami names no issuer and subject - a node acting for sessions "
+		                            "uses only the secrets it owns, and cannot tell which",
+		                            request.host);
+	}
 	return session;
 }
 

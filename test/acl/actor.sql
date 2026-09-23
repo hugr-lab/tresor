@@ -27,13 +27,16 @@ CREATE SECRET node (TYPE tresor, SCOPE 'tresor:elsewhere', FLOW 'client_credenti
     CLIENT_SECRET 'node-secret', ISSUER '@ISSUER@');
 ATTACH 'tresor:@HOST@' AS node (INSECURE_HTTP true, SECRET node, ACT_FOR_SESSIONS true);
 
+-- the node's own secret, created through it (outside any session): what its lookups use (specs/009)
+CREATE OR REPLACE PERSISTENT SECRET node_lake IN node (TYPE http, SCOPE 'https://node-lake.example', BEARER_TOKEN 'n');
+
 -- what a session's user may call: acl's virtual functions over tresor's
 ACL ADMIN CREATE ROLE analysts;
 ACL ADMIN CREATE VIRTUAL CATALOG c;
 ACL ADMIN CREATE VIRTUAL TABLE FUNCTION c.me RETURNS TABLE (subject VARCHAR, actor VARCHAR)
     AS SELECT subject, actor FROM node.main.whoami();
 ACL ADMIN CREATE VIRTUAL TABLE FUNCTION c.lake RETURNS TABLE (name VARCHAR)
-    AS SELECT name FROM which_secret('https://acl-lake.example/x', 'http') WHERE storage = 'node';
+    AS SELECT name FROM which_secret('https://node-lake.example/x', 'http') WHERE storage = 'node';
 ACL ADMIN GRANT CATALOG c TO ROLE analysts MAIN;
 
 -- outside any session: the node, which holds nothing on the secret
@@ -50,6 +53,7 @@ SELECT acl_session_sql(handle, 'SELECT ''check:session-lake '' || name FROM c.la
 .read @WORK@/under_session.sql
 SELECT 'check:closed ' || acl_session_close(handle) FROM h;
 
+DROP PERSISTENT SECRET node_lake FROM node;
 DETACH node;
 ATTACH 'tresor:@HOST@' AS owner (INSECURE_HTTP true, SECRET etl);
 DROP PERSISTENT SECRET acl_lake FROM owner;

@@ -398,6 +398,8 @@ vector<Descriptor> FetchDescriptors(const Caller &caller) {
 		d.permissions = StrList(yyjson_obj_get(item, "permissions"));
 		auto dynamic = yyjson_obj_get(item, "dynamic");
 		d.dynamic = dynamic && yyjson_is_true(dynamic);
+		auto personal = yyjson_obj_get(item, "personal");
+		d.personal = personal && yyjson_is_true(personal);
 		d.updated_at = Str(item, "updated_at");
 		d.version = Str(item, "version");
 		if (d.provider.empty()) {
@@ -735,8 +737,9 @@ Caller TresorSecretStorage::NodeOf(const Caller &caller) {
 
 SecretMatch TresorSecretStorage::MatchIn(const Caller &caller, const string &path, const string &type,
                                          optional_ptr<CatalogTransaction> transaction) {
+	// `caller` says whose statement it is; the list is always the attachment's own login's
 	shared_ptr<View> view;
-	auto list = Snapshot(caller, view);
+	auto list = Snapshot(NodeOf(caller), view);
 	if (!view) {
 		return SecretMatch();
 	}
@@ -744,7 +747,8 @@ SecretMatch TresorSecretStorage::MatchIn(const Caller &caller, const string &pat
 	vector<std::pair<SecretMatch, idx_t>> candidates;
 	for (idx_t i = 0; i < list.size(); i++) {
 		auto &d = list[i];
-		if (!Lookupable(d) || !StringUtil::CIEquals(d.type, type) || !d.May("use") || Refused(*view, d)) {
+		if (!Lookupable(d) || !StringUtil::CIEquals(d.type, type) || !d.May("use") || Refused(*view, d) ||
+		    !Serves(caller, d)) {
 			continue; // a secret the caller may not use never matches: its material would be refused
 		}
 		auto entry =
@@ -759,9 +763,9 @@ SecretMatch TresorSecretStorage::MatchIn(const Caller &caller, const string &pat
 	                 [](const std::pair<SecretMatch, idx_t> &a, const std::pair<SecretMatch, idx_t> &b) {
 		                 return a.first.score > b.first.score;
 	                 });
-	// the best whose material comes back: one the service refuses (not delegated to this node) is skipped
+	// the best whose material comes back: one the service refuses is skipped for the next
 	for (auto &candidate : candidates) {
-		auto material = MaterialOf(caller, *view, list[candidate.second], transaction);
+		auto material = MaterialFor(caller, *view, list[candidate.second], transaction);
 		if (material) {
 			auto entry = EntryOf(std::move(material));
 			return SecretMatch(entry, candidate.first.score);
@@ -779,92 +783,95 @@ bool TresorSecretStorage::Refused(View &view, const Descriptor &d) {
 unique_ptr<SecretEntry> TresorSecretStorage::ByNameIn(const Caller &caller, const string &name,
                                                       optional_ptr<CatalogTransaction> transaction) {
 	shared_ptr<View> view;
-	auto list = Snapshot(caller, view);
+	auto list = Snapshot(NodeOf(caller), view); // the attachment's own list, judged for `caller`
 	if (!view) {
 		return nullptr;
 	}
 	for (auto &d : list) {
 		// a secret the caller may see but not use is not one it can have by name: not found here, so a
 		// local secret of that name is not shadowed by an error
-		if (StringUtil::CIEquals(d.name, name) && Lookupable(d) && d.May("use") && !Refused(*view, d)) {
-			auto material = MaterialOf(caller, *view, d, transaction);
+		if (StringUtil::CIEquals(d.name, name) && Lookupable(d) && d.May("use") && !Refused(*view, d) &&
+		    Serves(caller, d)) {
+			auto material = MaterialFor(caller, *view, d, transaction);
 			return material ? make_uniq<SecretEntry>(EntryOf(std::move(material))) : nullptr;
 		}
 	}
 	return nullptr;
 }
 
-// Lookups under a duckdb-acl session (specs/009), through an attachment with the node's service login: the
-// node's own secret wherever it covers the path - the paths of its catalogs are the node's, and no user may
-// redirect them with a secret of theirs; the session's delegated secret (through the grant) on every other
-// path. An attachment with a person's login serves nothing under a session. Users reach the node's paths
-// only through what acl admits - its gate is the boundary, not the credentials (security.md). Outside a
-// session: the attachment's own login, as ever.
+// A node's lookups (specs/009). An attachment acting for duckdb-acl sessions is a node: it looks up only the
+// secrets its own login OWNS - what its admin created through it (ACL NATIVE). Nothing a user creates, nor
+// grants to the node, nor an admin role's reach over every secret, enters its lookups. A `personal` one of
+// them is minted per user: only under a session, through the session's grant; the rest are the node's own
+// material. Any other service login, under a session, serves its own secrets likewise (no personal ones);
+// a person's login serves nothing under a session. Outside a session everything else is as ever.
 bool TresorSecretStorage::ServesNodeUnderSessions(const Caller &caller) {
 	return caller.session && caller.session->Flow() == LoginFlow::CLIENT_CREDENTIALS;
 }
 
+bool TresorSecretStorage::Serves(const Caller &who, const Descriptor &d) {
+	bool node_mode;
+	{
+		lock_guard<mutex> guard(lock);
+		node_mode = actor != nullptr;
+	}
+	if (who.IsNode() && !node_mode) {
+		return !d.personal || who.session->Flow() != LoginFlow::CLIENT_CREDENTIALS; // the ordinary rule
+	}
+	// a node, or any service login under a session: its own secrets only; personal ones only for a session
+	if (d.owner.empty() || d.owner != who.session->Principal()) {
+		return false;
+	}
+	return !d.personal || (!who.IsNode() && node_mode);
+}
+
+unique_ptr<const BaseSecret> TresorSecretStorage::MaterialFor(const Caller &who, View &view, const Descriptor &d,
+                                                              optional_ptr<CatalogTransaction> transaction) {
+	if (!d.personal || who.IsNode()) {
+		return MaterialOf(NodeOf(who), view, d, transaction);
+	}
+	// minted for the session's user, through its grant (waited for here, only for a personal secret); cached in
+	// the session's own view, never the node's
+	auto caller = CallerFor(transaction ? transaction->context : nullptr);
+	if (!caller.Usable()) {
+		return nullptr;
+	}
+	auto session_view = ViewOf(caller);
+	return session_view ? MaterialOf(caller, *session_view, d, transaction) : nullptr;
+}
+
 SecretMatch TresorSecretStorage::LookupSecret(const string &path, const string &type,
                                               optional_ptr<CatalogTransaction> transaction) {
-	auto context = transaction ? transaction->context : nullptr;
-	auto who = CallerFor(context, false); // whose statement, without waiting for a grant
-	if (who.IsNode()) {
-		return MatchIn(who, path, type, transaction);
+	auto who = CallerFor(transaction ? transaction->context : nullptr, false); // whose statement, no grant wait
+	if (!who.session || (!who.IsNode() && !ServesNodeUnderSessions(who))) {
+		return SecretMatch();
 	}
-	if (ServesNodeUnderSessions(who)) {
-		auto node_match = MatchIn(NodeOf(who), path, type, transaction);
-		if (node_match.HasMatch()) {
-			return node_match; // the node's path: never waits for, nor depends on, the session's grant
-		}
-	}
-	auto caller = CallerFor(context);
-	return caller.Usable() ? MatchIn(caller, path, type, transaction) : SecretMatch();
+	return MatchIn(who, path, type, transaction);
 }
 
 unique_ptr<SecretEntry> TresorSecretStorage::GetSecretByName(const string &name,
                                                              optional_ptr<CatalogTransaction> transaction) {
-	auto context = transaction ? transaction->context : nullptr;
-	auto who = CallerFor(context, false);
-	if (who.IsNode()) {
-		return ByNameIn(who, name, transaction);
+	auto who = CallerFor(transaction ? transaction->context : nullptr, false);
+	if (!who.session || (!who.IsNode() && !ServesNodeUnderSessions(who))) {
+		return nullptr;
 	}
-	if (ServesNodeUnderSessions(who)) {
-		auto node_entry = ByNameIn(NodeOf(who), name, transaction);
-		if (node_entry) {
-			return node_entry;
-		}
-	}
-	auto caller = CallerFor(context);
-	return caller.Usable() ? ByNameIn(caller, name, transaction) : nullptr;
+	return ByNameIn(who, name, transaction);
 }
 
 vector<SecretEntry> TresorSecretStorage::AllSecrets(optional_ptr<CatalogTransaction> transaction) {
-	auto context = transaction ? transaction->context : nullptr;
-	auto who = CallerFor(context, false);
+	auto who = CallerFor(transaction ? transaction->context : nullptr, false);
 	vector<SecretEntry> out;
-	unordered_set<string> seen;
-	// descriptors only: listing never fetches material; never throws (duckdb_secrets() must work while a
-	// service is down). Under a session: the node's (if this attachment serves them), then the delegated ones
-	// under other names - the order lookups by name take
-	auto add = [&](const Caller &from) {
-		shared_ptr<View> view;
-		for (auto &d : Snapshot(from, view)) {
-			if (Lookupable(d) && seen.insert(StringUtil::Lower(d.name)).second) {
-				out.push_back(EntryOf(make_uniq<KeyValueSecret>(d.scope, Identifier(d.type), Identifier(ProviderOf(d)),
-				                                                Identifier(d.name))));
-			}
-		}
-	};
-	if (who.IsNode()) {
-		add(who);
+	if (!who.session || (!who.IsNode() && !ServesNodeUnderSessions(who))) {
 		return out;
 	}
-	if (ServesNodeUnderSessions(who)) {
-		add(NodeOf(who));
-	}
-	auto caller = CallerFor(context);
-	if (caller.Usable()) {
-		add(caller);
+	shared_ptr<View> view;
+	// descriptors only: listing never fetches material; never throws (duckdb_secrets() must work while a
+	// service is down). What lookups would consider, and nothing else
+	for (auto &d : Snapshot(NodeOf(who), view)) {
+		if (Lookupable(d) && Serves(who, d)) {
+			out.push_back(EntryOf(
+			    make_uniq<KeyValueSecret>(d.scope, Identifier(d.type), Identifier(ProviderOf(d)), Identifier(d.name))));
+		}
 	}
 	return out;
 }
@@ -892,23 +899,15 @@ void TresorSecretStorage::Invalidate(const string &name) {
 
 unique_ptr<const BaseSecret> TresorSecretStorage::RefreshMaterial(const string &name,
                                                                   optional_ptr<CatalogTransaction> transaction) {
-	// the secret the lookup served, in the lookup's order (specs/009): the node's if it has the name, else
-	// the session's delegated one
-	auto context = transaction ? transaction->context : nullptr;
-	auto caller = CallerFor(context, false);
-	if (!caller.IsNode()) {
-		bool node_has = false;
-		if (ServesNodeUnderSessions(caller)) {
-			shared_ptr<View> node_view;
-			for (auto &d : Snapshot(NodeOf(caller), node_view)) {
-				node_has = node_has || (StringUtil::CIEquals(d.name, name) && Lookupable(d) && d.May("use"));
-			}
-		}
-		caller = node_has ? NodeOf(caller) : CallerFor(context);
+	// the secret the lookup served, judged as the lookup judges it (specs/009)
+	auto who = CallerFor(transaction ? transaction->context : nullptr, false);
+	if (!who.session) {
+		throw InvalidInputException("tresor: %s is detached", storage_name);
 	}
 	shared_ptr<View> view;
-	for (auto &d : Snapshot(caller, view)) {
-		if (!StringUtil::CIEquals(d.name, name) || !Lookupable(d) || !d.May("use")) {
+	auto served = who.IsNode() || ServesNodeUnderSessions(who);
+	for (auto &d : served ? Snapshot(NodeOf(who), view) : vector<Descriptor>()) {
+		if (!StringUtil::CIEquals(d.name, name) || !Lookupable(d) || !d.May("use") || !Serves(who, d)) {
 			continue;
 		}
 		// only a dynamic secret is refreshed: a static one's credential is fixed in the service, and
@@ -918,36 +917,37 @@ unique_ptr<const BaseSecret> TresorSecretStorage::RefreshMaterial(const string &
 			                            "nothing to refresh",
 			                            d.name, storage_name, d.type);
 		}
+		// the view the material lives in: the node's, or the session's for a personal secret
+		auto personal = d.personal && !who.IsNode();
+		auto caller = personal ? CallerFor(transaction ? transaction->context : nullptr) : NodeOf(who);
+		auto material_view = personal ? (caller.Usable() ? ViewOf(caller) : nullptr) : view;
+		if (!material_view) {
+			break;
+		}
 		{
 			// fresh, not cached: the credential in hand was just refused. A mint made by another refresh a
 			// moment ago is the answer to this one too (requests of one scan may refresh in parallel); a
 			// mint made by an ordinary lookup is not - it may be the very credential that was refused
 			lock_guard<mutex> guard(lock);
-			auto cached = view->materials.find(d.name);
+			auto cached = material_view->materials.find(d.name);
 			auto now = NowSeconds();
-			if (cached != view->materials.end() && cached->second.version == d.version &&
+			if (cached != material_view->materials.end() && cached->second.version == d.version &&
 			    cached->second.refreshed_at != 0 && now - cached->second.refreshed_at < FRESH_MINT_SECONDS &&
 			    cached->second.valid_until > now) {
 				return cached->second.secret->Clone();
 			}
-			view->materials.erase(d.name);
+			material_view->materials.erase(d.name);
 		}
-		auto material = MaterialOf(caller, *view, d, transaction);
+		auto material = MaterialOf(caller, *material_view, d, transaction);
 		if (!material) {
 			break;
 		}
 		lock_guard<mutex> guard(lock);
-		auto cached = view->materials.find(d.name);
-		if (cached != view->materials.end()) {
+		auto cached = material_view->materials.find(d.name);
+		if (cached != material_view->materials.end()) {
 			cached->second.refreshed_at = NowSeconds();
 		}
 		return material;
-	}
-	if (!caller.session) {
-		throw InvalidInputException("tresor: %s is detached", storage_name);
-	}
-	if (!caller.refused.empty()) {
-		throw PermissionException("tresor: %s", caller.refused);
 	}
 	throw InvalidInputException("tresor: %s has no secret %s this caller may use", storage_name, name);
 }
