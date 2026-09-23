@@ -28,6 +28,11 @@ void TresorCatalog::Initialize(bool load_builtin) {
 	CreateTableFunctionInfo secrets(SecretsFunction(session, storage));
 	secrets.internal = false;
 	CreateTableFunction(transaction, secrets);
+	for (auto &function : ManagementFunctions(session, storage)) {
+		CreateTableFunctionInfo manage(std::move(function));
+		manage.internal = false;
+		CreateTableFunction(transaction, manage);
+	}
 	// the secrets join the lookup only now, with the catalog that serves them: an ATTACH failing before
 	// this point leaves nothing behind (specs/004)
 	storage.Activate(session, std::move(initial));

@@ -128,7 +128,7 @@ jobs:
         run: |
           set -o pipefail   # a failing script must fail the step, whatever the summary line says
           scripts/ci/test_attach.sh 2>&1 | tee attach.log
-          scripts/ci/assert_ran.sh attach.log 4 150 'require-env TRESOR_TEST_PORT'
+          scripts/ci/assert_ran.sh attach.log 5 200 'require-env TRESOR_TEST_PORT'
 
       # the reference server next to a real Keycloak (specs/003): the conformance suite, a real
       # browser login (PKCE, Keycloak's redirect checks) and a real client-credentials grant
@@ -140,7 +140,7 @@ jobs:
         run: |
           set -o pipefail   # a failing script must fail the step, whatever the summary line says
           scripts/ci/test_keycloak.sh 2>&1 | tee keycloak.log
-          scripts/ci/assert_ran.sh keycloak.log 3 25 'require-env TRESOR_CONFORMANCE'
+          scripts/ci/assert_ran.sh keycloak.log 4 45 'require-env TRESOR_CONFORMANCE'
 
       - name: Upload extension artifact
         if: github.event_name != 'pull_request'
@@ -208,7 +208,7 @@ jobs:
         run: |
           set -o pipefail   # a failing script must fail the step, whatever the summary line says
           scripts/ci/test_attach.sh 2>&1 | tee attach.log
-          scripts/ci/assert_ran.sh attach.log 4 150 'require-env TRESOR_TEST_PORT'
+          scripts/ci/assert_ran.sh attach.log 5 200 'require-env TRESOR_TEST_PORT'
 
       - name: Upload extension artifact
         uses: actions/upload-artifact@v7

@@ -1,0 +1,176 @@
+# name: test/sql/attach/writes.test
+# description: CREATE / DROP PERSISTENT SECRET ... IN corp, annotations and grants (specs/005)
+# group: [attach]
+
+require-env TRESOR_TEST_PORT
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+CREATE SECRET etl_login (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'client_credentials',
+    CLIENT_ID 'etl', CLIENT_SECRET 's3cr3t', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+
+# the test shell registers no secret type but tresor's own without an extension: a tresor-typed secret
+# stands in for any key-value secret
+statement ok
+CREATE PERSISTENT SECRET Written_One IN corp (TYPE tresor, SCOPE 'tresor:written.invalid', FLOW 'token', TOKEN 'tok-1');
+
+# stored under its canonical (lower-case) name, listed with a version
+query IIII
+SELECT name, type, scope, version FROM corp.secrets() WHERE name = 'written_one';
+----
+written_one	tresor	['tresor:written.invalid']	1
+
+# CREATE of an existing name: If-None-Match: * -> 412 -> duckdb's own message
+statement error
+CREATE PERSISTENT SECRET written_one IN corp (TYPE tresor, SCOPE 'tresor:written.invalid', FLOW 'token', TOKEN 'x');
+----
+already exists in secret storage 'corp'
+
+# IF NOT EXISTS: silently nothing (the version does not move)
+statement ok
+CREATE PERSISTENT SECRET IF NOT EXISTS written_one IN corp (TYPE tresor, SCOPE 'tresor:written.invalid', FLOW 'token', TOKEN 'x');
+
+query I
+SELECT version FROM corp.secrets() WHERE name = 'written_one';
+----
+1
+
+# OR REPLACE: replaced
+statement ok
+CREATE OR REPLACE PERSISTENT SECRET written_one IN corp (TYPE tresor, SCOPE 'tresor:written2.invalid', FLOW 'token', TOKEN 'tok-2');
+
+query II
+SELECT scope, version FROM corp.secrets() WHERE name = 'written_one';
+----
+['tresor:written2.invalid']	2
+
+# the service is the default storage for persistent secrets once named so
+statement ok
+SET default_secret_storage = 'corp';
+
+statement ok
+CREATE PERSISTENT SECRET by_default (TYPE tresor, SCOPE 'tresor:default.invalid', FLOW 'token', TOKEN 't');
+
+query I
+SELECT count(*) FROM corp.secrets() WHERE name = 'by_default';
+----
+1
+
+statement ok
+RESET default_secret_storage;
+
+# a temporary secret has no place in a persistent storage (duckdb's own rule)
+statement error
+CREATE TEMPORARY SECRET temp_one IN corp (TYPE tresor, SCOPE 'tresor:t.invalid', FLOW 'token', TOKEN 't');
+----
+Cannot create temporary secrets in a persistent secret storage
+
+# the service decides: a name the caller may not create
+statement error
+CREATE PERSISTENT SECRET forbidden_x IN corp (TYPE tresor, SCOPE 'tresor:f.invalid', FLOW 'token', TOKEN 't');
+----
+you may not create the secret forbidden_x in corp
+
+# annotate
+query III
+CALL corp.annotate_secret('written_one', 'a secret written through SQL');
+----
+written_one	a secret written through SQL	3
+
+query I
+SELECT comment FROM corp.secrets() WHERE name = 'written_one';
+----
+a secret written through SQL
+
+# grants: none, one, the same principal replaced under its id, revoked
+query I
+SELECT count(*) FROM corp.grants('written_one');
+----
+0
+
+query II
+SELECT principal, verbs FROM corp.grant_secret('written_one', 'role:sales', ['use']);
+----
+role:sales	[use]
+
+query II
+SELECT principal, verbs FROM corp.grant_secret('written_one', 'role:sales', ['use', 'annotate']);
+----
+role:sales	[use, annotate]
+
+query III
+SELECT count(*), min(principal), min(id) LIKE 'g-%' FROM corp.grants('written_one');
+----
+1	role:sales	true
+
+query II
+SELECT principal, verbs FROM corp.revoke_secret('written_one', 'role:sales');
+----
+role:sales	[use, annotate]
+
+statement error
+CALL corp.revoke_secret('written_one', 'role:sales');
+----
+role:sales holds no grant on the secret written_one
+
+statement error
+CALL corp.grant_secret('written_one', 'role:sales', []);
+----
+needs at least one verb
+
+statement error
+CALL corp.annotate_secret('no_such_secret', 'x');
+----
+no secret no_such_secret in 127.0.0.1:{TRESOR_TEST_PORT}
+
+# DROP ... FROM corp, IF EXISTS, a missing secret
+statement ok
+DROP PERSISTENT SECRET written_one FROM corp;
+
+query I
+SELECT count(*) FROM corp.secrets() WHERE name = 'written_one';
+----
+0
+
+statement error
+DROP PERSISTENT SECRET written_one FROM corp;
+----
+Failed to remove non-existent persistent secret 'written_one' in secret storage 'corp'
+
+statement ok
+DROP PERSISTENT SECRET IF EXISTS written_one FROM corp;
+
+# the service refuses a delete it does not allow
+statement ok
+CREATE PERSISTENT SECRET protected_one IN corp (TYPE tresor, SCOPE 'tresor:p.invalid', FLOW 'token', TOKEN 't');
+
+statement error
+DROP PERSISTENT SECRET protected_one FROM corp;
+----
+you may not delete the secret protected_one in corp
+
+# writes are not transactional: the service has no transaction to join
+statement ok
+BEGIN;
+
+statement ok
+CREATE PERSISTENT SECRET in_a_transaction IN corp (TYPE tresor, SCOPE 'tresor:tx.invalid', FLOW 'token', TOKEN 't');
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT count(*) FROM corp.secrets() WHERE name = 'in_a_transaction';
+----
+1
+
+statement ok
+DROP PERSISTENT SECRET in_a_transaction FROM corp;
+
+statement ok
+DROP PERSISTENT SECRET by_default FROM corp;

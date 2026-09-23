@@ -65,6 +65,11 @@ public:
 	                                        optional_ptr<CatalogTransaction> transaction = nullptr) override;
 	bool IncludeInLookups() override;
 
+	//! The session served now (null: inactive).
+	shared_ptr<TresorSession> Current();
+	//! After a write: the list is stale, the name's material gone.
+	void Invalidate(const string &name);
+
 private:
 	struct Material {
 		string version;
@@ -93,6 +98,17 @@ private:
 //! The storage for `name` in this instance: registered (inactive) at the first ATTACH of the name,
 //! before any login - a name duckdb's secret manager already uses is refused up front.
 TresorSecretStorage &StorageFor(ClientContext &context, const string &name);
+
+//! A secret as the protocol's PUT body: {type, provider, scope, params, redact_keys}; VARCHAR params are
+//! bare strings, the rest {type, value} - the inverse of the reading, so a secret round-trips.
+string SecretBody(const KeyValueSecret &secret);
+
+//! The service's name for a secret: DuckDB compares secret names case-insensitively, the protocol asks for
+//! one canonical form - lower case.
+string CanonicalName(const string &name);
+
+//! A path segment, percent-encoded.
+string EncodePathSegment(const string &segment);
 
 //! A typed protocol value ({type, value} or a bare string) as a DuckDB Value; throws naming secret and
 //! key, never the value. Numbers are expected as raw text (read with YYJSON_READ_NUMBER_AS_RAW).

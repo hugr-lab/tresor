@@ -1,0 +1,93 @@
+# name: test/sql/conformance/writes.test
+# description: duckdb-secrets/1 conformance - create, conflict, replace, annotate, grant, revoke, drop (specs/005)
+# group: [conformance]
+
+# the conformance client may create secrets named conformance_* (the reference server: etl creates anything)
+require-env TRESOR_CONFORMANCE_HOST
+
+require-env TRESOR_CONFORMANCE_INSECURE
+
+require-env TRESOR_CONFORMANCE_ISSUER
+
+require-env TRESOR_CONFORMANCE_CLIENT_ID
+
+require-env TRESOR_CONFORMANCE_CLIENT_SECRET
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+CREATE SECRET conformance_login (TYPE tresor, SCOPE 'tresor:{TRESOR_CONFORMANCE_HOST}',
+    FLOW 'client_credentials', CLIENT_ID '{TRESOR_CONFORMANCE_CLIENT_ID}',
+    CLIENT_SECRET '{TRESOR_CONFORMANCE_CLIENT_SECRET}', ISSUER '{TRESOR_CONFORMANCE_ISSUER}');
+
+statement ok
+ATTACH 'tresor:{TRESOR_CONFORMANCE_HOST}' AS svc (INSECURE_HTTP {TRESOR_CONFORMANCE_INSECURE});
+
+statement ok
+DROP PERSISTENT SECRET IF EXISTS conformance_written FROM svc;
+
+statement ok
+CREATE PERSISTENT SECRET conformance_written IN svc (TYPE tresor, SCOPE 'tresor:conformance.invalid', FLOW 'token', TOKEN 'x');
+
+query III
+SELECT type, list_contains(permissions, 'update'), version <> '' FROM svc.secrets() WHERE name = 'conformance_written';
+----
+tresor	true	true
+
+statement error
+CREATE PERSISTENT SECRET conformance_written IN svc (TYPE tresor, SCOPE 'tresor:conformance.invalid', FLOW 'token', TOKEN 'x');
+----
+already exists in secret storage 'svc'
+
+statement ok
+CREATE PERSISTENT SECRET IF NOT EXISTS conformance_written IN svc (TYPE tresor, SCOPE 'tresor:conformance.invalid', FLOW 'token', TOKEN 'x');
+
+statement ok
+CREATE OR REPLACE PERSISTENT SECRET conformance_written IN svc (TYPE tresor, SCOPE 'tresor:conformance2.invalid', FLOW 'token', TOKEN 'y');
+
+query I
+SELECT scope FROM svc.secrets() WHERE name = 'conformance_written';
+----
+['tresor:conformance2.invalid']
+
+query I
+SELECT comment FROM svc.annotate_secret('conformance_written', 'written by the conformance suite');
+----
+written by the conformance suite
+
+query I
+SELECT comment FROM svc.secrets() WHERE name = 'conformance_written';
+----
+written by the conformance suite
+
+query II
+SELECT principal, verbs FROM svc.grant_secret('conformance_written', 'role:conformance_readers', ['use']);
+----
+role:conformance_readers	[use]
+
+query II
+SELECT principal, verbs FROM svc.grants('conformance_written');
+----
+role:conformance_readers	[use]
+
+query I
+SELECT principal FROM svc.revoke_secret('conformance_written', 'role:conformance_readers');
+----
+role:conformance_readers
+
+query I
+SELECT count(*) FROM svc.grants('conformance_written');
+----
+0
+
+statement ok
+DROP PERSISTENT SECRET conformance_written FROM svc;
+
+query I
+SELECT count(*) FROM svc.secrets() WHERE name = 'conformance_written';
+----
+0
+
+statement ok
+DETACH svc;

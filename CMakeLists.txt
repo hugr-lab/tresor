@@ -26,6 +26,7 @@ set(EXTENSION_SOURCES
     src/tresor_browser.cpp
     src/tresor_catalog.cpp
     src/tresor_login.cpp
+    src/tresor_manage.cpp
     src/tresor_secret.cpp
     src/tresor_secrets.cpp
     src/tresor_storage.cpp

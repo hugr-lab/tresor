@@ -200,6 +200,9 @@ The verbs a service decides:
 | `PUT` | `/v1/secrets/{name}/grants/{id}` | create or replace a grant `{principal, verbs[]}` → `200` with the secret's grants |
 | `DELETE` | `/v1/secrets/{name}/grants/{id}` | revoke → `204`, or `404` |
 
+Writes are immediate: a client has no transaction to join them to, and tresor documents that a
+`ROLLBACK` does not undo them.
+
 A grant passes on at most the verbs its grantor holds: holding `grant` alone does not let a caller
 give itself `use`. The id is the client's choice. A malformed grant (an unknown verb, a principal
 without a known prefix) is `422 invalid_secret`. A verb the grantor lacks is `403 no_verb`.

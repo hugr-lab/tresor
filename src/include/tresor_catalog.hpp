@@ -55,6 +55,8 @@ private:
 //! The catalog's table functions (tresor_whoami.cpp, tresor_secrets.cpp).
 TableFunction WhoamiFunction(shared_ptr<TresorSession> session);
 TableFunction SecretsFunction(shared_ptr<TresorSession> session, TresorSecretStorage &storage);
+//! annotate_secret, grants, grant_secret, revoke_secret (tresor_manage.cpp, specs/005).
+vector<TableFunction> ManagementFunctions(shared_ptr<TresorSession> session, TresorSecretStorage &storage);
 
 } // namespace tresor
 } // namespace duckdb

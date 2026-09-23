@@ -108,10 +108,13 @@ FETCHED = {}  # secret name -> material fetches
 
 
 def descriptor(name, sec):
+    # a written secret carries its own comment and version; the seeded ones count their material fetches
     return {
-        "name": name, "type": sec["type"], "provider": "config", "scope": sec["scope"],
-        "comment": "fetched %d" % FETCHED.get(name, 0), "owner": "role:admins",
-        "created_at": "2026-09-01T10:00:00Z", "updated_at": "2026-09-10T08:30:00Z", "version": "7",
+        "name": name, "type": sec["type"], "provider": sec.get("provider", "config"), "scope": sec["scope"],
+        "comment": sec["comment"] if "comment" in sec else "fetched %d" % FETCHED.get(name, 0),
+        "owner": sec.get("owner", "role:admins"),
+        "created_at": "2026-09-01T10:00:00Z", "updated_at": "2026-09-10T08:30:00Z",
+        "version": str(sec.get("version", 7)),
         "dynamic": sec.get("dynamic", False), "permissions": sec["permissions"], "delegation": None,
     }
 
@@ -250,6 +253,14 @@ class Handler(BaseHTTPRequestHandler):
                 with LOCK:
                     self.send(200, [descriptor(n, s) for n, s in SECRETS.items()])
                 return
+            if rest.endswith("/grants"):
+                sec = SECRETS.get(urllib.parse.unquote(rest[len("/v1/secrets/"):-len("/grants")]))
+                if sec is None:
+                    self.problem(404, "not_found", "no secret")
+                    return
+                with LOCK:
+                    self.send(200, list(sec.get("grants", {}).values()))
+                return
             name = urllib.parse.unquote(rest[len("/v1/secrets/"):])
             sec = SECRETS.get(name)
             if sec is None:
@@ -269,6 +280,100 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, body)
             return
         self.send(404, {"type": "not_found"})
+
+    # --- writes (specs/005): any realm, any authenticated caller; names starting forbidden_ are refused ---
+    def authorised(self):
+        auth = self.headers.get("Authorization", "")
+        token = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
+        with LOCK:
+            if token in TOKENS or token in STATIC_TOKENS:
+                return True
+        self.problem(401, "unauthenticated", "token missing, invalid or expired")
+        return False
+
+    def body(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        return json.loads(self.rfile.read(length) or b"null")
+
+    def do_PUT(self):
+        realm, rest = self.split(urllib.parse.urlparse(self.path).path)
+        if not rest.startswith("/v1/secrets/") or not self.authorised():
+            if rest.startswith("/v1/secrets/"):
+                return
+            self.send(404, {"type": "not_found"})
+            return
+        parts = [urllib.parse.unquote(p) for p in rest[len("/v1/secrets/"):].split("/")]
+        body = self.body()
+        with LOCK:
+            if len(parts) == 3 and parts[1] == "grants":
+                sec = SECRETS.get(parts[0])
+                if sec is None:
+                    self.problem(404, "not_found", "no secret")
+                    return
+                grants = sec.setdefault("grants", {})
+                grants[parts[2]] = {"id": parts[2], "principal": body["principal"], "verbs": body["verbs"]}
+                self.send(200, list(grants.values()))
+                return
+            name = parts[0]
+            if name.startswith("forbidden_"):
+                self.problem(403, "no_verb", "the caller may not create this secret")
+                return
+            if any(k not in body.get("params", {}) for k in body.get("redact_keys", [])):
+                self.problem(422, "invalid_secret", "a redact key is not a parameter")  # as the reference server
+                return
+            exists = name in SECRETS
+            if exists and self.headers.get("If-None-Match") == "*":
+                self.problem(412, "precondition_failed", "the secret exists")
+                return
+            old = SECRETS.get(name, {})
+            SECRETS[name] = {
+                "type": body["type"], "provider": body.get("provider") or "config", "scope": body.get("scope", []),
+                "permissions": ["use", "update", "delete", "annotate", "grant"],
+                "params": body.get("params", {}), "redact_keys": body.get("redact_keys", []),
+                "comment": old.get("comment", ""), "owner": "client:etl",
+                "version": old.get("version", 0) + 1, "grants": old.get("grants", {}),
+            }
+            self.send(200 if exists else 201, descriptor(name, SECRETS[name]))
+
+    def do_DELETE(self):
+        realm, rest = self.split(urllib.parse.urlparse(self.path).path)
+        if not rest.startswith("/v1/secrets/"):
+            self.send(404, {"type": "not_found"})
+            return
+        if not self.authorised():
+            return
+        parts = [urllib.parse.unquote(p) for p in rest[len("/v1/secrets/"):].split("/")]
+        with LOCK:
+            sec = SECRETS.get(parts[0])
+            if sec is None or (len(parts) == 3 and parts[2] not in sec.get("grants", {})):
+                self.problem(404, "not_found", "no such secret or grant")
+                return
+            if parts[0].startswith("protected_"):
+                self.problem(403, "no_verb", "the caller's roles do not hold delete")
+                return
+            if len(parts) == 3:
+                del sec["grants"][parts[2]]
+            else:
+                del SECRETS[parts[0]]
+        self.send(204, b"", "text/plain")
+
+    def do_PATCH(self):
+        realm, rest = self.split(urllib.parse.urlparse(self.path).path)
+        if not rest.startswith("/v1/secrets/"):
+            self.send(404, {"type": "not_found"})
+            return
+        if not self.authorised():
+            return
+        name = urllib.parse.unquote(rest[len("/v1/secrets/"):])
+        body = self.body()
+        with LOCK:
+            sec = SECRETS.get(name)
+            if sec is None:
+                self.problem(404, "not_found", "no secret")
+                return
+            sec["comment"] = body["comment"]
+            sec["version"] = int(sec.get("version", 7)) + 1
+            self.send(200, descriptor(name, sec))
 
     def do_POST(self):
         url = urllib.parse.urlparse(self.path)

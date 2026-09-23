@@ -54,7 +54,8 @@ public:
 	//! A call to the service's API (`path` is relative to `api`, starting with '/'). A token about to
 	//! expire is renewed first; a 401 renews once and retries once (protocol, Errors). Throws when the
 	//! session is closed or cannot be renewed.
-	ServiceResponse Call(const string &method, const string &path, const string &body = "");
+	ServiceResponse Call(const string &method, const string &path, const string &body = "",
+	                     const std::map<std::string, std::string> &extra_headers = {});
 
 	//! DETACH: drop the tokens. Calls after this fail.
 	void Close();

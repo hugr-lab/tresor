@@ -88,12 +88,16 @@ string TresorSession::AccessToken(bool force) {
 	return tokens.access_token;
 }
 
-ServiceResponse TresorSession::Call(const string &method, const string &path, const string &body) {
+ServiceResponse TresorSession::Call(const string &method, const string &path, const string &body,
+                                    const std::map<std::string, std::string> &extra_headers) {
 	lock_guard<mutex> guard(lock);
 	for (int attempt = 0; attempt < 2; attempt++) {
 		auto token = AccessToken(attempt > 0);
 		std::map<std::string, std::string> headers {{"Authorization", "Bearer " + token},
 		                                            {"Accept", "application/json"}};
+		for (auto &header : extra_headers) {
+			headers[header.first] = header.second;
+		}
 		auto result = oidc::HttpSend(method, info.api + path, headers, body, body.empty() ? "" : "application/json");
 		if (!result.error.empty()) {
 			throw IOException("tresor: %s %s failed: %s", method, info.api + path, result.error);
