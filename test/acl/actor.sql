@@ -1,5 +1,6 @@
--- tresor acting for a real duckdb-acl session (specs/008), run by scripts/ci/test_keycloak.sh when
--- TRESOR_ACL_EXTENSION names an acl.duckdb_extension built at this repository's duckdb commit. A CLI script,
+-- tresor acting for a real duckdb-acl session (specs/008), run by scripts/ci/test_keycloak.sh when the test
+-- build carries acl (TRESOR_TEST_ACL_DIR, extension_config.cmake) or TRESOR_ACL_EXTENSION names one built at
+-- this repository's duckdb commit. A CLI script,
 -- not a sqllogictest: the statements under the session carry the handle acl_session_open returns.
 -- @...@ are filled in by the script; the checks read the lines marked "check:".
 .mode list

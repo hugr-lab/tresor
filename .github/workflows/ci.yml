@@ -69,11 +69,19 @@ jobs:
       GEN: ninja
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       TRESOR_TEST_HTTPFS: '1'   # httpfs in the test build (specs/006; extension_config.cmake)
+      # duckdb-acl itself in the test build, lean (no arrow, no quack), for the actor's end-to-end test (specs/008)
+      TRESOR_TEST_ACL_DIR: ${{ github.workspace }}/_acl
+      ACL_NO_FLIGHT: '1'
+      ACL_NO_QUACK_EMBED: '1'
       VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/vcpkg_bincache,readwrite'
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
+
+      # duckdb-acl at the commit the actor test pins, its duckdb checked to be ours (specs/008)
+      - name: duckdb-acl for the actor test
+        run: scripts/ci/acl_checkout.sh "$TRESOR_TEST_ACL_DIR"
 
       - name: Install build dependencies
         run: |
@@ -137,11 +145,14 @@ jobs:
         with:
           go-version-file: server/go.mod
           cache-dependency-path: server/go.sum
+      # ... and tresor acting for a real duckdb-acl session (specs/008): the acl built above, a real token exchange
       - name: Keycloak end to end
         run: |
           set -o pipefail   # a failing script must fail the step, whatever the summary line says
-          scripts/ci/test_keycloak.sh 2>&1 | tee keycloak.log
+          TRESOR_ACL_EXTENSION="$PWD/build/release/extension/acl/acl.duckdb_extension" \
+            scripts/ci/test_keycloak.sh 2>&1 | tee keycloak.log
           scripts/ci/assert_ran.sh keycloak.log 5 55 'require-env TRESOR_CONFORMANCE'
+          grep -q "with duckdb-acl, a session's statements ran as its user" keycloak.log
 
       - name: Upload extension artifact
         if: github.event_name != 'pull_request'

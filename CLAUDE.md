@@ -74,8 +74,9 @@ the duckdb pin): the s3/gcs/r2/aws types and the real `REFRESH auto` path (specs
 distribution build never compiles it; tresor itself does not depend on it. Without it `refresh.test`
 skips (`require httpfs`), which CI forbids. The same flag links **acl_stub**
 (`test/extension/acl_stub`, specs/008): duckdb-acl's side of `acl_connection.hpp` (`acl_stub_open`,
-`acl_stub_close`, `SET acl_stub_session`) for the actor tests; with `TRESOR_ACL_EXTENSION=<acl.duckdb_extension>`
-`test_keycloak.sh` also runs `test/acl/actor.sql` against real duckdb-acl. Tests that need a service
+`acl_stub_close`, `SET acl_stub_session`) for the actor tests. Real duckdb-acl: `scripts/ci/acl_checkout.sh _acl`
+then build with `TRESOR_TEST_ACL_DIR=$PWD/_acl ACL_NO_FLIGHT=1 ACL_NO_QUACK_EMBED=1` (acl `DONT_LINK`, lean, against
+our duckdb) - `test_keycloak.sh` then also runs `test/acl/actor.sql` (CI does; move `ACL_COMMIT` with the pins). Tests that need a service
 `require-env TRESOR_TEST_PORT` and run through `scripts/ci/test_attach.sh` (the fake speaks http on
 loopback, so they ATTACH with `INSECURE_HTTP true`; `BROWSER` is the fake browser).
 

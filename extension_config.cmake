@@ -32,3 +32,16 @@ if(DEFINED ENV{TRESOR_TEST_HTTPFS} AND "$ENV{TRESOR_TEST_HTTPFS}" STREQUAL "1")
         SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/test/extension/acl_stub
     )
 endif()
+
+# duckdb-acl itself, for the actor's end-to-end test only (specs/008, test/acl/actor.sql): built here, against
+# this tree's duckdb, so it loads into the test build exactly (acl's own distribution artifacts are built at
+# its branch's head, not at the pinned commit). TRESOR_TEST_ACL_DIR is a checkout of duckdb-acl at the commit
+# scripts/ci/acl_checkout.sh pins, with its duckdb-ext-common submodule and a `duckdb` link to ours; lean
+# (ACL_NO_FLIGHT, ACL_NO_QUACK_EMBED: no arrow, no quack - the actor needs neither). DONT_LINK: a test shell
+# with acl linked would run every other test under acl's rewriter.
+if(DEFINED ENV{TRESOR_TEST_ACL_DIR} AND NOT "$ENV{TRESOR_TEST_ACL_DIR}" STREQUAL "")
+    duckdb_extension_load(acl
+        DONT_LINK
+        SOURCE_DIR $ENV{TRESOR_TEST_ACL_DIR}
+    )
+endif()

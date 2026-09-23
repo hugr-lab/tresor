@@ -183,7 +183,16 @@ non-normative note: an actor revokes a grant when the session it was made for en
   - the delegated secret is found;
   - the reference server logged the grant created and revoked.
 
-  It passed locally against duckdb-acl `3a5fdb3`. Its CI job is a follow-up.
+  **In CI** (the linux job):
+  - `scripts/ci/acl_checkout.sh` checks out duckdb-acl at a pinned commit (`ACL_COMMIT`, moved with
+    the pins). It refuses one whose duckdb submodule is not ours, links our `duckdb` into it, and
+    drops its `vcpkg.json`.
+  - `extension_config.cmake` builds acl `DONT_LINK` against this tree (`TRESOR_TEST_ACL_DIR`),
+    lean: `ACL_NO_FLIGHT`, `ACL_NO_QUACK_EMBED`, so no arrow and no quack.
+  - The Keycloak step then runs `test/acl/actor.sql` with it.
+
+  acl's own distribution artifacts do not serve here. They are built at the head of duckdb's branch,
+  not at the pinned commit; tried, one crashed on load (`Bus error`).
 
 ### As built
 
@@ -257,6 +266,4 @@ node's grant, list or material, and no deadlock. It found these:
 - acl stamps its presence in the contract (a publisher flag on `AclSessionHooks`, set when acl loads),
   so `ACT_FOR_SESSIONS` can refuse an acl that never publishes (asked of duckdb-acl).
 
-- A CI job running `test/acl/actor.sql` with duckdb-acl's own `acl.duckdb_extension` (an artifact of
-  its distribution build at the pinned duckdb commit).
 - tresor's audit hook (`tresor_audit.hpp`): grant created, used, revoked, and refused.
