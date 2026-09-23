@@ -281,3 +281,8 @@ duckdb-ext-common `v0.6.0` together: a build of either side on `v0.4.0`/`v0.5.0`
 `ACL_STUB_NO_MARK=1`, so there the mark must come from duckdb-acl itself, which `ACL_COMMIT`
 (`b922605`) pins; that run also checks the refusal while tresor is loaded before acl.
 `acl_checkout.sh` refuses an acl commit whose duckdb-ext-common pin differs from tresor's.
+`ACL_COMMIT` then moved to `f1bdff8` (acl spec 082, secrets through the ACL). The run now also has
+bob, an administrator, `CREATE` and `DROP` a secret through the node with the catalog left out; both
+reach the service over his session's grant. `ACL GRANT SECRET` is left out of the run for now: at
+`f1bdff8` it reached the service as the node's bare identity. That was reported to duckdb-acl, and
+the step returns when acl fixes it.

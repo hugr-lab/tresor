@@ -38,6 +38,9 @@ ACL ADMIN CREATE VIRTUAL TABLE FUNCTION c.me RETURNS TABLE (subject VARCHAR, act
 ACL ADMIN CREATE VIRTUAL TABLE FUNCTION c.lake RETURNS TABLE (name VARCHAR)
     AS SELECT name FROM which_secret('https://acl-lake.example/x', 'http') WHERE storage = 'node';
 ACL ADMIN GRANT CATALOG c TO ROLE analysts MAIN;
+-- bob, a service admin: manages the service's secrets through the node (tresor specs/009, acl spec 082)
+ACL ADMIN CREATE ROLE secrets_admin;
+ACL ADMIN GRANT CATALOG c TO ROLE secrets_admin WITH (select, secrets) MAIN;
 
 -- outside any session: the node, with what its role was granted
 SELECT 'check:node ' || subject || '|' || coalesce(actor, 'NULL') FROM node.whoami();
@@ -52,6 +55,27 @@ SELECT acl_session_sql(handle, 'SELECT ''check:session-lake '' || name FROM c.la
 .output
 .read @WORK@/under_session.sql
 SELECT 'check:closed ' || acl_session_close(handle) FROM h;
+
+-- bob's session: the only tresor catalog is taken (the owner's attachment goes first), the service lets him
+-- manage through the node because he is an admin and its policy lists the verbs
+DETACH owner;
+CREATE TABLE hb AS SELECT acl_session_open('@ADMIN_TOKEN@') AS handle;
+.output @WORK@/admin_session.sql
+SELECT acl_session_sql(handle, 'CREATE PERSISTENT SECRET bob_made (TYPE http, SCOPE ''https://bob-made.example'', BEARER_TOKEN ''b'')') || ';' FROM hb;
+-- ACL GRANT SECRET comes back when duckdb-acl runs it under the session (reported at f1bdff8: it reached the
+-- service as the node's bare identity)
+.output
+.read @WORK@/admin_session.sql
+ATTACH 'tresor:@HOST@' AS owner (INSECURE_HTTP true, SECRET etl);
+SELECT 'check:admin-made ' || count(*) FROM owner.secrets() WHERE name = 'bob_made';
+DETACH owner;
+.output @WORK@/admin_drop.sql
+SELECT acl_session_sql(handle, 'DROP PERSISTENT SECRET bob_made') || ';' FROM hb;
+.output
+.read @WORK@/admin_drop.sql
+SELECT 'check:admin-closed ' || acl_session_close(handle) FROM hb;
+ATTACH 'tresor:@HOST@' AS owner (INSECURE_HTTP true, SECRET etl);
+SELECT 'check:admin-dropped ' || count(*) FROM owner.secrets() WHERE name = 'bob_made';
 
 DETACH node;
 DROP PERSISTENT SECRET acl_lake FROM owner;

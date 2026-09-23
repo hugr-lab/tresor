@@ -127,14 +127,20 @@ if [ -n "${TRESOR_ACL_EXTENSION:-}" ]; then
 	door_token="$(curl -sf -d grant_type=password -d client_id=acl-door -d username=alice -d password=alice-pass \
 		-d scope=openid "$issuer/protocol/openid-connect/token" |
 		python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
+	admin_token="$(curl -sf -d grant_type=password -d client_id=acl-door -d username=bob -d password=bob-pass \
+		-d scope=openid "$issuer/protocol/openid-connect/token" |
+		python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
 	jwks="$(curl -sf "$issuer/protocol/openid-connect/certs")"
 	sed -e "s|@ACL_EXTENSION@|$TRESOR_ACL_EXTENSION|" \
 		-e "s|@TRESOR_EXTENSION@|$(dirname "$unittest")/../extension/tresor/tresor.duckdb_extension|" \
 		-e "s|@HOST@|127.0.0.1:$server_port|g" -e "s|@ISSUER@|$issuer|g" -e "s|@WORK@|$work|g" \
-		-e "s|@TOKEN@|$door_token|" -e "s|@JWKS@|$jwks|" "$root/test/acl/actor.sql" >"$work/acl.sql"
+		-e "s|@TOKEN@|$door_token|" -e "s|@ADMIN_TOKEN@|$admin_token|" -e "s|@JWKS@|$jwks|" \
+		"$root/test/acl/actor.sql" >"$work/acl.sql"
 	logged="$(wc -l <"$work/server.log")" # the reference tests made and revoked grants too: only the new lines count
 	# the stub linked into the test CLI must not mark acl's hooks: the real duckdb-acl is what must (ACLC 2)
 	ACL_STUB_NO_MARK=1 "$cli" -unsigned <"$work/acl.sql" >"$work/acl.log" 2>&1 || true
+	[ -n "${TRESOR_ACL_DEBUG:-}" ] && sed -E -e 's/eyJ[A-Za-z0-9._-]*/<token>/g' -e 's/[0-9A-Fa-f]{32}/<handle>/g' \
+		"$work/acl.log" >"$TRESOR_ACL_DEBUG"
 	tail -n +"$((logged + 1))" "$work/server.log" >"$work/acl_server.log"
 	checks=(
 		'^check:refused-before-acl 0$'
@@ -144,6 +150,9 @@ if [ -n "${TRESOR_ACL_EXTENSION:-}" ]; then
 		'^check:session [0-9a-f-]{36}\|client:acl-node$'
 		'^check:session-lake acl_lake$'
 		'^check:closed true$'
+		'^check:admin-made 1$'
+		'^check:admin-closed true$'
+		'^check:admin-dropped 0$'
 	)
 	acl_ok=1
 	for check in "${checks[@]}"; do
@@ -158,7 +167,8 @@ if [ -n "${TRESOR_ACL_EXTENSION:-}" ]; then
 		acl_ok=0
 	}
 	if [ "$acl_ok" = 1 ]; then
-		echo "test_keycloak: with duckdb-acl, a session's statements ran as its user, and its grant was revoked"
+		echo "test_keycloak: with duckdb-acl, a session's statements ran as its user, and its grant was revoked;" \
+			"an admin created and dropped a secret through the node"
 	else
 		# the checks and the errors only, and never a token (even a cut-off one) or a session handle: an error
 		# may quote a statement with alice's token or the handle in it
