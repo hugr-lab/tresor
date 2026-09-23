@@ -28,7 +28,8 @@ type Caller struct {
 	ExpiresAt  time.Time
 	// Actor is set when a server acts for this user through a delegation grant (specs/007): its client:
 	// principal. The rest of the Caller is the user's, as taken at the grant's exchange.
-	Actor string
+	Actor       string
+	ActorIssuer string // the issuer of the actor's token
 }
 
 // Client is the caller's client: principal (a service), or "".

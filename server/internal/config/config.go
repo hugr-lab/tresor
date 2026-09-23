@@ -69,9 +69,12 @@ type Policy struct {
 	Actors []ActorRule `yaml:"actors"`
 }
 
-// ActorRule lets a service (a client: principal) act for users with the verbs listed.
+// ActorRule lets a service (a client: principal) act for users with the verbs listed - none listed, none
+// allowed. Issuer, when set, pins the actor to the issuer its token must come from: a client: name is not
+// issuer-qualified, and a same-named client of another configured issuer must not pass for it.
 type ActorRule struct {
 	Principal string   `yaml:"principal"`
+	Issuer    string   `yaml:"issuer"`
 	Verbs     []string `yaml:"verbs"`
 }
 
@@ -194,6 +197,9 @@ func (c *Config) validate() error {
 	for _, a := range c.Policy.Actors {
 		if !strings.HasPrefix(a.Principal, "client:") || len(a.Principal) <= len("client:") {
 			return fmt.Errorf("policy.actors: %q - an actor is a service, client:<id>", a.Principal)
+		}
+		if len(a.Verbs) == 0 {
+			return fmt.Errorf("policy.actors: %s lists no verbs - leave it out instead", a.Principal)
 		}
 		for _, v := range a.Verbs {
 			if !KnownVerb(v) && v != "create" {

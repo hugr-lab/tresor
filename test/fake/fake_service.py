@@ -126,6 +126,7 @@ SECRETS = {
 }
 FETCHED = {}  # secret name -> material fetches
 WRITES = {}  # secret name -> PUT / DELETE / PATCH the service received for it
+RULE_IDS = [0]  # delegation rule ids, never reused
 
 
 def descriptor(name, sec):
@@ -323,11 +324,11 @@ class Handler(BaseHTTPRequestHandler):
                     self.send(200, [descriptor(n, s) for n, s in SECRETS.items()])
                 return
             if rest.endswith("/delegations"):
-                sec = SECRETS.get(urllib.parse.unquote(rest[len("/v1/secrets/"):-len("/delegations")]))
-                if sec is None:
-                    self.problem(404, "not_found", "no secret")
-                    return
                 with LOCK:
+                    sec = SECRETS.get(urllib.parse.unquote(rest[len("/v1/secrets/"):-len("/delegations")]))
+                    if sec is None:
+                        self.problem(404, "not_found", "no secret")
+                        return
                     self.send(200, list(sec.get("rules", {}).values()))
                 return
             if rest.endswith("/grants"):
@@ -433,7 +434,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         parts = [urllib.parse.unquote(p) for p in rest[len("/v1/secrets/"):].split("/")]
         with LOCK:
-            WRITES[parts[0]] = WRITES.get(parts[0], 0) + 1
             sec = SECRETS.get(parts[0])
             if len(parts) == 3 and parts[1] == "delegations":
                 if sec is None or parts[2] not in sec.get("rules", {}):
@@ -448,6 +448,7 @@ class Handler(BaseHTTPRequestHandler):
             if parts[0].startswith("protected_"):
                 self.problem(403, "no_verb", "the caller's roles do not hold delete")
                 return
+            WRITES[parts[0]] = WRITES.get(parts[0], 0) + 1
             if len(parts) == 3:
                 del sec["grants"][parts[2]]
             else:
@@ -489,8 +490,15 @@ class Handler(BaseHTTPRequestHandler):
                 if body.get("mode") != "shared":
                     self.problem(422, "invalid_secret", "only shared rules here")
                     return
+                # as the reference server: actors are services, subjects are principals
+                if not body.get("actors") or not body.get("subjects") or \
+                        any(not a.startswith("client:") for a in body["actors"]) or \
+                        any(":" not in p for p in body["subjects"]):
+                    self.problem(422, "invalid_secret", "a rule names services as actors and principals as subjects")
+                    return
                 rules = sec.setdefault("rules", {})
-                rule_id = "d-%d" % (len(rules) + 1)
+                RULE_IDS[0] += 1
+                rule_id = "d-%d" % RULE_IDS[0]
                 rules[rule_id] = dict(body, id=rule_id)
                 WRITES[name] = WRITES.get(name, 0) + 1
                 self.send(201, rules[rule_id])

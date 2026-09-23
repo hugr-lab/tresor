@@ -27,6 +27,7 @@ type fixture struct {
 	etl      string // client:etl: may create anything
 	carol    string // no roles at all
 	stranger string // a valid token for another audience
+	srv      *Server
 }
 
 func newFixture(t *testing.T, basePath string) *fixture {
@@ -54,13 +55,16 @@ policy:
   actors:
     - {principal: client:node, verbs: [use]}
     - {principal: client:admin-node, verbs: [use, annotate]}
+    - {principal: client:mgr-node, verbs: [use, grant, delegate]}
+    - {principal: client:pinned, issuer: https://elsewhere.example, verbs: [use]}
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
 	st, _ := store.Open("", nil)
 	log := slog.New(slog.NewTextHandler(f.logs, nil))
-	f.server.Config.Handler = New(cfg, auth.NewVerifier(cfg.Issuers), st, log).Handler()
+	f.srv = New(cfg, auth.NewVerifier(cfg.Issuers), st, log)
+	f.server.Config.Handler = f.srv.Handler()
 	f.server.Start()
 	t.Cleanup(f.server.Close)
 	f.alice = idp.Person(t, "duckdb-secrets", "analysts")

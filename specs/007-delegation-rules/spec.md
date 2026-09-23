@@ -131,6 +131,36 @@ state (`acl_connection.hpp`, duckdb-acl's contract) and is a later spec.
 - **The actor path end to end** (a grant used by tresor inside a server) comes with the actor spec.
   The reference server's Go tests cover it at the HTTP level now.
 
+## The review's findings (applied)
+
+An independent review, the worst of them reproduced:
+
+- **CRITICAL: a rule's `use` could become a standing grant.** Under a grant, the grant check used the
+  effective verbs, which include a rule's `use`. A server allowed `grant` could give the user, or
+  **itself**, a permanent `use`, and then read the secret with no grant at all. Now a grant passes
+  on only the user's own verbs, intersected with the actor policy (`grantable`). A regression test
+  pins both directions.
+- **`delegate` alone yielded the material** through a rule its author wrote for themselves. Now a
+  rule's author must hold `use` too, and the protocol says so.
+- **Central revocation was impossible**: revoke was by id only, and ids are never listed. Now
+  `DELETE /v1/delegations?actor=…&subject=…` lets admins revoke by filter and users revoke their own
+  grants.
+- **Actors were matched by an unqualified `client:` name.** A same-named client of another issuer
+  counted as the same actor. `policy.actors` now takes an optional `issuer`, and an actor with no
+  verbs is refused in the config.
+- **A huge `ttl` overflowed into an already-expired grant.** It is now clamped before the
+  multiplication.
+- **Smaller fixes:**
+  - grants are capped at 100 000 and purged at most once a second;
+  - a subject token must be a person's, never the actor's own;
+  - under a grant, whoami's `create` follows the policy;
+  - listings under a grant carry `permissions: []`, never `null`;
+  - a rule's `ttl` sets the delegated material's `expires_at`;
+  - the descriptor's `delegation` summarises the rules for callers who hold `delegate`;
+  - the client's `delegations()` is chunked, and a sub-second or textual `ttl` is handled;
+  - the fake is as strict as the server (actors, subjects, rule ids never reused, locking);
+  - expiry is tested with the server's clock.
+
 ## Alternatives considered
 
 - **Material through a grant on the user's `use` alone, without a rule.** A secret the user may

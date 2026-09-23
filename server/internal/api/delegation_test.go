@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 // grantFor exchanges `user`'s token for a grant held by the actor `actorToken`; the id, or "" on refusal.
@@ -150,6 +151,143 @@ func TestDelegation(t *testing.T) {
 	}
 	if strings.Contains(f.logs.String(), fresh) || strings.Contains(f.logs.String(), aliceGrant) {
 		t.Fatal("a grant id reached the log")
+	}
+}
+
+// the review's findings, pinned
+
+// a rule's use never becomes a standing grant: not for the user, not for the server itself
+func TestRuleUseIsNotGrantable(t *testing.T) {
+	f := newFixture(t, "")
+	mgr := f.idp.Service(t, "duckdb-secrets", "mgr-node")
+	carol := "subject:" + f.idp.URL + "|carol-id"
+	f.do("PUT", "/v1/secrets/s", f.etl, s3Secret)
+	f.do("PUT", "/v1/secrets/s/grants/c", f.etl, `{"principal":"`+carol+`","verbs":["grant"]}`)
+	f.do("POST", "/v1/secrets/s/delegations", f.etl, `{"actors":["client:mgr-node"],"subjects":["`+carol+`"],"mode":"shared"}`)
+	g, _ := f.grantFor(mgr, f.carol)
+	if r := f.do("GET", "/v1/secrets/s", mgr, "", "Delegation", g); r.status != 200 {
+		t.Fatalf("the rule works: %d", r.status)
+	}
+	for _, principal := range []string{carol, "client:mgr-node"} {
+		r := f.do("PUT", "/v1/secrets/s/grants/x", mgr, `{"principal":"`+principal+`","verbs":["use"]}`, "Delegation", g)
+		if r.status != 403 {
+			t.Fatalf("granting a rule's use to %s: %d %s", principal, r.status, r.body)
+		}
+	}
+	if r := f.do("GET", "/v1/secrets/s", f.carol, ""); r.status != 403 {
+		t.Fatalf("carol alone: %d", r.status)
+	}
+	if r := f.do("GET", "/v1/secrets/s", mgr, ""); r.status != 404 {
+		t.Fatalf("the node alone: %d", r.status)
+	}
+}
+
+// delegate alone is not more than use: a rule's author must hold use
+func TestDelegateAloneCannotDelegate(t *testing.T) {
+	f := newFixture(t, "")
+	node := f.idp.Service(t, "duckdb-secrets", "node")
+	carol := "subject:" + f.idp.URL + "|carol-id"
+	f.do("PUT", "/v1/secrets/s", f.etl, s3Secret)
+	f.do("PUT", "/v1/secrets/s/grants/c", f.etl, `{"principal":"`+carol+`","verbs":["delegate"]}`)
+	r := f.do("POST", "/v1/secrets/s/delegations", f.carol, `{"actors":["client:node"],"subjects":["`+carol+`"],"mode":"shared"}`)
+	if r.status != 403 {
+		t.Fatalf("a rule by delegate alone: %d %s", r.status, r.body)
+	}
+	g, _ := f.grantFor(node, f.carol)
+	if r := f.do("GET", "/v1/secrets/s", node, "", "Delegation", g); r.status == 200 {
+		t.Fatal("material through a rule its author could not write")
+	}
+}
+
+func TestExchangeRefusals(t *testing.T) {
+	f := newFixture(t, "")
+	node := f.idp.Service(t, "duckdb-secrets", "node")
+	pinned := f.idp.Service(t, "duckdb-secrets", "pinned")
+	if _, r := f.grantFor(node, node); r.status != 422 {
+		t.Fatalf("self-exchange: %d", r.status)
+	}
+	if _, r := f.grantFor(node, f.etl); r.status != 422 {
+		t.Fatalf("a service as the subject: %d", r.status)
+	}
+	if _, r := f.grantFor(pinned, f.alice); r.status != 403 {
+		t.Fatalf("an actor pinned to another issuer: %d", r.status)
+	}
+	// a huge ttl is capped, not wrapped into the past
+	r := f.do("POST", "/v1/delegations", node, `{"subject_token":"`+f.alice+`","ttl":9223372036854775807}`)
+	if r.status != 201 {
+		t.Fatalf("huge ttl: %d", r.status)
+	}
+	expires, _ := time.Parse(time.RFC3339, r.json(t)["expires_at"].(string))
+	if d := time.Until(expires); d < 7*time.Hour || d > 8*time.Hour+time.Minute {
+		t.Fatalf("the cap: %v", d)
+	}
+}
+
+func TestRevocation(t *testing.T) {
+	f := newFixture(t, "")
+	node := f.idp.Service(t, "duckdb-secrets", "node")
+	a1, _ := f.grantFor(node, f.alice)
+	a2, _ := f.grantFor(node, f.alice)
+	c1, _ := f.grantFor(node, f.carol)
+	// a user ends every grant a server holds for them
+	r := f.do("DELETE", "/v1/delegations", f.alice, "")
+	if r.status != 200 || r.json(t)["revoked"] != float64(2) {
+		t.Fatalf("self revoke: %d %s", r.status, r.body)
+	}
+	for _, g := range []string{a1, a2} {
+		if r := f.do("GET", "/v1/whoami", node, "", "Delegation", g); r.status != 401 {
+			t.Fatalf("revoked grant: %d", r.status)
+		}
+	}
+	if r := f.do("GET", "/v1/whoami", node, "", "Delegation", c1); r.status != 200 {
+		t.Fatalf("carol's grant is untouched: %d", r.status)
+	}
+	// an admin cuts a node off; a filter is required
+	if r := f.do("DELETE", "/v1/delegations", f.admin, ""); r.status != 422 {
+		t.Fatalf("an unfiltered admin revoke: %d", r.status)
+	}
+	if r := f.do("DELETE", "/v1/delegations?actor=client:node", f.admin, ""); r.status != 200 || r.json(t)["revoked"] != float64(1) {
+		t.Fatalf("admin by actor: %d %s", r.status, r.body)
+	}
+	if r := f.do("GET", "/v1/whoami", node, "", "Delegation", c1); r.status != 401 {
+		t.Fatalf("after the admin's revoke: %d", r.status)
+	}
+}
+
+func TestUnderAGrant(t *testing.T) {
+	f := newFixture(t, "")
+	node := f.idp.Service(t, "duckdb-secrets", "node")
+	f.do("PUT", "/v1/secrets/team_a_seen", f.alice, s3Secret)
+	f.do("PUT", "/v1/secrets/lent", f.etl, s3Secret)
+	f.do("POST", "/v1/secrets/lent/delegations", f.etl, `{"actors":["client:node"],"subjects":["role:analysts"],"mode":"shared","ttl":120}`)
+	g, _ := f.grantFor(node, f.alice)
+	// a secret the user sees but the node may not act on: listed with [] (never null)
+	var list []map[string]any
+	_ = json.Unmarshal(f.do("GET", "/v1/secrets", node, "", "Delegation", g).body, &list)
+	for _, d := range list {
+		if d["permissions"] == nil {
+			t.Fatalf("permissions null: %v", d)
+		}
+	}
+	// the rule's ttl bounds the material's life
+	m := f.do("GET", "/v1/secrets/lent", node, "", "Delegation", g).json(t)
+	expires, err := time.Parse(time.RFC3339, m["expires_at"].(string))
+	if err != nil || time.Until(expires) > 2*time.Minute+5*time.Second {
+		t.Fatalf("expires_at from the rule's ttl: %v", m["expires_at"])
+	}
+	// whoami: what the user may create through this node - nothing, the policy lists no create
+	w := f.do("GET", "/v1/whoami", node, "", "Delegation", g).json(t)
+	if w["permissions"].(map[string]any)["create"] != false {
+		t.Fatalf("create under a use-only actor: %v", w)
+	}
+	// the owner sees the rules summarised
+	if d := f.do("GET", "/v1/secrets/lent", f.etl, "").json(t)["delegation"]; d == nil {
+		t.Fatal("the rules' summary for the owner")
+	}
+	// expiry: move the server's clock past the grant
+	f.srv.now = func() time.Time { return time.Now().Add(2 * time.Hour) }
+	if r := f.do("GET", "/v1/whoami", node, "", "Delegation", g); r.status != 401 {
+		t.Fatalf("an expired grant: %d", r.status)
 	}
 }
 

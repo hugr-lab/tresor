@@ -150,10 +150,13 @@ gateway) use it **for** certain users. The server never receives the secret on i
 CALL corp.add_delegation('crm_prod', ['client:acl-node-prod'], ['role:analysts']);   -- shared by default
 CALL corp.add_delegation('lake_team_a', ['client:acl-node-prod'], ['role:team_a'],
                          mode := 'user', operations := ['read'], scope := ['s3://lake/team-a/'],
-                         ttl := INTERVAL 1 HOUR);
+                         ttl := INTERVAL 1 HOUR);   -- where the service issues personal credentials
 FROM corp.delegations('crm_prod');
 CALL corp.remove_delegation('crm_prod', 'd-…');
 ```
+
+You need `delegate` **and** `use` on a secret to delegate it. A server acting for you can never grant
+the secret onwards on the strength of a rule.
 
 The service decides whether each of these is allowed, from your role. Some things to know:
 - **Names.** DuckDB compares secret names case-insensitively. A new secret is stored in lower case,

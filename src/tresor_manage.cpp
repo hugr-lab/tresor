@@ -180,6 +180,26 @@ void EmitRule(DataChunk &output, const Rule &rule) {
 	output.data[6].Append(rule.ttl);
 }
 
+//! A rule's ttl in whole seconds: an INTERVAL (or text that casts to one: '1 hour') or a number of seconds.
+//! A ttl that is not at least a second is refused - 0 would mean "unbounded" to a service.
+int64_t TtlSeconds(const Value &ttl) {
+	int64_t seconds;
+	try {
+		if (ttl.type().id() == LogicalTypeId::INTERVAL || ttl.type().id() == LogicalTypeId::VARCHAR) {
+			auto interval = IntervalValue::Get(ttl.DefaultCastAs(LogicalType::INTERVAL));
+			seconds = Interval::GetMicro(interval) / Interval::MICROS_PER_SEC;
+		} else {
+			seconds = ttl.DefaultCastAs(LogicalType::BIGINT).GetValue<int64_t>();
+		}
+	} catch (std::exception &) {
+		throw InvalidInputException("tresor: ttl is an INTERVAL or a number of seconds");
+	}
+	if (seconds < 1) {
+		throw InvalidInputException("tresor: ttl must be at least one second");
+	}
+	return seconds;
+}
+
 //! A grant id every client computes the same way, from the principal: FNV-1a 64 - self-contained, so no
 //! DuckDB version or build flag changes it.
 string GrantId(const string &principal) {
@@ -238,6 +258,9 @@ unique_ptr<FunctionData> ManageBind(ClientContext &context, TableFunctionBindInp
 				data->scope = Strings(named.second, "the scope");
 			} else if (key == "ttl") {
 				data->ttl = named.second;
+				if (!data->ttl.IsNull()) {
+					(void)TtlSeconds(data->ttl); // refused at bind, before any request
+				}
 			}
 		}
 		rule_columns();
@@ -293,9 +316,12 @@ void EmitGrant(DataChunk &output, idx_t row, const Grant &grant) {
 void ManageScan(ClientContext &context, TableFunctionInput &input, DataChunk &output) {
 	auto &state = input.global_state->Cast<ManageState>();
 	if (state.done) {
-		// grants(): the rest of the rows, a chunk at a time
+		// grants() / delegations(): the rest of the rows, a chunk at a time
 		while (state.offset < state.rows.size() && output.size() < STANDARD_VECTOR_SIZE) {
 			EmitGrant(output, 0, state.rows[state.offset++]);
+		}
+		while (state.offset < state.rules.size() && output.size() < STANDARD_VECTOR_SIZE) {
+			EmitRule(output, state.rules[state.offset++]);
 		}
 		return;
 	}
@@ -330,11 +356,7 @@ void ManageScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 		              ",\"mode\":" + JsonString(data.mode) + ",\"operations\":" + JsonList(data.operations) +
 		              ",\"scope\":" + JsonList(data.scope);
 		if (!data.ttl.IsNull()) {
-			// an INTERVAL or a number of seconds
-			auto seconds = data.ttl.type().id() == LogicalTypeId::INTERVAL
-			                   ? Interval::GetMicro(IntervalValue::Get(data.ttl)) / Interval::MICROS_PER_SEC
-			                   : data.ttl.DefaultCastAs(LogicalType::BIGINT).GetValue<int64_t>();
-			body += ",\"ttl\":" + std::to_string(seconds);
+			body += ",\"ttl\":" + std::to_string(TtlSeconds(data.ttl));
 		}
 		body += "}";
 		auto response = data.session->Call("POST", path + "/delegations", body);

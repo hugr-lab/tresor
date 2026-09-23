@@ -63,6 +63,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/secrets/{name}/delegations/{id}", s.authed(s.removeRule))
 	mux.HandleFunc("POST /v1/delegations", s.authed(s.exchange))
 	mux.HandleFunc("DELETE /v1/delegations/{id}", s.authed(s.revokeGrant))
+	mux.HandleFunc("DELETE /v1/delegations", s.authed(s.revokeGrants))
 	// anything else - an unknown path, a known path with another method - is a problem document too
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, "not_found", "no such resource: "+r.Method+" "+r.URL.Path)
@@ -200,8 +201,8 @@ func (s *Server) verbs(c *auth.Caller, sec *store.Secret) []string {
 	if c.Actor == "" {
 		return user
 	}
-	allowed := s.actorVerbs(c.Actor)
-	var out []string
+	allowed := s.actorVerbs(c.Actor, c.ActorIssuer)
+	out := []string{} // a list, never null: a secret the user sees but the actor may not act on is []
 	for _, v := range allVerbs {
 		switch {
 		case v == "use":
@@ -251,7 +252,7 @@ func (s *Server) createPatterns(c *auth.Caller) (all bool, patterns []string) {
 }
 
 func (s *Server) mayCreate(c *auth.Caller, name string) bool {
-	if c.Actor != "" && !slices.Contains(s.actorVerbs(c.Actor), "create") {
+	if c.Actor != "" && !slices.Contains(s.actorVerbs(c.Actor, c.ActorIssuer), "create") {
 		return false // creating for users is a management verb: denied unless the actor policy lists it
 	}
 	all, patterns := s.createPatterns(c)
@@ -313,7 +314,9 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 	c := callerOf(r)
 	var create any = false
-	if all, patterns := s.createPatterns(c); all {
+	if c.Actor != "" && !slices.Contains(s.actorVerbs(c.Actor, c.ActorIssuer), "create") {
+		// under a grant: what the user may create through this server - nothing, unless the policy says so
+	} else if all, patterns := s.createPatterns(c); all {
 		create = true
 	} else if len(patterns) > 0 {
 		create = patterns
@@ -344,6 +347,14 @@ func nilIfEmpty(v string) any {
 // --- secrets -----------------------------------------------------------------------------------------
 
 func descriptor(sec *store.Secret, verbs []string) map[string]any {
+	if verbs == nil {
+		verbs = []string{}
+	}
+	// the rules are summarised to callers who may manage them
+	var delegation any
+	if slices.Contains(verbs, "delegate") {
+		delegation = map[string]any{"rules": len(sec.Rules)}
+	}
 	scope := sec.Scope
 	if scope == nil {
 		scope = []string{}
@@ -360,7 +371,7 @@ func descriptor(sec *store.Secret, verbs []string) map[string]any {
 		"version":     strconv.FormatInt(sec.Version, 10),
 		"dynamic":     false,
 		"permissions": verbs,
-		"delegation":  nil,
+		"delegation":  delegation,
 	}
 }
 
@@ -388,7 +399,7 @@ func (s *Server) getSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	if !slices.Contains(verbs, "use") {
 		switch {
-		case c.Actor != "" && !slices.Contains(s.actorVerbs(c.Actor), "use"):
+		case c.Actor != "" && !slices.Contains(s.actorVerbs(c.Actor, c.ActorIssuer), "use"):
 			problem(w, http.StatusForbidden, "actor_not_allowed", "this server may not use secrets for users")
 		case c.Actor != "":
 			problem(w, http.StatusForbidden, "not_delegable", "no delegation rule lets this server use it for this user")
@@ -409,6 +420,19 @@ func (s *Server) getSecret(w http.ResponseWriter, r *http.Request) {
 	body["params"] = params
 	body["redact_keys"] = redact
 	body["expires_at"] = nil
+	if c.Actor != "" {
+		// through a grant: the matching rule's ttl bounds how long the server may hold the material
+		var ttl int64
+		for _, rule := range sec.Rules {
+			if rule.Mode == "shared" && rule.TTL > 0 && slices.Contains(rule.Actors, c.Actor) &&
+				slices.ContainsFunc(rule.Subjects, c.Has) && (ttl == 0 || rule.TTL < ttl) {
+				ttl = rule.TTL
+			}
+		}
+		if ttl > 0 {
+			body["expires_at"] = s.now().Add(time.Duration(ttl) * time.Second).UTC().Format(time.RFC3339)
+		}
+	}
 	w.Header().Set("ETag", strconv.Quote(strconv.FormatInt(sec.Version, 10)))
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, body)
@@ -659,7 +683,7 @@ func (s *Server) putGrant(w http.ResponseWriter, r *http.Request) {
 		if !validPrincipal(body.Principal) || len(body.Verbs) == 0 {
 			return nil, fmt.Errorf("%w: a grant is {principal, verbs[]} with a role:, group:, subject: or client: principal", errInvalid)
 		}
-		held := s.verbs(c, current)
+		held := s.grantable(c, current)
 		for _, v := range body.Verbs {
 			if !config.KnownVerb(v) {
 				return nil, fmt.Errorf("%w: unknown verb %q", errInvalid, v)

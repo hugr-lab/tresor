@@ -127,8 +127,9 @@ create.
 A client lists descriptors (no material) and fetches material only for the secret its lookup
 picks. It may cache material; a dynamic secret's no longer than its `expires_at`.
 
-`permissions` lists the verbs **the caller** holds on this secret. `delegation` summarises the
-secret's delegation rules, when the caller may see them.
+`permissions` lists the verbs **the caller** holds on this secret, and is always a list (possibly
+empty). `delegation` summarises the secret's delegation rules for callers who hold `delegate` (the
+reference server: `{"rules": n}`), and is `null` otherwise.
 
 ### Material
 
@@ -232,6 +233,8 @@ Optional (`capabilities.delegation`). A secret with no rules is **not delegated*
 ```
 
 - `actors` are `client:` principals, and `subjects` are any principals.
+- A rule passes on `use`, so its author must hold `use` besides `delegate`. `delegate` alone is not
+  more than `use`.
 - `mode: "user"` — the service issues a credential of the user's own; the resource sees the person.
   A service that cannot issue personal credentials refuses the rule with `422 invalid_secret`.
 - `mode: "shared"` — the actor receives the shared secret, only to act for that user; the user needs
@@ -247,6 +250,12 @@ compromised server must not manage secrets for everyone who ever connected to it
 - A server that may not act for users, or not for the verb at hand, gets `403 actor_not_allowed`.
 - **Material** through a grant also needs a rule that names the actor and one of the user's
   principals. Otherwise the answer is `403 not_delegable`, even when the user holds `use`.
+  - With a rule `ttl`, the material's `expires_at` tells the server how long it may keep it.
+- **Grants under a grant.** A server can pass on only the user's own verbs that the actor policy
+  allows. A `use` that comes only from a rule is never grantable, neither to the user nor to the
+  server itself.
+- **`whoami` under a grant.** `permissions.create` is what the user may create *through this
+  server*. That is nothing unless the policy lets the server create.
 
 ### Acting for a user
 
@@ -261,8 +270,10 @@ in the body:
 
 → `201 {"id": "…", "subject": "…", "actor": "client:acl-node-prod", "expires_at": "…"}`
 
-- **The subject token** is verified like any bearer token. The user's principals are taken at the
-  exchange; a new exchange picks up changed roles.
+- **The subject token** is a person's access token for this service (not a service's, and never the
+  actor's own), verified like any bearer token. The user's principals are taken at the exchange; a
+  new exchange picks up changed roles. The user hands the token to the server for exactly this
+  exchange. The server forwards it to its audience, the service, and must keep it no longer.
 - **Lifetime.** A grant may outlive the user's token, because a session outlives an access token.
   The service caps `ttl`.
 - **Using it.** From then on the server calls any resource with its own token **and**
@@ -272,8 +283,14 @@ in the body:
   for this user.
 - **Binding.** A grant is bound to its actor. Presented with another caller's token it is refused
   with `401 unauthenticated`: a stolen grant alone is useless.
-- **Revocation.** `DELETE /v1/delegations/{id}`, by its actor or an admin, answers `204`. A grant is a
-  bearer credential: never logged, and revocable centrally.
+- **Revocation:**
+  - `DELETE /v1/delegations/{id}`, by its actor or an admin, answers `204`. The id travels in the
+    path, so neither a service nor a proxy in front of it should log the path.
+  - `DELETE /v1/delegations?actor=client:…&subject=subject:…` is **central revocation**. An admin
+    revokes every grant matching the filters (at least one filter is required). Any other caller
+    revokes the grants made for themselves, which ends every session a server holds for them. It
+    answers `{"revoked": n}`.
+  - A grant is a bearer credential: never logged.
 
 ## Errors
 

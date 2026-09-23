@@ -59,7 +59,8 @@ policy:
     - {principal: role:analysts, names: ["team_a_*"]}
     - {principal: client:etl, names: ["*"]}
   actors:                                # servers that may act for users, and with which verbs
-    - {principal: client:acl-node, verbs: [use]}
+    - {principal: client:acl-node, verbs: [use]}                     # none listed: not allowed
+    - {principal: client:ops-node, issuer: https://login.corp.example/realms/main, verbs: [use, annotate]}
 ```
 
 ## Who may do what
@@ -86,8 +87,11 @@ policy:
 
 - **Rules.** A secret's rules (`delegate` verb) name servers (`client:` principals) and users; only
   `shared` mode is supported.
-- **Actors.** A server listed in `policy.actors` exchanges a user's token for a grant. The grant
-  lives in memory only (8 h at most), is bound to that server, and is never logged.
+- **Actors.** A server listed in `policy.actors`, optionally pinned to the issuer of its token,
+  exchanges a person's token for a grant. The grant lives in memory only (8 h at most, and at most
+  100 000 grants), is bound to that server, and is never logged.
+- **Revocation.** Admins revoke by actor or subject (`DELETE /v1/delegations?actor=…`), and users
+  revoke their own grants.
 - **Under a grant:**
   - every check uses the user's principals;
   - the actor's `verbs` only take away (management verbs are denied unless listed);
