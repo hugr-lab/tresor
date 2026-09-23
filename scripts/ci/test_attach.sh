@@ -25,10 +25,14 @@ cd "$root"
 # LOGIN 'auto' where no browser can be opened takes the device flow: only Linux can be without one
 # (macOS and Windows always have an opener), so only there, in a process without BROWSER or a display
 if [ "$(uname)" = "Linux" ] && [ "$pattern" = "test/sql/attach/*" ]; then
+	# its own log: the main run's summary stays the last one for scripts/ci/assert_ran.sh
 	env -u BROWSER -u DISPLAY -u WAYLAND_DISPLAY TRESOR_TEST_AUTO_DEVICE=1 \
-		"$unittest" --skip-error-messages '' "test/sql/attach_auto/*" 2>&1 | tee "$work/auto.log"
-	grep -q "All tests passed (1 assertion\|All tests passed ([0-9]* assertions in 1 test case)" "$work/auto.log" || {
+		"$unittest" --skip-error-messages '' "test/sql/attach_auto/*" >"$work/auto.log" 2>&1 || true
+	if grep -q "All tests passed ([0-9]* assertions in 1 test case)" "$work/auto.log"; then
+		echo "test_attach: LOGIN 'auto' without a browser took the device flow"
+	else
+		cat "$work/auto.log" >&2
 		echo "test_attach: the LOGIN 'auto' -> device test did not pass" >&2
 		exit 1
-	}
+	fi
 fi
