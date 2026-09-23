@@ -99,6 +99,20 @@ SECRETS = {
         "type": "mssql", "scope": ["mssql://bare"], "permissions": ["use"],
         "params": {"port": 1433}, "redact_keys": [],
     },
+    # a dynamic s3 secret for the REFRESH auto path (specs/006): each mint is a new key valid for 600 s (so the
+    # client caches it), the endpoint is this fake's S3, which refuses the first mint; its comment counts the
+    # writes the service received for it
+    "dyn_s3": {
+        "type": "s3", "scope": ["s3://dynbucket"], "owner": "role:other", "permissions": ["use"], "dynamic": True,
+        "lifetime": 600, "params": {"key_id": "DYN-S3"}, "redact_keys": ["secret"],
+    },
+    # a static s3 secret someone stored with httpfs's refresh recipe: the client must drop it
+    "static_with_refresh": {
+        "type": "s3", "scope": ["s3://staticbucket"], "owner": "role:other", "permissions": ["use"],
+        "params": {"key_id": "STATIC", "refresh": "auto",
+                   "refresh_info": {"type": "STRUCT(key_id VARCHAR)", "value": {"key_id": "STATIC"}}},
+        "redact_keys": [],
+    },
     # a name another tool gave, in mixed case: the service compares names exactly
     "Mixed_Case": {
         "type": "http", "scope": ["https://mixed.example"], "owner": "role:other",
@@ -111,13 +125,15 @@ SECRETS = {
     },
 }
 FETCHED = {}  # secret name -> material fetches
+WRITES = {}  # secret name -> PUT / DELETE / PATCH the service received for it
 
 
 def descriptor(name, sec):
     # a written secret carries its own comment and version; the seeded ones count their material fetches
     return {
         "name": name, "type": sec["type"], "provider": sec.get("provider", "config"), "scope": sec["scope"],
-        "comment": sec["comment"] if "comment" in sec else "fetched %d" % FETCHED.get(name, 0),
+        "comment": sec["comment"] if "comment" in sec else (
+            "writes %d" % WRITES.get(name, 0) if name == "dyn_s3" else "fetched %d" % FETCHED.get(name, 0)),
         "owner": sec.get("owner", "role:admins"),
         "created_at": "2026-09-01T10:00:00Z", "updated_at": "2026-09-10T08:30:00Z",
         "version": str(sec.get("version", 7)),
@@ -174,8 +190,53 @@ class Handler(BaseHTTPRequestHandler):
             return parts[1], "/" + (parts[2] if len(parts) > 2 else "")
         return "", path
 
+    # --- a minimal S3 (specs/006): /dynbucket/<key>, refusing dyn_s3's first mint (DYN-S3-1) -------------
+    S3_OBJECT = b"hello from s3\n"
+
+    def s3(self, head):
+        auth = self.headers.get("Authorization", "")
+        key_id = auth.split("Credential=")[1].split("/")[0] if "Credential=" in auth else ""
+        if not key_id or key_id == "DYN-S3-1":
+            body = b"<Error><Code>AccessDenied</Code><Message>expired</Message></Error>"
+            self.send_response(403)
+            self.send_header("Content-Type", "application/xml")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if not head:
+                self.wfile.write(body)
+            return
+        data = self.S3_OBJECT
+        status, start, end = 200, 0, len(data) - 1
+        rng = self.headers.get("Range", "")
+        if rng.startswith("bytes="):
+            first, _, last = rng[len("bytes="):].partition("-")
+            start, end = int(first or 0), min(int(last) if last else len(data) - 1, len(data) - 1)
+            status = 206
+        chunk = data[start:end + 1]
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(chunk) if not head else len(data)))
+        self.send_header("Last-Modified", "Wed, 01 Jan 2026 00:00:00 GMT")
+        self.send_header("ETag", '"s3-object"')
+        if status == 206:
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, len(data)))
+        self.end_headers()
+        if not head:
+            self.wfile.write(chunk)
+
+    def do_HEAD(self):
+        if urllib.parse.urlparse(self.path).path.startswith("/dynbucket/"):
+            self.s3(True)
+            return
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
+        if url.path.startswith("/dynbucket/"):
+            self.s3(False)
+            return
         query = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
         base = self.base()
         realm, rest = self.split(url.path)
@@ -279,7 +340,14 @@ class Handler(BaseHTTPRequestHandler):
                 FETCHED[name] = FETCHED.get(name, 0) + 1
                 body = dict(descriptor(name, sec), params=dict(sec["params"]), redact_keys=sec["redact_keys"],
                             expires_at=None)
-                if sec.get("dynamic"):
+                if name == "dyn_s3":
+                    body["params"].update({
+                        "key_id": "DYN-S3-%d" % FETCHED[name], "secret": {"type": "VARCHAR", "value": "s"},
+                        "region": "us-east-1", "endpoint": "127.0.0.1:%d" % self.server.server_address[1],
+                        "url_style": "path", "use_ssl": {"type": "BOOLEAN", "value": False}})
+                    body["expires_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                       time.gmtime(time.time() + sec["lifetime"]))
+                elif sec.get("dynamic"):
                     body["params"]["key_id"] = "DYN-%d" % FETCHED[name]
                     body["expires_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ",
                                                        time.gmtime(time.time() + sec["lifetime"]))
@@ -311,6 +379,7 @@ class Handler(BaseHTTPRequestHandler):
         parts = [urllib.parse.unquote(p) for p in rest[len("/v1/secrets/"):].split("/")]
         body = self.body()
         with LOCK:
+            WRITES[parts[0]] = WRITES.get(parts[0], 0) + 1
             if len(parts) == 3 and parts[1] == "grants":
                 sec = SECRETS.get(parts[0])
                 if sec is None:
@@ -354,6 +423,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         parts = [urllib.parse.unquote(p) for p in rest[len("/v1/secrets/"):].split("/")]
         with LOCK:
+            WRITES[parts[0]] = WRITES.get(parts[0], 0) + 1
             sec = SECRETS.get(parts[0])
             if sec is None or (len(parts) == 3 and parts[2] not in sec.get("grants", {})):
                 self.problem(404, "not_found", "no such secret or grant")
@@ -377,6 +447,7 @@ class Handler(BaseHTTPRequestHandler):
         name = urllib.parse.unquote(rest[len("/v1/secrets/"):])
         body = self.body()
         with LOCK:
+            WRITES[name] = WRITES.get(name, 0) + 1
             sec = SECRETS.get(name)
             if sec is None:
                 self.problem(404, "not_found", "no secret")

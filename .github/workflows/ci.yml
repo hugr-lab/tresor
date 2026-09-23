@@ -68,6 +68,7 @@ jobs:
     env:
       GEN: ninja
       CCACHE_DIR: ${{ github.workspace }}/.ccache
+      TRESOR_TEST_HTTPFS: '1'   # httpfs in the test build (specs/006; extension_config.cmake)
       VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/vcpkg_bincache,readwrite'
     steps:
       - uses: actions/checkout@v7
@@ -93,9 +94,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: vcpkg_bincache
-          key: vcpkg-bincache-linux_amd64-${{ hashFiles('.gitmodules', 'vcpkg.json') }}-${{ github.run_id }}
+          key: vcpkg-bincache-linux_amd64-${{ hashFiles('.gitmodules', 'vcpkg.json', 'extension_config.cmake') }}-${{ github.run_id }}
           restore-keys: |
-            vcpkg-bincache-linux_amd64-${{ hashFiles('.gitmodules', 'vcpkg.json') }}-
+            vcpkg-bincache-linux_amd64-${{ hashFiles('.gitmodules', 'vcpkg.json', 'extension_config.cmake') }}-
             vcpkg-bincache-linux_amd64-
 
       - name: Restore ccache
@@ -128,7 +129,7 @@ jobs:
         run: |
           set -o pipefail   # a failing script must fail the step, whatever the summary line says
           scripts/ci/test_attach.sh 2>&1 | tee attach.log
-          scripts/ci/assert_ran.sh attach.log 5 200 'require-env TRESOR_TEST_PORT'
+          scripts/ci/assert_ran.sh attach.log 6 250 'require-env TRESOR_TEST_PORT|require httpfs'
 
       # the reference server next to a real Keycloak (specs/003): the conformance suite, a real
       # browser login (PKCE, Keycloak's redirect checks) and a real client-credentials grant
@@ -157,6 +158,7 @@ jobs:
     env:
       GEN: ninja
       CCACHE_DIR: ${{ github.workspace }}/.ccache
+      TRESOR_TEST_HTTPFS: '1'   # httpfs in the test build (specs/006; extension_config.cmake)
       VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/vcpkg_bincache,readwrite'
     steps:
       - uses: actions/checkout@v7
@@ -175,9 +177,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: vcpkg_bincache
-          key: vcpkg-bincache-osx_arm64-${{ hashFiles('.gitmodules', 'vcpkg.json') }}-${{ github.run_id }}
+          key: vcpkg-bincache-osx_arm64-${{ hashFiles('.gitmodules', 'vcpkg.json', 'extension_config.cmake') }}-${{ github.run_id }}
           restore-keys: |
-            vcpkg-bincache-osx_arm64-${{ hashFiles('.gitmodules', 'vcpkg.json') }}-
+            vcpkg-bincache-osx_arm64-${{ hashFiles('.gitmodules', 'vcpkg.json', 'extension_config.cmake') }}-
             vcpkg-bincache-osx_arm64-
 
       - name: Restore ccache
@@ -208,7 +210,7 @@ jobs:
         run: |
           set -o pipefail   # a failing script must fail the step, whatever the summary line says
           scripts/ci/test_attach.sh 2>&1 | tee attach.log
-          scripts/ci/assert_ran.sh attach.log 5 200 'require-env TRESOR_TEST_PORT'
+          scripts/ci/assert_ran.sh attach.log 6 250 'require-env TRESOR_TEST_PORT|require httpfs'
 
       - name: Upload extension artifact
         uses: actions/upload-artifact@v7

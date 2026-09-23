@@ -51,7 +51,7 @@ design/                     # LOCAL, gitignored research
 ```sh
 git submodule update --init --recursive
 make vcpkg-setup                            # once (or VCPKG_TOOLCHAIN_PATH=<an existing vcpkg>/scripts/buildsystems/vcpkg.cmake)
-GEN=ninja make                              # release: duckdb (2.0) + tresor
+TRESOR_TEST_HTTPFS=1 GEN=ninja make         # release: duckdb (2.0) + tresor (+ httpfs for the tests)
 build/release/test/unittest 'test/sql/*'    # sqllogictests (test/sql/attach/* skip without TRESOR_TEST_PORT)
 scripts/ci/test_attach.sh                   # attach/login tests against test/fake/fake_service.py
 scripts/ci/test_keycloak.sh                 # server/ + Keycloak (docker): test/sql/conformance, test/sql/reference_server
@@ -65,7 +65,12 @@ cd website && npm ci && npx docusaurus build                               # doc
 test could prove that `ATTACH 'tresor:…'` loads the installed extension. So `require tresor` does not
 work — load by build path (`LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension'`), or
 `INSTALL tresor FROM '__BUILD_DIRECTORY__/repository'` into `SET extension_directories = [...]`
-(`extension_directory` is deprecated on 2.0). In gate tests set `autoload_known_extensions = false`. Tests that need a service
+(`extension_directory` is deprecated on 2.0). In gate tests set `autoload_known_extensions = false`.
+With `TRESOR_TEST_HTTPFS=1` (as CI builds) the test build also links **httpfs** (`extension_config.cmake`,
+at the commit duckdb's 2.0 tree pins in `duckdb/.github/config/extensions/httpfs.cmake`; move both with
+the duckdb pin): the s3/gcs/r2/aws types and the real `REFRESH auto` path (specs/006). Opt-in, so the
+distribution build never compiles it; tresor itself does not depend on it. Without it `refresh.test`
+skips (`require httpfs`), which CI forbids. Tests that need a service
 `require-env TRESOR_TEST_PORT` and run through `scripts/ci/test_attach.sh` (the fake speaks http on
 loopback, so they ATTACH with `INSECURE_HTTP true`; `BROWSER` is the fake browser).
 

@@ -111,6 +111,13 @@ FROM 's3://lake/sales/*.parquet';
 FROM which_secret('s3://lake/sales/x.parquet', 's3');   -- which secret, from which storage
 ```
 
+**Dynamic secrets.** A dynamic `s3`, `r2` or `gcs` secret (short-lived credentials the service
+mints) is refreshed when S3 turns its key away mid-query:
+- httpfs's `REFRESH auto` goes through tresor's provider, which asks the service for a fresh one;
+  nothing is written back.
+- Refreshing needs `allow_persistent_secrets` (the DuckDB default), like every write to the service.
+- A static service secret is never refreshed. If its key stops working, rotate it in the service.
+
 `duckdb_secrets()` lists the service's secrets too, but without material.
 
 If the service becomes unreachable, the last list it gave still decides what it covers:

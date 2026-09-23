@@ -25,6 +25,7 @@ constexpr int64_t LIST_TTL_SECONDS = 30;   // a descriptor list is refreshed aft
 constexpr int64_t RETRY_AFTER_SECONDS = 5; // a failed refresh is not retried sooner
 constexpr int64_t STATIC_MATERIAL_SECONDS = 300;
 constexpr int64_t DYNAMIC_MARGIN_SECONDS = 30; // a dynamic secret is refetched this long before it expires
+constexpr int64_t FRESH_MINT_SECONDS = 2;      // a mint this young satisfies a refresh (parallel 403s: one mint)
 
 int64_t NowSeconds() {
 	return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
@@ -164,6 +165,23 @@ const vector<string> &AlwaysRedacted() {
 	                                  "private_key", "client_secret",    "bearer_token", "access_token",
 	                                  "account_key", "connection_string"};
 	return keys;
+}
+
+//! httpfs's refresh recipe: never taken from a service secret (it would refresh through the reader's own
+//! provider and environment, and write back), never written to one (specs/006)
+bool IsRefreshKey(const string &key) {
+	return key == "refresh" || key == "refresh_info";
+}
+
+//! The secret types whose refresh httpfs drives (REFRESH auto): a dynamic service secret of these types is
+//! refreshed through the tresor provider
+bool RefreshableType(const string &type) {
+	return type == "s3" || type == "r2" || type == "gcs" || type == "aws"; // httpfs's S3SecretConfig::SecretTypes()
+}
+
+//! The provider a descriptor's secret carries in DuckDB: tresor for a refreshable dynamic one
+string ProviderOf(const Descriptor &d) {
+	return d.dynamic && RefreshableType(d.type) ? string("tresor") : d.provider;
 }
 
 //! A service's secret of type tresor is a login for DuckDB to use, never one a service may plant: it
@@ -308,6 +326,9 @@ string SecretBody(const KeyValueSecret &secret) {
 		if (value.IsNull()) {
 			continue; // not a value: the protocol has no NULL param (the reference server refuses one)
 		}
+		if (IsRefreshKey(StringUtil::Lower(entry.first.GetIdentifierName()))) {
+			continue; // a refresh recipe of the writer's process means nothing in the service (specs/006)
+		}
 		auto key = JsonText(StringUtil::Lower(entry.first.GetIdentifierName()));
 		string json;
 		if (value.type().id() == LogicalTypeId::VARCHAR) {
@@ -326,8 +347,9 @@ string SecretBody(const KeyValueSecret &secret) {
 	string redact;
 	for (auto &key : secret.redact_keys) {
 		auto param = secret.secret_map.find(key);
-		if (param == secret.secret_map.end() || param->second.IsNull()) {
-			continue;
+		if (param == secret.secret_map.end() || param->second.IsNull() ||
+		    IsRefreshKey(StringUtil::Lower(key.GetIdentifierName()))) {
+			continue; // only keys that are params of the body
 		}
 		redact += (redact.empty() ? "" : ",") + JsonText(StringUtil::Lower(key.GetIdentifierName()));
 	}
@@ -500,12 +522,25 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const shared_ptr<Tr
 		throw IOException("tresor: the secret %s of %s came without params", d.name, current->Info().host);
 	}
 	optional_ptr<ClientContext> context = transaction ? transaction->context : nullptr;
-	auto secret = make_uniq<KeyValueSecret>(d.scope, Identifier(d.type), Identifier(d.provider), Identifier(d.name));
+	// a dynamic S3-family secret is refreshed by tresor (httpfs's REFRESH auto calls the provider recorded
+	// in the secret, with the options of its refresh_info); every other one keeps the service's provider
+	auto refreshable = d.dynamic && RefreshableType(d.type);
+	auto provider = ProviderOf(d);
+	auto secret = make_uniq<KeyValueSecret>(d.scope, Identifier(d.type), Identifier(provider), Identifier(d.name));
+	if (refreshable) {
+		child_list_t<Value> recipe;
+		recipe.emplace_back(Identifier("tresor_service"), Value(storage_name));
+		recipe.emplace_back(Identifier("tresor_secret"), Value(d.name));
+		secret->secret_map[Identifier("refresh_info")] = Value::STRUCT(std::move(recipe));
+	}
 	size_t idx, max;
 	yyjson_val *key, *item;
 	yyjson_obj_foreach(params, idx, max, key, item) {
 		string name = yyjson_get_str(key);
 		auto lowered = StringUtil::Lower(name);
+		if (IsRefreshKey(lowered)) {
+			continue; // a service secret is refreshed only by tresor
+		}
 		if (yyjson_is_str(item)) {
 			secret->secret_map[Identifier(lowered)] = Value(yyjson_get_str(item)); // shorthand for VARCHAR
 		} else if (yyjson_is_obj(item) && !Str(item, "type").empty()) {
@@ -625,7 +660,7 @@ vector<SecretEntry> TresorSecretStorage::AllSecrets(optional_ptr<CatalogTransact
 	for (auto &d : list) {
 		if (Lookupable(d)) {
 			out.push_back(EntryOf(
-			    make_uniq<KeyValueSecret>(d.scope, Identifier(d.type), Identifier(d.provider), Identifier(d.name))));
+			    make_uniq<KeyValueSecret>(d.scope, Identifier(d.type), Identifier(ProviderOf(d)), Identifier(d.name))));
 		}
 	}
 	return out;
@@ -642,6 +677,50 @@ void TresorSecretStorage::Invalidate(const string &name) {
 	failed_at = 0;
 	generation++;
 	materials.erase(name);
+}
+
+unique_ptr<const BaseSecret> TresorSecretStorage::RefreshMaterial(const string &name,
+                                                                  optional_ptr<CatalogTransaction> transaction) {
+	shared_ptr<TresorSession> current;
+	for (auto &d : Snapshot(current)) {
+		if (!StringUtil::CIEquals(d.name, name) || !Lookupable(d) || !d.May("use")) {
+			continue;
+		}
+		// only a dynamic secret is refreshed: a static one's credential is fixed in the service, and
+		// re-creating it would be a write (the rotation is the service's business)
+		if (!d.dynamic || !RefreshableType(d.type)) {
+			throw InvalidInputException("tresor: the secret %s of %s is not a dynamic %s secret - there is "
+			                            "nothing to refresh",
+			                            d.name, storage_name, d.type);
+		}
+		{
+			// fresh, not cached: the credential in hand was just refused. A mint made by another refresh a
+			// moment ago is the answer to this one too (requests of one scan may refresh in parallel); a
+			// mint made by an ordinary lookup is not - it may be the very credential that was refused
+			lock_guard<mutex> guard(lock);
+			auto cached = materials.find(d.name);
+			auto now = NowSeconds();
+			if (cached != materials.end() && cached->second.version == d.version && cached->second.refreshed_at != 0 &&
+			    now - cached->second.refreshed_at < FRESH_MINT_SECONDS && cached->second.valid_until > now) {
+				return cached->second.secret->Clone();
+			}
+			materials.erase(d.name);
+		}
+		auto material = MaterialOf(current, d, transaction);
+		if (!material) {
+			break;
+		}
+		lock_guard<mutex> guard(lock);
+		auto cached = materials.find(d.name);
+		if (cached != materials.end()) {
+			cached->second.refreshed_at = NowSeconds();
+		}
+		return material;
+	}
+	if (!current) {
+		throw InvalidInputException("tresor: %s is detached", storage_name);
+	}
+	throw InvalidInputException("tresor: %s has no secret %s this caller may use", storage_name, name);
 }
 
 string TresorSecretStorage::ServiceName(const string &name) {
@@ -664,6 +743,11 @@ unique_ptr<SecretEntry> TresorSecretStorage::StoreSecret(unique_ptr<const BaseSe
 	auto key_value = dynamic_cast<const KeyValueSecret *>(secret.get());
 	if (!key_value) {
 		throw InvalidInputException("tresor: only key-value secrets can be stored in %s", storage_name);
+	}
+	if (secret->GetProvider() == Identifier("tresor")) {
+		// httpfs's REFRESH auto re-created a service secret through the tresor provider, which fetched it
+		// from the service (and cached it): a refresh, not a write - nothing goes back
+		return make_uniq<SecretEntry>(EntryOf(secret->Clone()));
 	}
 	auto name = ServiceName(secret->GetName().GetIdentifierName());
 	std::map<std::string, std::string> headers;
@@ -718,6 +802,16 @@ void TresorSecretStorage::DropSecretByName(const Identifier &name_p, OnEntryNotF
 		throw InvalidInputException("tresor: deleting the secret %s in %s: %s", name, storage_name,
 		                            DescribeProblem(response.status, response.body));
 	}
+}
+
+optional_ptr<TresorSecretStorage> FindStorage(ClientContext &context, const string &name) {
+	auto registry = ObjectCache::GetObjectCache(context).GetOrCreate<StorageRegistry>(StorageRegistry::ObjectType());
+	if (!registry) {
+		return nullptr;
+	}
+	lock_guard<mutex> guard(registry->lock);
+	auto existing = registry->storages.find(StringUtil::Lower(name));
+	return existing == registry->storages.end() ? nullptr : existing->second;
 }
 
 TresorSecretStorage &StorageFor(ClientContext &context, const string &name) {
