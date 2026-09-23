@@ -96,6 +96,20 @@ policy:
     `verbs` list it;
   - everything else is `403 actor_not_allowed`.
 
+### Upgrading from before tresor specs/009
+
+- **`policy.create` is gone.** A config that still has it is refused with that message; list the
+  principals who may create in `policy.admins`.
+- **Old grants are ignored.** A stored grant to a `subject:` or a `client:`, or of any verb but `use`,
+  gives nothing now, and the server logs each at start. Re-grant `use` to a role or a group. A
+  service account (a node) is granted through a role of its token.
+- **Delegation rules are dropped** when a stored file is loaded.
+- **An actor's `verbs` changed meaning.** `use` is now the server's own grants, used for its users.
+  Any other verb lets **admins** manage through the server. Keep them to what you mean to allow; the
+  test configuration lists every verb for its node, which is not a production default.
+- **Admin status is taken at the grant's exchange.** A demoted admin keeps managing through a node
+  until the grant expires (8 h at most) or is revoked (`DELETE /v1/delegations?subject=…`).
+
 ## Identity provider setup (Keycloak)
 
 `server/testdata/keycloak/realm-tresor.json` is the realm the tests import. What matters for a real

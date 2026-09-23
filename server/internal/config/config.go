@@ -67,6 +67,8 @@ type Policy struct {
 	// own (what an admin granted the server); a management verb listed here passes through the server only for
 	// a user who is an admin themselves - administration through a duckdb-acl node (specs/009).
 	Actors []ActorRule `yaml:"actors"`
+	// Create is gone (specs/009): kept only to refuse a config that still has it, with a word on why
+	Create any `yaml:"create"`
 }
 
 // ActorRule lets a service (a client: principal) act for users with the verbs listed: `use` (its own grants),
@@ -183,6 +185,10 @@ func (c *Config) validate() error {
 				return fmt.Errorf("issuer %q: algorithm %q is not allowed (asymmetric only)", is.Issuer, alg)
 			}
 		}
+	}
+	if c.Policy.Create != nil {
+		return errors.New("policy.create is gone (tresor specs/009): only admins create secrets - list them in " +
+			"policy.admins")
 	}
 	for _, p := range c.Policy.Admins {
 		if err := checkPrincipal(p); err != nil {

@@ -16,9 +16,10 @@ A simpler permission model, chosen after a design discussion (2026-09-23):
 2. **Use is granted to roles and groups only** (`role:`, `group:` from the token). It is never
    granted to one user, and never implied by an administrative role: an administrator uses a secret
    only if one of their roles holds `use`.
-3. **A server has a role like anyone else.** A duckdb-acl node's service account (`client:acl-node`,
-   or its roles) is granted `use` on what it serves: its ducklake, iceberg, databases. It needs no
-   administrative rights.
+3. **A server has a role like anyone else.** A role of a duckdb-acl node's service account (in the
+   test realm, `role:nodes`) is granted `use` on what the node serves: its ducklake, iceberg,
+   databases. The node needs no administrative rights. A service whose tokens carry no role or group
+   is given one at the IdP.
 4. **A delegation grant only proves "this request is for user X's session".** Under a grant:
    - `use` is **the server's own**: the user gets nothing beyond what was granted to the server;
    - **management passes through only for an administrator.** The user's own role must be
@@ -102,6 +103,23 @@ credentials belong in their own DuckDB.
     (`duckdb_databases()`): exactly one is taken, several or none is an error that says so.
   - **Without tresor.** If tresor is not installed and loaded, the node works as ever: secrets are
     just not created or managed through acl, and the statements say so.
+
+## The review's findings (applied)
+
+An independent review found no path for a non-admin to manage, nor for a user under a grant to get
+more than the actor's `use`. It found:
+- **Legacy grants still gave `use`:** grants from before this spec, to a `subject:` or a `client:`.
+  Now only `role:`/`group:` grants of `use` count. The rest are ignored and logged at start, and
+  the upgrade is documented.
+- **The spec said a node's `client:` could be granted, while the code refuses it.** Now the spec
+  says the node is granted through a role.
+- **An existence oracle under a grant:** a missing name and an invisible one answered differently.
+  They now answer alike. So do `If-Match` on a missing name and on an invisible one: the permission
+  is now checked before the precondition.
+- **A config with `policy.create`** is refused with a message that says why.
+- **Upgrade notes** now cover the actors' `verbs` change of meaning and admin status being taken at
+  the exchange.
+- **Tests:** legacy grants and the oracle. Stale comments were fixed.
 
 ## Enforcement & security
 

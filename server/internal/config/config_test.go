@@ -52,3 +52,10 @@ func TestRefused(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateGone(t *testing.T) {
+	_, err := Parse([]byte(good + "  create:\n    - {principal: role:analysts, names: [\"*\"]}\n"))
+	if err == nil || !strings.Contains(err.Error(), "policy.create is gone") {
+		t.Fatalf("a config with policy.create: %v", err)
+	}
+}

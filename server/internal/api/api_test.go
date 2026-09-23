@@ -378,3 +378,48 @@ func TestInvalidSecrets(t *testing.T) {
 		}
 	}
 }
+
+// grants from before specs/009 (to a subject: or a client:, or of management verbs) give nothing, and are
+// reported at start
+func TestLegacyGrantsIgnored(t *testing.T) {
+	f := newFixture(t, "")
+	node := f.idp.Service(t, "duckdb-secrets", "node")
+	f.do("PUT", "/v1/secrets/old", f.admin, s3Secret)
+	_, _ = f.srv.store.Update("old", func(cur *store.Secret) (*store.Secret, error) {
+		cur.Grants = append(cur.Grants,
+			store.Grant{ID: "s", Principal: "subject:" + f.idp.URL + "|carol-id", Verbs: []string{"use"}},
+			store.Grant{ID: "c", Principal: "client:node", Verbs: []string{"use", "update"}},
+			store.Grant{ID: "r", Principal: "role:analysts", Verbs: []string{"update", "grant"}})
+		return cur, nil
+	})
+	for name, token := range map[string]string{"carol": f.carol, "the node": node, "alice": f.alice} {
+		if r := f.do("GET", "/v1/secrets/old", token, ""); r.status != 404 {
+			t.Errorf("%s through a legacy grant: %d", name, r.status)
+		}
+	}
+	if r := f.do("PUT", "/v1/secrets/old", f.alice, s3Secret); r.status != 403 {
+		t.Errorf("alice's legacy update: %d", r.status)
+	}
+	New(f.srv.cfg, f.srv.verifier, f.srv.store, f.srv.log)
+	if !strings.Contains(f.logs.String(), "a grant from before specs/009 is ignored") {
+		t.Fatal("legacy grants are reported at start")
+	}
+}
+
+// a name's existence does not leak: through a grant, or through a precondition
+func TestNoExistenceOracle(t *testing.T) {
+	f := newFixture(t, "")
+	node := f.idp.Service(t, "duckdb-secrets", "node")
+	f.do("PUT", "/v1/secrets/hidden", f.admin, s3Secret)
+	g, _ := f.grantFor(node, f.alice)
+	missing := f.do("PUT", "/v1/secrets/nope", node, s3Secret, "Delegation", g)
+	existing := f.do("PUT", "/v1/secrets/hidden", node, s3Secret, "Delegation", g)
+	if missing.status != existing.status || missing.problemType(t) != existing.problemType(t) {
+		t.Fatalf("under a grant: %d %s vs %d %s", missing.status, missing.body, existing.status, existing.body)
+	}
+	missing = f.do("PUT", "/v1/secrets/nope", f.alice, s3Secret, "If-Match", `"1"`)
+	existing = f.do("PUT", "/v1/secrets/hidden", f.alice, s3Secret, "If-Match", `"1"`)
+	if missing.status != existing.status || missing.problemType(t) != existing.problemType(t) {
+		t.Fatalf("If-Match: %d vs %d", missing.status, existing.status)
+	}
+}
