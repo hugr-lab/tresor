@@ -432,7 +432,9 @@ string DescribeProblem(int status, const string &body) {
 		out += " " + type;
 	}
 	if (!detail.empty()) {
-		out += ": " + detail;
+		// the service's words, bounded: a service is responsible for keeping values out of them (the
+		// reference server does), the client for not letting a long echo run on
+		out += ": " + (detail.size() > 200 ? detail.substr(0, 200) + "..." : detail);
 	}
 	return out;
 }

@@ -67,8 +67,12 @@ public:
 
 	//! The session served now (null: inactive).
 	shared_ptr<TresorSession> Current();
-	//! After a write: the list is stale, the name's material gone.
+	//! After a write: the list is stale, the name's material gone (and a refresh already under way
+	//! cannot store the list it fetched before the write).
 	void Invalidate(const string &name);
+	//! The service's own spelling of a secret's name: DuckDB compares names case-insensitively, the
+	//! service exactly - a listed secret is addressed as the service lists it, a new one in lower case.
+	string ServiceName(const string &name);
 
 private:
 	struct Material {
@@ -92,6 +96,7 @@ private:
 	vector<Descriptor> descriptors;
 	int64_t listed_at = 0;
 	int64_t failed_at = 0;
+	uint64_t generation = 0; // bumped by every write: a refresh started before it does not land
 	unordered_map<string, Material> materials;
 };
 
@@ -106,6 +111,9 @@ string SecretBody(const KeyValueSecret &secret);
 //! The service's name for a secret: DuckDB compares secret names case-insensitively, the protocol asks for
 //! one canonical form - lower case.
 string CanonicalName(const string &name);
+
+//! A string as JSON text.
+string JsonString(const string &text);
 
 //! A path segment, percent-encoded.
 string EncodePathSegment(const string &segment);

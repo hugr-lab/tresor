@@ -2,7 +2,6 @@
 #include "tresor_login.hpp"
 
 #include "duckdb/common/exception.hpp"
-#include "duckdb/common/types/hash.hpp"
 
 // The service's management surface as table functions of the catalog (specs/005): annotate_secret,
 // grants, grant_secret, revoke_secret. Each call runs once, when its table function is scanned; the
@@ -29,14 +28,16 @@ struct ManageBindData : public TableFunctionData {
 	vector<string> verbs;
 };
 
-struct ManageState : public GlobalTableFunctionState {
-	bool done = false;
-};
-
 struct Grant {
 	string id;
 	string principal;
 	vector<string> verbs;
+};
+
+struct ManageState : public GlobalTableFunctionState {
+	bool done = false;
+	vector<Grant> rows; // grants(): emitted a chunk at a time
+	idx_t offset = 0;
 };
 
 string Arg(TableFunctionBindInput &input, idx_t index, const char *what) {
@@ -102,19 +103,15 @@ Value Verbs(const vector<string> &verbs) {
 	return Value::LIST(LogicalType::VARCHAR, std::move(values));
 }
 
-string JsonText(const string &text) {
-	string out = "\"";
-	for (unsigned char c : text) {
-		if (c == '"' || c == '\\') {
-			out.push_back('\\');
-			out.push_back(char(c));
-		} else if (c < 0x20) {
-			out += StringUtil::Format("\\u%04x", c);
-		} else {
-			out.push_back(char(c));
-		}
+//! A grant id every client computes the same way, from the principal: FNV-1a 64 - self-contained, so no
+//! DuckDB version or build flag changes it.
+string GrantId(const string &principal) {
+	uint64_t hash = 14695981039346656037ULL;
+	for (unsigned char c : principal) {
+		hash ^= c;
+		hash *= 1099511628211ULL;
 	}
-	return out + "\"";
+	return StringUtil::Format("g-%016llx", (unsigned long long)hash);
 }
 
 template <Action ACTION>
@@ -136,6 +133,9 @@ unique_ptr<FunctionData> ManageBind(ClientContext &context, TableFunctionBindInp
 		break;
 	case Action::GRANT:
 		data->argument = Arg(input, 1, "the principal");
+		if (input.inputs[2].IsNull()) {
+			throw InvalidInputException("tresor: the verbs must not be NULL - revoke_secret takes all away");
+		}
 		for (auto &verb : ListValue::GetChildren(input.inputs[2])) {
 			if (verb.IsNull()) {
 				throw InvalidInputException("tresor: a verb must not be NULL");
@@ -172,18 +172,25 @@ void EmitGrant(DataChunk &output, idx_t row, const Grant &grant) {
 void ManageScan(ClientContext &context, TableFunctionInput &input, DataChunk &output) {
 	auto &state = input.global_state->Cast<ManageState>();
 	if (state.done) {
+		// grants(): the rest of the rows, a chunk at a time
+		while (state.offset < state.rows.size() && output.size() < STANDARD_VECTOR_SIZE) {
+			EmitGrant(output, 0, state.rows[state.offset++]);
+		}
 		return;
 	}
-	state.done = true; // once per statement, whatever happens below
-	auto &data = input.bind_data->Cast<ManageBindData>();
+	state.done = true;                                   // the call runs once per statement, whatever happens below
+	auto data = input.bind_data->Cast<ManageBindData>(); // a copy: the name is resolved per call
+	auto &storage = data.storage.get();
+	// the service's own spelling: DuckDB compares names case-insensitively, the service exactly
+	data.name = storage.ServiceName(data.name);
 	auto path = "/v1/secrets/" + EncodePathSegment(data.name);
 	switch (data.action) {
 	case Action::ANNOTATE: {
-		auto response = data.session->Call("PATCH", path, "{\"comment\":" + JsonText(data.argument) + "}");
+		auto response = data.session->Call("PATCH", path, "{\"comment\":" + JsonString(data.argument) + "}");
 		if (response.status != 200) {
 			Refused(data, response, "annotate");
 		}
-		data.storage.get().Invalidate(data.name);
+		storage.Invalidate(data.name);
 		JsonDoc doc(response.body);
 		auto version = yyjson_obj_get(doc.Root(), "version");
 		output.data[0].Append(Value(data.name));
@@ -193,29 +200,42 @@ void ManageScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 		return;
 	}
 	case Action::GRANTS: {
-		for (auto &grant : ReadGrants(data)) {
-			EmitGrant(output, 0, grant);
+		state.rows = ReadGrants(data);
+		while (state.offset < state.rows.size() && output.size() < STANDARD_VECTOR_SIZE) {
+			EmitGrant(output, 0, state.rows[state.offset++]);
 		}
 		return;
 	}
 	case Action::GRANT: {
-		// one grant per principal: an existing grant to it is replaced under its id; a new one gets an id
-		// every client computes the same way
-		string id = StringUtil::Format("g-%016llx", (unsigned long long)Hash(data.argument.c_str()));
-		for (auto &grant : ReadGrants(data)) {
+		// one grant per principal: an existing grant to it is replaced under its id and any others to it
+		// removed, so the principal ends up holding exactly these verbs; a new one gets a stable id
+		auto existing = ReadGrants(data);
+		string id = GrantId(data.argument);
+		for (auto &grant : existing) {
 			if (grant.principal == data.argument) {
 				id = grant.id;
+				break;
 			}
 		}
 		string verbs;
 		for (auto &verb : data.verbs) {
-			verbs += (verbs.empty() ? "" : ",") + JsonText(verb);
+			verbs += (verbs.empty() ? "" : ",") + JsonString(verb);
 		}
-		auto response = data.session->Call("PUT", path + "/grants/" + EncodePathSegment(id),
-		                                   "{\"principal\":" + JsonText(data.argument) + ",\"verbs\":[" + verbs + "]}");
+		auto response =
+		    data.session->Call("PUT", path + "/grants/" + EncodePathSegment(id),
+		                       "{\"principal\":" + JsonString(data.argument) + ",\"verbs\":[" + verbs + "]}");
 		if (response.status != 200 && response.status != 201) {
 			Refused(data, response, "grant on");
 		}
+		for (auto &grant : existing) {
+			if (grant.principal == data.argument && grant.id != id) {
+				auto removed = data.session->Call("DELETE", path + "/grants/" + EncodePathSegment(grant.id));
+				if (removed.status != 204 && removed.status != 200 && removed.status != 404) {
+					Refused(data, removed, "replace a grant on");
+				}
+			}
+		}
+		storage.Invalidate(data.name); // the caller's own verbs may have changed
 		EmitGrant(output, 0, Grant {id, data.argument, data.verbs});
 		return;
 	}
@@ -230,6 +250,7 @@ void ManageScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 			}
 			EmitGrant(output, 0, grant);
 		}
+		storage.Invalidate(data.name);
 		if (output.size() == 0) {
 			throw InvalidInputException("tresor: %s holds no grant on the secret %s", data.argument, data.name);
 		}

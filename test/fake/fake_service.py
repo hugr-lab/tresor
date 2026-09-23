@@ -99,6 +99,12 @@ SECRETS = {
         "type": "mssql", "scope": ["mssql://bare"], "permissions": ["use"],
         "params": {"port": 1433}, "redact_keys": [],
     },
+    # a name another tool gave, in mixed case: the service compares names exactly
+    "Mixed_Case": {
+        "type": "http", "scope": ["https://mixed.example"], "owner": "role:other",
+        "permissions": ["use", "update", "delete", "annotate", "grant"],
+        "params": {"bearer_token": "m"}, "redact_keys": ["bearer_token"],
+    },
     "bad_value": {
         "type": "mssql", "scope": ["mssql://bad"], "permissions": ["use"],
         "params": {"port": {"type": "INTEGER", "value": "not-a-number"}}, "redact_keys": [],
@@ -318,7 +324,11 @@ class Handler(BaseHTTPRequestHandler):
             if name.startswith("forbidden_"):
                 self.problem(403, "no_verb", "the caller may not create this secret")
                 return
-            if any(k not in body.get("params", {}) for k in body.get("redact_keys", [])):
+            params = body.get("params", {})
+            if any(v is None or (isinstance(v, dict) and v.get("value") is None) for v in params.values()):
+                self.problem(422, "invalid_secret", "a parameter is null")  # as the reference server
+                return
+            if any(k not in params for k in body.get("redact_keys", [])):
                 self.problem(422, "invalid_secret", "a redact key is not a parameter")  # as the reference server
                 return
             exists = name in SECRETS

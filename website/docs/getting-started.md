@@ -137,14 +137,19 @@ DROP PERSISTENT SECRET lake_rw FROM corp;
 ```
 
 The service decides whether each of these is allowed, from your role. Some things to know:
-- **Names** are stored in lower case, because DuckDB compares secret names case-insensitively.
+- **Names.** DuckDB compares secret names case-insensitively. A new secret is stored in lower case,
+  and an existing one is found by any spelling.
+- **Resolved credentials.** A secret made with a resolving provider (for example s3's
+  `credential_chain`) is stored with *your* resolved credentials, and whoever you grant it to
+  receives them.
 - **Writes take effect immediately.** A `ROLLBACK` does not undo a `CREATE … IN corp`: the service
   has no transaction to join.
 - **Secret types need their extension.** The type must be one DuckDB knows (an `s3` secret needs
   httpfs loaded), as for any storage. `allow_persistent_secrets = false` refuses persistent writes,
   the service's included.
 - **Name the storage when dropping.** `DROP SECRET name` without `FROM corp` finds the secret by
-  name, and by name tresor only finds secrets you may `use`. `FROM corp` needs only `delete`.
+  name. By name tresor only finds secrets you may `use`, and it fetches the material, which the
+  service may record as a use. `FROM corp` needs only `delete`.
 
 ## Detach
 

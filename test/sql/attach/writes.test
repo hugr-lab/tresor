@@ -49,6 +49,70 @@ SELECT scope, version FROM corp.secrets() WHERE name = 'written_one';
 ----
 ['tresor:written2.invalid']	2
 
+# a typed secret type the test shell has: http (a MAP param, a redacted key) - written, then found by
+# DuckDB's lookup and read back typed as it was written
+statement ok
+CREATE PERSISTENT SECRET MyHttp IN corp (TYPE http, BEARER_TOKEN 'tok-http',
+    EXTRA_HTTP_HEADERS MAP {'X-Tenant': 'sales'}, SCOPE 'https://api.example');
+
+query II
+SELECT name, type FROM corp.secrets() WHERE name = 'myhttp';
+----
+myhttp	http
+
+query II
+SELECT name, storage FROM which_secret('https://api.example/v1/items', 'http');
+----
+myhttp	corp
+
+query II
+SELECT tresor_secret_param('MyHttp', 'extra_http_headers'), tresor_secret_param('MyHttp', 'bearer_token');
+----
+MAP(VARCHAR, VARCHAR) {X-Tenant=sales}	VARCHAR <redacted>
+
+# a local secret wins a tie against the service (a lower tie-break offset)
+statement ok
+CREATE TEMPORARY SECRET local_http (TYPE http, BEARER_TOKEN 'local', SCOPE 'https://api.example');
+
+query II
+SELECT name, storage FROM which_secret('https://api.example/v1/items', 'http');
+----
+local_http	memory
+
+statement ok
+DROP SECRET local_http;
+
+# DROP without FROM finds the service's secret by the name as the user spelled it
+statement ok
+DROP SECRET MyHttp;
+
+query I
+SELECT count(*) FROM corp.secrets() WHERE name = 'myhttp';
+----
+0
+
+# a secret another tool named in mixed case is reached by any spelling, and addressed as the service
+# spells it
+query I
+SELECT name FROM corp.annotate_secret('mixed_case', 'reached case-insensitively');
+----
+Mixed_Case
+
+query II
+SELECT principal, verbs FROM corp.grant_secret('MIXED_CASE', 'role:x', ['use']);
+----
+role:x	[use]
+
+query I
+SELECT count(*) FROM corp.grants('mixed_case');
+----
+1
+
+statement error
+CALL corp.grant_secret('mixed_case', 'role:x', NULL);
+----
+the verbs must not be NULL
+
 # the service is the default storage for persistent secrets once named so
 statement ok
 SET default_secret_storage = 'corp';

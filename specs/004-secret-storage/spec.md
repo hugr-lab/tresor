@@ -152,8 +152,7 @@ fetches material only for a secret its lookup picked, and lists without material
   - a service's `tresor`-typed secret neither listed in `duckdb_secrets()` nor disturbing the next
     ATTACH's login;
   - a dynamic secret cached for half its life, and one already expired never reused;
-  - `DROP PERSISTENT SECRET … FROM corp` answering "not supported yet (specs/005)" (removed with
-    spec 005, which implements it).
+  - `DROP PERSISTENT SECRET … FROM corp` answering "not supported yet (specs/005)".
 - A test that a local secret wins a tie against the service needs a local secret of a type the test
   shell has (s3 needs httpfs, which the shell does not load). It waits for spec 005's writes, which
   bring a `tresor`-typed round trip.
