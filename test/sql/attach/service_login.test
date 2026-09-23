@@ -10,7 +10,8 @@ LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
 # found by the ATTACH path through the secret's SCOPE
 statement ok
 CREATE SECRET etl_login (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}',
-                         FLOW 'client_credentials', CLIENT_ID 'etl', CLIENT_SECRET 's3cr3t');
+                         FLOW 'client_credentials', CLIENT_ID 'etl', CLIENT_SECRET 's3cr3t',
+                         ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
 
 statement ok
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
@@ -55,7 +56,8 @@ DETACH corp;
 
 # a wrong client secret is the IdP's own refusal, and nothing is attached
 statement ok
-CREATE SECRET bad (TYPE tresor, SCOPE 'tresor:elsewhere', FLOW 'client_credentials', CLIENT_ID 'etl', CLIENT_SECRET 'nope');
+CREATE SECRET bad (TYPE tresor, SCOPE 'tresor:elsewhere', FLOW 'client_credentials', CLIENT_ID 'etl', CLIENT_SECRET 'nope',
+                   ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
 
 statement error
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true, SECRET bad);
@@ -82,3 +84,112 @@ statement error
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true, SECRET nosuch);
 ----
 no secret named 'nosuch'
+
+# --- which secret covers which ATTACH (the review's findings) ---------------------------------------
+
+# a scope covers its own host at a boundary only: 'tresor:127.0.0' is a prefix of the path, not a host
+statement ok
+CREATE SECRET partial (TYPE tresor, SCOPE 'tresor:127.0.0', FLOW 'client_credentials', CLIENT_ID 'etl',
+                       CLIENT_SECRET 's3cr3t', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+
+query I
+SELECT login FROM corp.whoami();
+----
+browser
+
+statement ok
+DETACH corp;
+
+statement ok
+DROP SECRET partial;
+
+# a scope with no port covers the host on any port; LOGIN named means a person, whatever covers the path
+statement ok
+CREATE SECRET host_only (TYPE tresor, SCOPE 'tresor:127.0.0.1', FLOW 'client_credentials', CLIENT_ID 'etl',
+                         CLIENT_SECRET 's3cr3t', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+
+query I
+SELECT login FROM corp.whoami();
+----
+client_credentials
+
+statement ok
+DETACH corp;
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true, LOGIN 'browser');
+
+query II
+SELECT subject, login FROM corp.whoami();
+----
+alice	browser
+
+# the name is taken: refused before any login
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true, LOGIN 'device');
+----
+database with name "corp" already exists
+
+statement ok
+DETACH corp;
+
+# LOGIN and SECRET together: a person or a service, not both
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true, LOGIN 'browser', SECRET host_only);
+----
+not both
+
+# the credential is bound to its issuer: an ATTACH naming another is refused, the secret is not re-aimed
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true, ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp2');
+----
+is not the issuer the secret is bound to
+
+# two secrets equally specific: which credential to present is not a guess
+statement ok
+CREATE SECRET host_only_2 (TYPE tresor, SCOPE 'tresor:127.0.0.1', FLOW 'token', TOKEN 'static-token');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+----
+several tresor secrets cover
+
+statement ok
+DROP SECRET host_only_2;
+
+# a client_credentials login re-mints after a 401 (the 'expiring' realm accepts a first token twice)
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/expiring' AS exp (INSECURE_HTTP true);
+
+query I
+SELECT login FROM exp.whoami();
+----
+client_credentials
+
+query I
+SELECT login FROM exp.whoami();
+----
+client_credentials
+
+query I
+SELECT login FROM exp.whoami();
+----
+client_credentials
+
+statement ok
+DETACH exp;
+
+statement ok
+DROP SECRET host_only;
+
+# an issuer listing no flows at all: nothing is attempted
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/noflows' AS corp (INSECURE_HTTP true);
+----
+offers neither a browser nor a device login

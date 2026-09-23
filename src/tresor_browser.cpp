@@ -12,6 +12,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #else
+#include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -25,7 +26,6 @@ namespace tresor {
 
 namespace {
 
-#ifndef _WIN32
 //! `BROWSER` may carry arguments ("firefox --new-window"): split on whitespace, no shell semantics.
 std::vector<std::string> SplitCommand(const std::string &command) {
 	std::vector<std::string> out;
@@ -46,6 +46,7 @@ std::vector<std::string> SplitCommand(const std::string &command) {
 	return out;
 }
 
+#ifndef _WIN32
 bool Spawn(std::vector<std::string> argv) {
 	// argv is built before the fork: the child only execs (or exits), nothing that could take a lock
 	// another thread of this process held at the fork
@@ -54,13 +55,26 @@ bool Spawn(std::vector<std::string> argv) {
 		args.push_back(&arg[0]);
 	}
 	args.push_back(nullptr);
+	// the browser's own chatter must not land in the query's output (`duckdb -csv ... > out.csv`)
+	auto devnull = open("/dev/null", O_RDWR | O_CLOEXEC);
 	auto pid = fork();
 	if (pid < 0) {
+		if (devnull >= 0) {
+			close(devnull);
+		}
 		return false;
 	}
 	if (pid == 0) {
+		if (devnull >= 0) {
+			dup2(devnull, STDIN_FILENO);
+			dup2(devnull, STDOUT_FILENO);
+			dup2(devnull, STDERR_FILENO);
+		}
 		execvp(args[0], args.data());
 		_exit(127);
+	}
+	if (devnull >= 0) {
+		close(devnull);
 	}
 	// reaped in the background: the login does not wait for the browser, and no zombie stays behind
 	std::thread([pid] {
@@ -77,8 +91,11 @@ bool CanOpenBrowser() {
 	if (std::getenv("BROWSER")) {
 		return true;
 	}
-#if defined(_WIN32) || defined(__APPLE__)
+#if defined(_WIN32)
 	return true;
+#elif defined(__APPLE__)
+	// over SSH the browser would open on the machine's screen, not in front of the person
+	return !std::getenv("SSH_CONNECTION") && !std::getenv("SSH_TTY");
 #else
 	return std::getenv("DISPLAY") || std::getenv("WAYLAND_DISPLAY");
 #endif
@@ -94,13 +111,24 @@ bool OpenBrowser(const std::string &url) {
 	int wide_size = MultiByteToWideChar(CP_UTF8, 0, url.c_str(), -1, nullptr, 0);
 	std::wstring wide_url(wide_size, L'\0');
 	MultiByteToWideChar(CP_UTF8, 0, url.c_str(), -1, &wide_url[0], wide_size);
-	if (browser && *browser) {
-		int program_size = MultiByteToWideChar(CP_UTF8, 0, browser, -1, nullptr, 0);
-		std::wstring program(program_size, L'\0');
-		MultiByteToWideChar(CP_UTF8, 0, browser, -1, &program[0], program_size);
-		std::wstring parameters = L"\"" + std::wstring(wide_url.c_str()) + L"\"";
-		return reinterpret_cast<INT_PTR>(
-		           ShellExecuteW(nullptr, L"open", program.c_str(), parameters.c_str(), nullptr, SW_SHOWNORMAL)) > 32;
+	auto command = browser && *browser ? SplitCommand(browser) : std::vector<std::string>();
+	if (!command.empty()) {
+		// the program, then its own arguments and the URL - quoted, as one parameter string
+		std::string parameters;
+		for (size_t i = 1; i < command.size(); i++) {
+			parameters += "\"" + command[i] + "\" ";
+		}
+		parameters += "\"" + url + "\"";
+		auto widen = [](const std::string &text) {
+			int size = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+			std::wstring out(size, L'\0');
+			MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, &out[0], size);
+			return out;
+		};
+		auto program = widen(command[0]);
+		auto wide_parameters = widen(parameters);
+		return reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", program.c_str(), wide_parameters.c_str(),
+		                                               nullptr, SW_SHOWNORMAL)) > 32;
 	}
 	return reinterpret_cast<INT_PTR>(
 	           ShellExecuteW(nullptr, L"open", wide_url.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) > 32;

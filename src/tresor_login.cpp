@@ -8,6 +8,7 @@
 #include "duckdb/main/secret/secret_manager.hpp"
 #include "yyjson.hpp"
 
+#include <cctype>
 #include <chrono>
 
 // The attach's login (specs/002): the service's discovery names the identity provider; the login is
@@ -25,30 +26,18 @@ int64_t NowSeconds() {
 	    .count();
 }
 
-//! One parsed JSON document; the accessors return empty on anything of the wrong shape.
-struct JsonDoc {
-	yyjson_doc *doc = nullptr;
-	explicit JsonDoc(const string &body) {
-		doc = yyjson_read(body.data(), body.size(), 0);
-	}
-	~JsonDoc() {
-		if (doc) {
-			yyjson_doc_free(doc);
-		}
-	}
-	yyjson_val *Root() const {
-		return doc ? yyjson_doc_get_root(doc) : nullptr;
-	}
-};
-
 string Str(yyjson_val *obj, const char *key) {
 	auto value = obj && yyjson_is_obj(obj) ? yyjson_obj_get(obj, key) : nullptr;
 	return value && yyjson_is_str(value) ? yyjson_get_str(value) : "";
 }
 
-vector<string> StrList(yyjson_val *obj, const char *key) {
+//! The strings of an array member; `present` tells an empty list from a missing one.
+vector<string> StrList(yyjson_val *obj, const char *key, bool *present = nullptr) {
 	vector<string> out;
 	auto value = obj && yyjson_is_obj(obj) ? yyjson_obj_get(obj, key) : nullptr;
+	if (present) {
+		*present = value && yyjson_is_arr(value);
+	}
 	if (value && yyjson_is_arr(value)) {
 		size_t idx, max;
 		yyjson_val *item;
@@ -109,8 +98,17 @@ struct Discovered {
 		string issuer;
 		string client_id;
 		vector<string> scopes;
-		vector<string> human_flows;
+		vector<string> human_flows; // when present (even empty), a client attempts no others (protocol)
 		vector<string> service_flows;
+		bool has_human_flows = false;
+		bool has_service_flows = false;
+
+		bool OffersHuman(const char *flow) const {
+			return !has_human_flows || Contains(human_flows, flow);
+		}
+		bool OffersService(const char *flow) const {
+			return !has_service_flows || Contains(service_flows, flow);
+		}
 	};
 	vector<Issuer> issuers;
 };
@@ -150,8 +148,8 @@ Discovered Discover(const AttachRequest &request, string &discovery_url) {
 			issuer.issuer = StripSlashes(Str(item, "issuer"));
 			issuer.client_id = Str(item, "client_id");
 			issuer.scopes = StrList(item, "scopes");
-			issuer.human_flows = StrList(item, "human_flows");
-			issuer.service_flows = StrList(item, "service_flows");
+			issuer.human_flows = StrList(item, "human_flows", &issuer.has_human_flows);
+			issuer.service_flows = StrList(item, "service_flows", &issuer.has_service_flows);
 			if (!issuer.issuer.empty()) {
 				out.issuers.push_back(std::move(issuer));
 			}
@@ -187,30 +185,79 @@ const Discovered::Issuer &ChooseIssuer(const AttachRequest &request, const Disco
 	                            request.host, StringUtil::Join(listed, ", "));
 }
 
-//! The service's login, read from a `tresor` secret: the one ATTACH named, or the one whose scope
-//! matches the path. Null when there is none - a person logs in.
+//! Does a secret's SCOPE cover the ATTACH path at a host boundary: the path itself, a path under it
+//! ('/'), or - for a scope that names no port - the same host on any port (':'). A plain prefix would
+//! let 'tresor:secrets.corp' cover 'tresor:secrets.corp.attacker.net' and hand it the credential.
+//! Compared case-insensitively, like host names.
+bool ScopeCovers(const string &scope_p, const string &path_p) {
+	auto scope = StringUtil::Lower(StripSlashes(scope_p));
+	auto path = StringUtil::Lower(path_p);
+	if (!StringUtil::StartsWith(scope, "tresor:") || scope.size() <= 7 || !StringUtil::StartsWith(path, scope)) {
+		return false;
+	}
+	if (path.size() == scope.size() || path[scope.size()] == '/') {
+		return true;
+	}
+	if (path[scope.size()] != ':') {
+		return false;
+	}
+	auto authority = scope.substr(7);
+	if (authority.find('/') != string::npos) {
+		return false;
+	}
+	auto bracket = authority.rfind(']');
+	return authority.find(':', bracket == string::npos ? 0 : bracket) == string::npos;
+}
+
+unique_ptr<KeyValueSecret> AsTresorSecret(const BaseSecret &secret, const string &name) {
+	auto key_value = dynamic_cast<const KeyValueSecret *>(&secret);
+	if (secret.GetType() != Identifier("tresor") || !key_value) {
+		throw InvalidInputException("tresor: the secret '%s' is of type %s, not tresor", name,
+		                            secret.GetType().GetIdentifierName());
+	}
+	return make_uniq<KeyValueSecret>(*key_value);
+}
+
+//! The service's login, read from a `tresor` secret: the one ATTACH named, or the one whose SCOPE covers
+//! the path most specifically. Null when there is none - a person logs in. Two secrets equally specific
+//! are an error: which credential to present is not a guess.
 unique_ptr<KeyValueSecret> FindServiceSecret(ClientContext &context, const AttachRequest &request) {
 	auto &manager = SecretManager::Get(context);
 	auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
-	unique_ptr<const BaseSecret> secret;
 	if (!request.secret_name.empty()) {
 		auto entry = manager.GetSecretByName(transaction, request.secret_name);
 		if (!entry) {
 			throw InvalidInputException("tresor: no secret named '%s'", request.secret_name);
 		}
-		secret = std::move(entry->secret);
-	} else {
-		auto match = manager.LookupSecret(transaction, "tresor:" + request.host, "tresor");
-		if (!match.HasMatch()) {
-			return nullptr;
+		return AsTresorSecret(*entry->secret, request.secret_name);
+	}
+	auto path = "tresor:" + request.host;
+	optional_ptr<const BaseSecret> best;
+	idx_t best_length = 0;
+	bool tie = false;
+	auto secrets = manager.AllSecrets(transaction);
+	for (auto &entry : secrets) {
+		if (entry.secret->GetType() != Identifier("tresor")) {
+			continue;
 		}
-		secret = match.GetSecret().Clone();
+		// an unscoped secret covers nothing here (duckdb's own lookup would let it cover everything)
+		for (auto &scope : entry.secret->GetScope()) {
+			if (!ScopeCovers(scope, path)) {
+				continue;
+			}
+			if (scope.size() > best_length) {
+				best = entry.secret.get();
+				best_length = scope.size();
+				tie = false;
+			} else if (scope.size() == best_length && best.get() != entry.secret.get()) {
+				tie = true;
+			}
+		}
 	}
-	if (secret->GetType() != Identifier("tresor")) {
-		throw InvalidInputException("tresor: the secret '%s' is of type %s, not tresor", request.secret_name,
-		                            secret->GetType().GetIdentifierName());
+	if (tie) {
+		throw InvalidInputException("tresor: several tresor secrets cover '%s' equally - name one with SECRET", path);
 	}
-	return make_uniq<KeyValueSecret>(dynamic_cast<const KeyValueSecret &>(*secret));
+	return best ? AsTresorSecret(*best, best->GetName().GetIdentifierName()) : nullptr;
 }
 
 string SecretString(const KeyValueSecret &secret, const char *key) {
@@ -220,11 +267,8 @@ string SecretString(const KeyValueSecret &secret, const char *key) {
 
 oidc::TokenSet PersonLogin(ClientContext &context, const AttachRequest &request, const ServiceInfo &info,
                            const Discovered::Issuer &issuer, LoginFlow &flow) {
-	auto offers = [&](const char *name) {
-		return issuer.human_flows.empty() || Contains(issuer.human_flows, name);
-	};
-	auto browser_possible = !info.endpoints.authorization_endpoint.empty() && offers("authorization_code");
-	auto device_possible = !info.endpoints.device_authorization_endpoint.empty() && offers("device_code");
+	auto browser_possible = !info.endpoints.authorization_endpoint.empty() && issuer.OffersHuman("authorization_code");
+	auto device_possible = !info.endpoints.device_authorization_endpoint.empty() && issuer.OffersHuman("device_code");
 	switch (request.mode) {
 	case LoginMode::BROWSER:
 		if (!browser_possible) {
@@ -291,6 +335,20 @@ oidc::TokenSet PersonLogin(ClientContext &context, const AttachRequest &request,
 
 } // namespace
 
+JsonDoc::JsonDoc(const string &body) {
+	doc = yyjson_read(body.data(), body.size(), 0);
+}
+
+JsonDoc::~JsonDoc() {
+	if (doc) {
+		yyjson_doc_free(doc);
+	}
+}
+
+yyjson_val *JsonDoc::Root() const {
+	return doc ? yyjson_doc_get_root(doc) : nullptr;
+}
+
 bool IsLoopbackHost(const string &host) {
 	return IsLoopbackName(HostName(host));
 }
@@ -309,11 +367,19 @@ AttachRequest ParseAttach(const string &path, const unordered_map<string, Value>
 		throw InvalidInputException("tresor: name the service without a scheme - 'tresor:<host>[:port][/base]', "
 		                            "https is implied");
 	}
+	// nothing that could make a URL mean another host than the one the checks below looked at
+	for (char c : host) {
+		if (c == '@' || c == '?' || c == '#' || c == '\\' || std::isspace(static_cast<unsigned char>(c)) ||
+		    static_cast<unsigned char>(c) < 0x20) {
+			throw InvalidInputException("tresor: '%s' is not a service name - 'tresor:<host>[:port][/base]'", host);
+		}
+	}
 	request.host = host;
 	for (auto &option : options) {
 		auto key = StringUtil::Lower(option.first);
 		auto &value = option.second;
 		if (key == "login") {
+			request.mode_given = true;
 			auto mode = StringUtil::Lower(value.ToString());
 			if (mode == "auto") {
 				request.mode = LoginMode::AUTO;
@@ -341,6 +407,9 @@ AttachRequest ParseAttach(const string &path, const unordered_map<string, Value>
 			                            "INSECURE_HTTP, LOGIN_TIMEOUT)",
 			                            option.first);
 		}
+	}
+	if (request.mode_given && !request.secret_name.empty()) {
+		throw InvalidInputException("tresor: LOGIN is how a person logs in and SECRET how a service does - not both");
 	}
 	if (request.insecure_http && !IsLoopbackHost(request.host)) {
 		throw InvalidInputException("tresor: INSECURE_HTTP is for a service on this machine only (127.0.0.1, ::1, "
@@ -375,49 +444,56 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 	auto discovered = Discover(request, info.discovery);
 	info.api = discovered.api;
 
-	auto service_secret = FindServiceSecret(context, request);
-	auto asked_issuer = request.issuer;
-	if (asked_issuer.empty() && service_secret) {
-		asked_issuer = SecretString(*service_secret, "issuer");
-	}
-	auto &issuer = ChooseIssuer(request, discovered, asked_issuer);
-	CheckTransport(request, "issuer", issuer.issuer);
-	info.issuer = issuer.issuer;
-	info.endpoints = oidc::Discover(issuer.issuer);
-	if (!info.endpoints.Ok()) {
-		throw IOException("tresor: the identity provider %s of %s: %s", issuer.issuer, request.host,
-		                  info.endpoints.error);
-	}
-	for (auto *endpoint : {&info.endpoints.token_endpoint, &info.endpoints.authorization_endpoint,
-	                       &info.endpoints.device_authorization_endpoint}) {
-		if (!endpoint->empty()) {
-			CheckTransport(request, "identity provider endpoint", *endpoint);
-		}
-	}
-
+	// a LOGIN given is a person asking to log in as themselves: no secret is looked up for them
+	auto service_secret = request.mode_given ? nullptr : FindServiceSecret(context, request);
 	LoginFlow flow;
 	oidc::TokenSet tokens;
 	string client_secret;
-	if (service_secret) {
-		auto flow_name = StringUtil::Lower(SecretString(*service_secret, "flow"));
-		info.client_id = SecretString(*service_secret, "client_id");
-		info.scope = SecretString(*service_secret, "oauth_scope");
-		if (info.scope.empty()) {
-			vector<string> scopes;
-			for (auto &scope : issuer.scopes) {
-				if (scope != "openid" && scope != "offline_access") { // no use to a client-credentials grant
-					scopes.push_back(scope);
-				}
+	if (service_secret && StringUtil::Lower(SecretString(*service_secret, "flow")) == "token") {
+		// a token already held: no identity provider is involved, the service alone judges it
+		flow = LoginFlow::TOKEN;
+		tokens.access_token = SecretString(*service_secret, "token");
+	} else {
+		auto asked_issuer = request.issuer;
+		if (service_secret) {
+			// the credential is bound to the IdP the secret names (required at CREATE SECRET): the
+			// service's discovery never decides where a client secret is sent
+			auto bound = SecretString(*service_secret, "issuer");
+			if (!asked_issuer.empty() && StripSlashes(asked_issuer) != StripSlashes(bound)) {
+				throw InvalidInputException("tresor: ISSUER '%s' is not the issuer the secret is bound to ('%s')",
+				                            asked_issuer, bound);
 			}
-			info.scope = StringUtil::Join(scopes, " ");
+			asked_issuer = bound;
 		}
-		if (flow_name == "token") {
-			flow = LoginFlow::TOKEN;
-			tokens.access_token = SecretString(*service_secret, "token");
-		} else {
+		auto &issuer = ChooseIssuer(request, discovered, asked_issuer);
+		CheckTransport(request, "issuer", issuer.issuer);
+		info.issuer = issuer.issuer;
+		info.endpoints = oidc::Discover(issuer.issuer);
+		if (!info.endpoints.Ok()) {
+			throw IOException("tresor: the identity provider %s of %s: %s", issuer.issuer, request.host,
+			                  info.endpoints.error);
+		}
+		for (auto *endpoint : {&info.endpoints.token_endpoint, &info.endpoints.authorization_endpoint,
+		                       &info.endpoints.device_authorization_endpoint}) {
+			if (!endpoint->empty()) {
+				CheckTransport(request, "identity provider endpoint", *endpoint);
+			}
+		}
+		if (service_secret) {
 			flow = LoginFlow::CLIENT_CREDENTIALS;
-			if (!issuer.service_flows.empty() && !Contains(issuer.service_flows, "client_credentials")) {
+			if (!issuer.OffersService("client_credentials")) {
 				throw InvalidInputException("tresor: %s does not accept client_credentials logins", request.host);
+			}
+			info.client_id = SecretString(*service_secret, "client_id");
+			info.scope = SecretString(*service_secret, "oauth_scope");
+			if (info.scope.empty()) {
+				vector<string> scopes;
+				for (auto &scope : issuer.scopes) {
+					if (scope != "openid" && scope != "offline_access") { // no use to a client-credentials grant
+						scopes.push_back(scope);
+					}
+				}
+				info.scope = StringUtil::Join(scopes, " ");
 			}
 			client_secret = SecretString(*service_secret, "client_secret");
 			tokens = oidc::ClientCredentials(info.endpoints, info.client_id, client_secret, info.scope);
@@ -425,14 +501,14 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 				throw InvalidInputException("tresor: the client_credentials login to %s failed: %s", request.host,
 				                            tokens.error);
 			}
+		} else {
+			info.client_id = issuer.client_id;
+			if (info.client_id.empty()) {
+				throw IOException("tresor: %s names no client_id for people to log in with", request.host);
+			}
+			info.scope = StringUtil::Join(issuer.scopes, " ");
+			tokens = PersonLogin(context, request, info, issuer, flow);
 		}
-	} else {
-		info.client_id = issuer.client_id;
-		if (info.client_id.empty()) {
-			throw IOException("tresor: %s names no client_id for people to log in with", request.host);
-		}
-		info.scope = StringUtil::Join(issuer.scopes, " ");
-		tokens = PersonLogin(context, request, info, issuer, flow);
 	}
 
 	auto session = make_shared_ptr<TresorSession>(std::move(info), flow, std::move(tokens), std::move(client_secret));

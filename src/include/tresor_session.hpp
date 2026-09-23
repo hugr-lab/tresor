@@ -37,7 +37,9 @@ struct ServiceResponse {
 };
 
 //! The logged-in session behind an attached catalog. Tokens live here and nowhere else: never on disk,
-//! never in a message. Shared by every connection using the catalog, so everything is under a lock.
+//! never in a message. Shared by every connection using the catalog, so everything is under one lock -
+//! held across the network call too (a renewal must not race another), so a slow service or IdP holds
+//! the other connections' calls for up to the transport's timeout.
 class TresorSession {
 public:
 	TresorSession(ServiceInfo info, LoginFlow flow, oidc::TokenSet tokens, string client_secret);
@@ -66,8 +68,10 @@ private:
 	LoginFlow flow;
 	mutex lock;
 	oidc::TokenSet tokens;
-	string client_secret; // client_credentials only: the re-mint needs it
+	int64_t issued_at = 0; // when `tokens` arrived: the renewal margin is at most half their life
+	string client_secret;  // client_credentials only: the re-mint needs it
 	bool closed = false;
+	bool logged_out = false; // the IdP ended the login (invalid_grant): only a new ATTACH helps
 };
 
 } // namespace tresor

@@ -9,6 +9,7 @@
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/parser/parsed_data/attach_info.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/main/database_manager.hpp"
 #include "duckdb/transaction/duck_transaction_manager.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/storage/storage_extension.hpp"
@@ -34,6 +35,11 @@ unique_ptr<Catalog> TresorAttach(optional_ptr<StorageExtensionInfo> storage_info
                                  AttachedDatabase &db, const string &name, AttachInfo &info, AttachOptions &options) {
 	auto request = tresor::ParseAttach(info.path, options.options);
 	options.options.clear(); // all of them are tresor's, and consumed
+	// duckdb refuses a taken name only after this callback: without this, a person would complete a whole
+	// browser login only to read "already exists"
+	if (DatabaseManager::Get(context).GetDatabase(context, Identifier(name))) {
+		throw BinderException("Failed to attach database: database with name \"%s\" already exists", name);
+	}
 	auto session = tresor::Login(context, request);
 	info.path = IN_MEMORY_PATH;
 	return make_uniq<tresor::TresorCatalog>(db, std::move(session));

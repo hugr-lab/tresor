@@ -34,7 +34,8 @@ ATTACH 'tresor:secrets.corp:8443/api' AS corp (ISSUER 'https://idp.corp/realms/m
 
 -- a service: a local secret of type tresor, found by the ATTACH path through the secret's SCOPE
 CREATE SECRET corp_login (TYPE tresor, SCOPE 'tresor:secrets.corp',
-                          FLOW 'client_credentials', CLIENT_ID 'etl', CLIENT_SECRET '…');
+                          FLOW 'client_credentials', CLIENT_ID 'etl', CLIENT_SECRET '…',
+                          ISSUER 'https://idp.corp/realms/main');
 ATTACH 'tresor:secrets.corp' AS corp;
 ATTACH 'secrets.corp' AS corp (TYPE tresor, SECRET corp_login);  -- or named explicitly
 CREATE SECRET (TYPE tresor, SCOPE 'tresor:secrets.corp', FLOW 'token', TOKEN '…');  -- a token already held
@@ -77,17 +78,32 @@ An unknown option is an error, not ignored. The path keeps the shape of spec 001
 - **Opening the browser**: if the environment variable `BROWSER` is set (the common convention), that
   program is run with the URL as its last argument. Otherwise `open` (macOS), `xdg-open` (Linux) or
   `ShellExecuteW` (Windows). The URL is passed as one argv element and never through a shell. On
-  Windows only an `http(s)://` URL is ever handed over. The child is not waited for. A browser that
-  fails to start is not an error: the printed URL still works.
+  Windows only an `http(s)://` URL is ever handed over. The child's stdin/stdout/stderr go to
+  `/dev/null`, so its output never mixes into the query's. The child is not waited for. A browser
+  that fails to start is not an error: the printed URL still works. On macOS over SSH (`SSH_CONNECTION`
+  / `SSH_TTY`), `auto` picks the device flow.
 - **Blocking and cancelling**: the login runs inside ATTACH. The wait honours the connection's
   interrupt (Ctrl-C) and `LOGIN_TIMEOUT` (for the device flow, also the IdP's `expires_in`).
 - **Scopes**: people request the discovery `scopes`. Services request `OAUTH_SCOPE` when it is set,
   otherwise the discovery `scopes` without `openid` and `offline_access`, which a client-credentials
   grant has no use for. `audience` in discovery is informational for the client. The service checks
   `aud`, and getting the audience right is the IdP configuration's job (client scope / app ID URI).
-- **Secret lookup**: without `SECRET`, ATTACH looks up a `tresor` secret for the path
-  `tresor:<host>[:port][/base]`, in whichever spelling the ATTACH used. If one matches, it is a
-  service login. Otherwise a person logs in.
+- **Secret lookup**: without `SECRET` and without `LOGIN`, ATTACH looks for a `tresor` secret
+  covering the path `tresor:<host>[:port][/base]`, in whichever spelling the ATTACH used. If one
+  covers it, this is a service login; otherwise a person logs in.
+  - **At a host boundary.** A SCOPE covers the path itself, a path under it (`/`), and, when the
+    scope names no port, the same host on any port (`:`). It is compared case-insensitively. It is
+    never a plain string prefix: `tresor:secrets.corp` must not cover `tresor:secrets.corp.attacker.net`.
+  - **The most specific scope wins.** Two secrets that cover the path equally are an error that asks
+    for `SECRET`.
+  - **`LOGIN` given** means a person asks to log in as themselves, so no secret is looked up.
+    `LOGIN` together with `SECRET` is refused.
+- **A service's credential is bound to its IdP**: a `client_credentials` secret must name its
+  `ISSUER`. The service's discovery must list that issuer, but it never chooses where a client secret
+  is sent. An ATTACH `ISSUER` that differs from the secret's is refused. A `token` secret involves no
+  IdP: the held token goes to the service alone, and its `SCOPE` binds it to that service.
+- **A taken name is refused before the login.** duckdb checks the name only after the storage's
+  attach, so without this a person would finish a browser login and then read "already exists".
 
 ### After the login: the session
 
@@ -96,11 +112,14 @@ An unknown option is an error, not ignored. The path keeps the shape of spec 001
   the session keeps a copy of `CLIENT_SECRET` in memory, so it can re-mint; `DETACH` drops that too.
   The duckdb secret it came from is the user's (a `PERSISTENT` one is on disk, as for any duckdb
   secret).
-- Before each service call, a token with less than 60 s left is renewed: with the refresh token
+- Before each service call, a token with less than 60 s left (or less than half its life, for
+  tokens that live 2 minutes or less) is renewed: with the refresh token
   (people), by re-minting (`client_credentials`), or not at all (`token`). A `401` from the service
   forces one renewal and one retry (protocol, *Errors*). A refresh answered with `invalid_grant` means
-  the login is over. The call fails with "log in again: DETACH and ATTACH". A new browser window
-  never opens in the middle of a query.
+  the login is over. That call and every later one fail with "log in again: DETACH and ATTACH". A new
+  browser window never opens in the middle of a query.
+- One lock guards the session, held across the network call so that renewals do not race. A slow
+  service or IdP therefore holds the other connections' calls for up to the transport's timeout.
 - ATTACH ends with `GET /v1/whoami`. A token the service refuses fails the ATTACH, closed.
 - Keeping the refresh token across processes (OS keychain) is a later spec (design §13).
 
@@ -128,9 +147,12 @@ is `tresor`. Its schema `main` carries the catalog's table functions, bound to t
 
 ### The `tresor` secret type
 
-Type `tresor`, provider `config`. Parameters: `FLOW` (`client_credentials` | `token`), `CLIENT_ID`,
-`CLIENT_SECRET`, `TOKEN`, `OAUTH_SCOPE`, `ISSUER`. `CLIENT_SECRET` and `TOKEN` are redacted. The
-parameters are validated at CREATE: a flow needs its own parameters and refuses the others'.
+Type `tresor`, provider `config`. Parameters: `FLOW` (`client_credentials` | `token`); for
+`client_credentials`, `CLIENT_ID`, `CLIENT_SECRET` and `ISSUER` (all required) and an optional
+`OAUTH_SCOPE`; for `token`, `TOKEN`. `CLIENT_SECRET` and `TOKEN` are redacted. **`SCOPE` is required**
+and has the shape `tresor:<host>[:port][/base]`, because an unscoped secret would match every lookup
+in duckdb. The parameters are validated at CREATE: a flow needs its own parameters and refuses the
+others'.
 `private_key_jwt`, federated assertions and Azure identities are follow-ups (duckdb-ext-common's
 next oidc spec).
 
@@ -173,8 +195,9 @@ that off.
 - **A fake service + IdP** (`test/fake/fake_service.py`, Python stdlib, plain http on loopback).
   It serves discovery, `whoami` (a map from token to identity), the IdP's discovery, `/authorize`
   (auto-approve → 302 to the redirect with code and state, PKCE recorded), `/token`
-  (`authorization_code` with PKCE check, `refresh_token`, `client_credentials`, the device code),
-  `/device`, and test controls (expire a token, count calls).
+  (`authorization_code` with PKCE check, `refresh_token`, `client_credentials`, the device code) and
+  `/device`. Its behaviour is chosen by the realm, which is the base path of the ATTACH: `multi`,
+  `wrong`, `expiring`, `revoking`, `noflows`.
 - **`scripts/ci/test_attach.sh`** starts the fake on a free port, exports `TRESOR_TEST_PORT`, sets
   `BROWSER` to a script that plays the browser (`curl` following the 302 to the loopback), and runs
   `test/sql/attach/*.test` with `--skip-error-messages ''`. By default the runner turns an error that
@@ -184,6 +207,14 @@ that off.
 - The service's `whoami` and the fake's realms (`expiring`: a token as first issued is accepted
   twice, then 401 until renewed; `revoking`: its IdP refuses every refresh) are how a test steers the
   renewal paths, because a sqllogictest can only choose what it attaches.
+- `test/sql/attach_auto/auto_device.test`: `LOGIN 'auto'` with no way to open a browser takes the
+  device flow. It runs on Linux CI in a process without `BROWSER` or a display.
+- The review's findings, pinned: a scope that is a prefix but not a host does not cover; a portless
+  scope covers any port; `LOGIN` bypasses a covering secret; `LOGIN` + `SECRET` is refused; a
+  secret's issuer cannot be re-aimed; equally specific secrets are an error; a taken name is refused
+  before the login; a client_credentials re-mint after a 401; a login ended by `invalid_grant` stays
+  ended (no empty bearer is ever sent); empty flow lists attempt nothing; unscoped and misshaped
+  secrets are refused at CREATE; `@` in the name is refused.
 - Cases (`test/sql/attach/*`, `test/sql/attach_options.test`): the browser login end to end; the
   device login; client_credentials through a scope-matched secret (both ATTACH spellings) and a
   named `SECRET`; the `token` flow; the `whoami` columns; renewal after a 401; refresh refused →
@@ -206,6 +237,27 @@ that off.
 - **Taking the first issuer silently**: an identity decision made by list order.
 - **Tokens in a file / keychain now**: owner's decision — keychain later, on all three platforms,
   as its own spec.
+
+## The review's findings (applied)
+
+An independent review, with the defects reproduced against the fake:
+
+- **An unscoped `tresor` secret covered every ATTACH, and scopes matched as plain string
+  prefixes.** duckdb's lookup scores an empty scope as "matches all", so `tresor:secrets.corp` also
+  covered `tresor:secrets.corp.attacker.net`. A client secret could go to another host's IdP, or a
+  held token to another host's API. Fixed: SCOPE is required with the `tresor:` shape, and tresor
+  matches scopes itself, at host boundaries.
+- **The service's discovery chose which IdP received a service's client secret.** Fixed:
+  `client_credentials` secrets carry their `ISSUER`.
+- **An explicit `LOGIN` was ignored when a secret covered the path.** Now `LOGIN` means a person.
+- **After `invalid_grant`, the next call sent an empty bearer token** and failed with a transport
+  error. Now the login stays over and every call says so.
+- **Re-attaching a taken name ran a full login first.** Now it is refused up front.
+- **Also fixed:** the browser child's output went to the query's stdout (now `/dev/null`); `BROWSER`
+  with arguments was taken whole on Windows (now split); present-but-empty flow lists counted as
+  absent; host names could carry `@`/`?`/`#`; a `token` login fetched an IdP document it never uses;
+  whoami's JSON leaked if parsing threw (RAII now); renewal of very short-lived tokens; the SSH case
+  on macOS; CI's vcpkg is pinned to the distribution build's commit.
 
 ## Follow-ups
 

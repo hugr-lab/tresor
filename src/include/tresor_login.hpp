@@ -8,6 +8,7 @@
 
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/unordered_map.hpp"
+#include "yyjson.hpp"
 
 namespace duckdb {
 class ClientContext;
@@ -21,6 +22,7 @@ enum class LoginMode : uint8_t { AUTO, BROWSER, DEVICE };
 struct AttachRequest {
 	string host; // host[:port][/base], the prefix and any trailing '/' removed
 	LoginMode mode = LoginMode::AUTO;
+	bool mode_given = false; // LOGIN named: a person logs in, no secret is looked up
 	string issuer;
 	string secret_name;
 	bool insecure_http = false;
@@ -42,6 +44,16 @@ bool OpenBrowser(const std::string &url);
 
 //! The service's error body (RFC 9457) in a line fit for a message: `type: detail`.
 string DescribeProblem(int status, const string &body);
+
+//! One parsed JSON document, freed with its scope whatever throws in between.
+struct JsonDoc {
+	duckdb_yyjson::yyjson_doc *doc = nullptr;
+	explicit JsonDoc(const string &body);
+	~JsonDoc();
+	JsonDoc(const JsonDoc &) = delete;
+	JsonDoc &operator=(const JsonDoc &) = delete;
+	duckdb_yyjson::yyjson_val *Root() const;
+};
 
 } // namespace tresor
 } // namespace duckdb

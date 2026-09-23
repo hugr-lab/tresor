@@ -7,9 +7,6 @@ require-env TRESOR_TEST_PORT
 statement ok
 LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
 
-statement ok
-CREATE SECRET etl_login (TYPE tresor, SCOPE 'tresor:127.0.0.1', FLOW 'client_credentials', CLIENT_ID 'etl', CLIENT_SECRET 's3cr3t');
-
 # https is the default: the fake speaks http, so without INSECURE_HTTP the TLS handshake fails
 statement error
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp;
@@ -28,7 +25,7 @@ ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/multi' AS corp (INSECURE_HTTP true, 
 ----
 does not accept the issuer 'https://idp.example'
 
-# naming one of them works
+# naming one of them works (a person, in the browser: no secret covers this path)
 statement ok
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/multi' AS corp (INSECURE_HTTP true, ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
 

@@ -88,5 +88,11 @@ SELECT subject FROM rev.whoami();
 ----
 log in again: DETACH and ATTACH
 
+# and stays over: no empty token is ever sent
+statement error
+SELECT subject FROM rev.whoami();
+----
+the login to 127.0.0.1:{TRESOR_TEST_PORT}/revoking is over - log in again
+
 statement ok
 DETACH rev;

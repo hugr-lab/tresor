@@ -24,6 +24,11 @@ endif
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
 .PHONY: vcpkg-setup
+# the commit extension-ci-tools' distribution build uses (its `vcpkg_commit` default): CI and releases
+# build the same OpenSSL
+VCPKG_COMMIT ?= cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3
 vcpkg-setup:
 	@test -d vcpkg || git clone https://github.com/microsoft/vcpkg.git vcpkg
+	git -C vcpkg fetch -q origin $(VCPKG_COMMIT) 2>/dev/null || true
+	git -C vcpkg checkout -q $(VCPKG_COMMIT)
 	./vcpkg/bootstrap-vcpkg.sh -disableMetrics

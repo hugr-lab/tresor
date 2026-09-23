@@ -38,18 +38,46 @@ CREATE SECRET s (TYPE tresor, FLOW 'password', CLIENT_ID 'x');
 FLOW is 'client_credentials' or 'token'
 
 statement error
-CREATE SECRET s (TYPE tresor, FLOW 'client_credentials', CLIENT_ID 'x');
+CREATE SECRET s (TYPE tresor, SCOPE 'tresor:x', FLOW 'client_credentials', CLIENT_ID 'x');
 ----
 needs CLIENT_SECRET
 
 statement error
-CREATE SECRET s (TYPE tresor, FLOW 'token', TOKEN 't', CLIENT_SECRET 'x');
+CREATE SECRET s (TYPE tresor, SCOPE 'tresor:x', FLOW 'token', TOKEN 't', CLIENT_SECRET 'x');
 ----
 does not take CLIENT_SECRET
 
+statement error
+CREATE SECRET s (TYPE tresor, SCOPE 'tresor:x', FLOW 'client_credentials', CLIENT_ID 'x', CLIENT_SECRET 'y');
+----
+needs ISSUER
+
+statement error
+CREATE SECRET s (TYPE tresor, SCOPE 'tresor:x', FLOW 'token', TOKEN 't', ISSUER 'https://idp');
+----
+does not take ISSUER
+
+# a secret for every service is refused: without a SCOPE duckdb's lookup would offer it to any host
+statement error
+CREATE SECRET s (TYPE tresor, FLOW 'token', TOKEN 't');
+----
+SCOPE is required
+
+statement error
+CREATE SECRET s (TYPE tresor, SCOPE 'secrets.example.invalid', FLOW 'token', TOKEN 't');
+----
+is not a service
+
+# nothing in the name that could make the URL mean another host
+statement error
+ATTACH 'tresor:evil@127.0.0.1' AS corp (INSECURE_HTTP true);
+----
+is not a service name
+
 statement ok
 CREATE SECRET s (TYPE tresor, SCOPE 'tresor:secrets.example.invalid', FLOW 'client_credentials',
-                 CLIENT_ID 'etl', CLIENT_SECRET 'very-secret-value', OAUTH_SCOPE 'api://secrets/.default');
+                 CLIENT_ID 'etl', CLIENT_SECRET 'very-secret-value', ISSUER 'https://idp.example.invalid',
+                 OAUTH_SCOPE 'api://secrets/.default');
 
 # the credential is redacted; what minted nothing is visible
 query I

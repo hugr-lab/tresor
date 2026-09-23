@@ -63,12 +63,19 @@ A process without a person logs in with its own credential, kept in a local secr
 CREATE SECRET corp_login (
     TYPE tresor,
     SCOPE 'tresor:secrets.corp.example',
-    FLOW 'client_credentials', CLIENT_ID '…', CLIENT_SECRET '…'
-    -- optional: OAUTH_SCOPE 'api://duckdb-secrets/.default', ISSUER '…'
+    FLOW 'client_credentials', CLIENT_ID '…', CLIENT_SECRET '…',
+    ISSUER 'https://login.corp.example/realms/main'   -- the IdP this credential belongs to
+    -- optional: OAUTH_SCOPE 'api://duckdb-secrets/.default'
 );
 ATTACH 'tresor:secrets.corp.example' AS corp;                       -- the secret is found by its SCOPE
 ATTACH 'tresor:secrets.corp.example' AS corp (SECRET corp_login);   -- or named
 ```
+
+`SCOPE` is required and names the service: `tresor:<host>[:port][/base]`. It covers that host, any
+path under it and, when it names no port, any port. A longer scope wins over a shorter one. A
+`client_credentials` secret must name its `ISSUER`, so a service's credential only ever goes to its
+own identity provider, whatever the secrets service's discovery says. `LOGIN 'browser'` or
+`LOGIN 'device'` always logs you in as yourself, even when a service secret covers the host.
 
 `FLOW 'token', TOKEN '…'` uses an access token the process already holds. It is not renewed: when it
 expires, replace the secret and attach again. Private-key JWTs and federated workload identities

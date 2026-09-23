@@ -1,0 +1,19 @@
+# name: test/sql/attach_auto/auto_device.test
+# description: LOGIN 'auto' with no way to open a browser takes the device flow (specs/002)
+# group: [attach_auto]
+
+# scripts/ci/test_attach.sh runs this on Linux only, with BROWSER, DISPLAY and WAYLAND_DISPLAY unset
+require-env TRESOR_TEST_AUTO_DEVICE
+
+require-env TRESOR_TEST_PORT
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+
+query II
+SELECT subject, login FROM corp.whoami();
+----
+alice	device

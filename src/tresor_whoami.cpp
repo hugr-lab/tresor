@@ -78,14 +78,11 @@ void WhoamiScan(ClientContext &context, TableFunctionInput &data, DataChunk &out
 		throw InvalidInputException("tresor: whoami at %s: %s", session.Info().host,
 		                            DescribeProblem(response.status, response.body));
 	}
-	auto doc = yyjson_read(response.body.data(), response.body.size(), 0);
-	if (!doc || !yyjson_is_obj(yyjson_doc_get_root(doc))) {
-		if (doc) {
-			yyjson_doc_free(doc);
-		}
+	JsonDoc doc(response.body);
+	auto root = doc.Root();
+	if (!root || !yyjson_is_obj(root)) {
 		throw IOException("tresor: whoami at %s answered no JSON object", session.Info().host);
 	}
-	auto root = yyjson_doc_get_root(doc);
 
 	Value expires_at(LogicalType::TIMESTAMP_TZ);
 	auto expires = yyjson_obj_get(root, "expires_at");
@@ -114,7 +111,6 @@ void WhoamiScan(ClientContext &context, TableFunctionInput &data, DataChunk &out
 	output.data[5].Append(expires_at);
 	output.data[6].Append(can_create);
 	output.data[7].Append(Value(LoginFlowName(session.Flow())));
-	yyjson_doc_free(doc);
 }
 
 } // namespace

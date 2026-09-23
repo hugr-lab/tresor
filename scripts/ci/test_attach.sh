@@ -21,3 +21,14 @@ cd "$root"
 # the runner skips a test whose error mentions "HTTP" or "Unable to connect" (a network flake guard);
 # here the network is the fake, and those errors are what the tests assert - none may turn into a skip
 "$unittest" --skip-error-messages '' "$pattern"
+
+# LOGIN 'auto' where no browser can be opened takes the device flow: only Linux can be without one
+# (macOS and Windows always have an opener), so only there, in a process without BROWSER or a display
+if [ "$(uname)" = "Linux" ] && [ "$pattern" = "test/sql/attach/*" ]; then
+	env -u BROWSER -u DISPLAY -u WAYLAND_DISPLAY TRESOR_TEST_AUTO_DEVICE=1 \
+		"$unittest" --skip-error-messages '' "test/sql/attach_auto/*" 2>&1 | tee "$work/auto.log"
+	grep -q "All tests passed (1 assertion\|All tests passed ([0-9]* assertions in 1 test case)" "$work/auto.log" || {
+		echo "test_attach: the LOGIN 'auto' -> device test did not pass" >&2
+		exit 1
+	}
+fi

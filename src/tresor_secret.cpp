@@ -15,7 +15,9 @@ namespace {
 //! Which parameters each flow takes: a flow refuses the others' parameters, so a secret never carries
 //! a credential it does not use.
 const vector<string> &FlowParameters(const string &flow) {
-	static const vector<string> client_credentials {"client_id", "client_secret"};
+	// ISSUER binds the client secret to its identity provider: the service's discovery never decides where
+	// a service's credential is sent
+	static const vector<string> client_credentials {"client_id", "client_secret", "issuer"};
 	static const vector<string> token {"token"};
 	if (flow == "client_credentials") {
 		return client_credentials;
@@ -41,7 +43,7 @@ unique_ptr<BaseSecret> CreateTresorSecret(ClientContext &context, CreateSecretIn
 	}
 	for (auto &option : input.options) {
 		auto key = StringUtil::Lower(option.first);
-		auto shared = key == "flow" || key == "issuer" || key == "oauth_scope";
+		auto shared = key == "flow" || (key == "oauth_scope" && flow == "client_credentials");
 		auto own = std::find(required.begin(), required.end(), key) != required.end();
 		if (!shared && !own) {
 			throw InvalidInputException("tresor secret: FLOW '%s' does not take %s", flow,
@@ -49,7 +51,19 @@ unique_ptr<BaseSecret> CreateTresorSecret(ClientContext &context, CreateSecretIn
 		}
 	}
 
+	// a SCOPE is the service this credential is for: without one duckdb's lookup would offer it to every
+	// ATTACH 'tresor:...', and a scope not in the ATTACH path's shape would match none
 	auto scope = input.scope;
+	if (scope.empty()) {
+		throw InvalidInputException("tresor secret: SCOPE is required - the service it logs in to, "
+		                            "'tresor:<host>[:port][/base]'");
+	}
+	for (auto &entry : scope) {
+		if (!StringUtil::StartsWith(StringUtil::Lower(entry), "tresor:") || entry.size() <= 7) {
+			throw InvalidInputException("tresor secret: SCOPE '%s' is not a service - 'tresor:<host>[:port][/base]'",
+			                            entry);
+		}
+	}
 	auto secret = make_uniq<KeyValueSecret>(scope, input.type, input.provider, input.name);
 	for (auto &option : input.options) {
 		auto key = StringUtil::Lower(option.first);

@@ -34,14 +34,20 @@ string LoginFlowName(LoginFlow flow) {
 }
 
 TresorSession::TresorSession(ServiceInfo info_p, LoginFlow flow_p, oidc::TokenSet tokens_p, string client_secret_p)
-    : info(std::move(info_p)), flow(flow_p), tokens(std::move(tokens_p)), client_secret(std::move(client_secret_p)) {
+    : info(std::move(info_p)), flow(flow_p), tokens(std::move(tokens_p)), issued_at(NowSeconds()),
+      client_secret(std::move(client_secret_p)) {
 }
 
 string TresorSession::AccessToken(bool force) {
 	if (closed) {
 		throw InvalidInputException("tresor: the session to %s is closed (DETACHed)", info.host);
 	}
-	auto fresh = tokens.expires_at == 0 || tokens.expires_at - RENEW_MARGIN_SECONDS > NowSeconds();
+	if (logged_out) {
+		throw InvalidInputException("tresor: the login to %s is over - log in again: DETACH and ATTACH", info.host);
+	}
+	// renew a minute ahead - or at half-life, for tokens that live two minutes or less
+	auto margin = MinValue<int64_t>(RENEW_MARGIN_SECONDS, MaxValue<int64_t>(0, (tokens.expires_at - issued_at) / 2));
+	auto fresh = tokens.expires_at == 0 || tokens.expires_at - margin > NowSeconds();
 	if (fresh && !force) {
 		return tokens.access_token;
 	}
@@ -71,12 +77,14 @@ string TresorSession::AccessToken(bool force) {
 		if (renewed.error_code == "invalid_grant") {
 			// the refresh chain is dead (revoked, expired, rotated elsewhere): only a new login helps
 			tokens = oidc::TokenSet();
+			logged_out = true;
 			throw InvalidInputException("tresor: the login to %s is over (%s) - log in again: DETACH and ATTACH",
 			                            info.host, renewed.error);
 		}
 		throw IOException("tresor: renewing the login to %s failed: %s", info.host, renewed.error);
 	}
 	tokens = std::move(renewed);
+	issued_at = NowSeconds();
 	return tokens.access_token;
 }
 

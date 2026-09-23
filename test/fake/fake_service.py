@@ -15,6 +15,7 @@ a sqllogictest can only steer the fake through what it attaches:
     expiring   whoami accepts a token as first issued only twice, then answers 401 until the
                client renews it (a renewed token is accepted for good)
     revoking   like expiring, and its issuer (/idp-revoking) refuses every refresh: invalid_grant
+    noflows    lists human_flows and service_flows, both empty: a client attempts no login at all
 
     fake_service.py --port-file PATH     # binds a free port and writes it to PATH
 """
@@ -38,7 +39,7 @@ PERSON = {"subject": "alice", "roles": ["role:analysts", "group:sales"], "create
 SERVICE = {"subject": "client:etl", "roles": ["role:etl"], "create": True}
 CLIENTS = {"etl": "s3cr3t"}
 STATIC_TOKENS = {"static-token": {"subject": "client:static", "roles": [], "create": False}}
-REALMS = {"", "multi", "wrong", "expiring", "revoking"}
+REALMS = {"", "multi", "wrong", "expiring", "revoking", "noflows"}
 ISSUERS = {"idp", "idp2", "idp-revoking"}
 FIRST_USES = 2  # expiring/revoking: how many whoami calls a token as first issued survives
 
@@ -130,6 +131,8 @@ class Handler(BaseHTTPRequestHandler):
                 "human_flows": ["authorization_code", "device_code"],
                 "service_flows": ["client_credentials"],
             }
+            if realm == "noflows":
+                issuer = dict(issuer, human_flows=[], service_flows=[])
             issuers = [issuer] + ([dict(issuer, issuer=base + "/idp2")] if realm == "multi" else [])
             self.send(200, {
                 "protocol": "duckdb-secrets/2" if realm == "wrong" else "duckdb-secrets/1",
