@@ -24,8 +24,16 @@ fixes only what a client sees.
   issuer's JWKS, `iss`, **`aud`** (the token must be issued *for this service*), expiry.
 - Errors: RFC 9457 `application/problem+json`, with a `type` from the list in [Errors](#errors).
 - A **principal** is a string with a conventional prefix: `role:<name>`, `group:<name>`,
-  `subject:<issuer>|<sub>`, `client:<client_id>` (a server acting as an actor). How claims map to
-  principals is the service's business.
+  `subject:<issuer>|<sub>`, `client:<client_id>` (a service, or a server acting as an actor). How
+  claims map to principals is the service's business. Only `subject:` identifies a caller. The other
+  prefixes name something a caller holds: a `client:` name is shared by every token of that client,
+  and, across issuers, by same-named clients. Ownership and identity are therefore always
+  `subject:`.
+- Names of secrets are compared exactly. A client sends them in one canonical form (tresor: lower
+  case, as DuckDB compares secret names case-insensitively).
+- Bodies: a client sends only the fields listed here. A service may refuse unknown fields with
+  `422 invalid_secret`.
+- Every error is a problem document, including an unknown route or method (`404 not_found`).
 
 ## Discovery
 
@@ -83,7 +91,9 @@ fixes only what a client sees.
 ```
 
 `actor` is set when the call is made by a server on a user's behalf ([delegation](#delegation)).
-`permissions.create` is `true`, `false`, or a list of name patterns the caller may create.
+`roles` lists the caller's principals other than its `subject:` (`role:`, `group:`, and `client:`
+for a service). `permissions.create` is `true`, `false`, or a list of name patterns the caller may
+create.
 
 ## Secrets
 
@@ -147,15 +157,23 @@ A client caches the material until shortly before that time.
 
 ### Conditional writes
 
-`PUT` carries the secret as `{type, provider, scope, params, redact_keys}` and follows HTTP
-preconditions, which is exactly what DuckDB's statements need:
+`PUT` carries the secret as `{type, provider, scope, params, redact_keys}` (and optionally
+`comment`) and follows HTTP preconditions, which is exactly what DuckDB's statements need:
 
 | SQL | Request | On `412 Precondition Failed` |
 | --- | --- | --- |
 | `CREATE PERSISTENT SECRET … IN corp` | `PUT` + `If-None-Match: *` | error: already exists |
 | `CREATE PERSISTENT SECRET IF NOT EXISTS …` | `PUT` + `If-None-Match: *` | silently nothing |
-| `CREATE OR REPLACE PERSISTENT SECRET …` | `PUT` (no precondition) — needs `update` or `create` | — |
+| `CREATE OR REPLACE PERSISTENT SECRET …` | `PUT` (no precondition): replaces a secret the caller holds `update` on, or creates one under its `create` | — |
+| a replace that must not lose a concurrent change | `PUT` + `If-Match: "<version>"` (the `ETag` of the read) | error: changed meanwhile |
 | `DROP PERSISTENT SECRET … FROM corp` | `DELETE`; `IF EXISTS` ignores `404` | — |
+
+- **Answers.** `PUT` answers `201` when it created and `200` when it replaced, with the descriptor
+  and its `ETag` (the quoted `version`). `DELETE` answers `204`. `PATCH` answers `200` with the
+  descriptor. `If-None-Match` with an ETag (not `*`) fails only on that version.
+- **A name the caller cannot see.** A `PUT` to a name that exists but is invisible to the caller is
+  `403 no_verb`, not `412`. A caller allowed to create therefore learns that the name is taken, but
+  nothing else about the secret. Every read of an invisible secret is `404`, like a missing one.
 
 ## Permissions
 
@@ -176,8 +194,12 @@ The verbs a service decides:
 | Method | Path | Meaning |
 | --- | --- | --- |
 | `GET` | `/v1/secrets/{name}/grants` | `[{id, principal, verbs[]}]` — requires `grant` |
-| `PUT` | `/v1/secrets/{name}/grants/{id}` | create or replace a grant `{principal, verbs[]}` |
-| `DELETE` | `/v1/secrets/{name}/grants/{id}` | revoke |
+| `PUT` | `/v1/secrets/{name}/grants/{id}` | create or replace a grant `{principal, verbs[]}` → `200` with the secret's grants |
+| `DELETE` | `/v1/secrets/{name}/grants/{id}` | revoke → `204`, or `404` |
+
+A grant passes on at most the verbs its grantor holds: holding `grant` alone does not let a caller
+give itself `use`. The id is the client's choice. A malformed grant (an unknown verb, a principal
+without a known prefix) is `422 invalid_secret`. A verb the grantor lacks is `403 no_verb`.
 
 ## Delegation
 
@@ -240,5 +262,8 @@ it is a bearer credential and is revocable centrally.
 
 ## Conformance
 
-A conformance suite (sqllogictests driven against a service URL) and a minimal reference server ship
-with tresor's repository; a service is `duckdb-secrets/1` when it passes the suite.
+A service is `duckdb-secrets/1` when it passes the **conformance suite**: sqllogictests in tresor's
+repository (`test/sql/conformance/`), driven against the service's URL through environment
+variables. It checks what a client can observe; today that is a service login and a person login,
+each followed by `whoami`. The suite grows with the client. The
+[reference server](./reference-server.md) passes it in CI, next to a real Keycloak.

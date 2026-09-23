@@ -1,0 +1,29 @@
+# name: test/sql/conformance/person_login.test
+# description: duckdb-secrets/1 conformance - a person logs in through the browser flow (specs/003)
+# group: [conformance]
+
+# TRESOR_CONFORMANCE_PERSON set means BROWSER is a program that completes the IdP's login (for
+# Keycloak: test/keycloak/browser.py); the service's discovery names the public client people use
+require-env TRESOR_CONFORMANCE_PERSON
+
+require-env TRESOR_CONFORMANCE_HOST
+
+require-env TRESOR_CONFORMANCE_INSECURE
+
+require-env TRESOR_CONFORMANCE_ISSUER
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+ATTACH 'tresor:{TRESOR_CONFORMANCE_HOST}' AS corp
+    (INSECURE_HTTP {TRESOR_CONFORMANCE_INSECURE}, LOGIN 'browser', ISSUER '{TRESOR_CONFORMANCE_ISSUER}', LOGIN_TIMEOUT 60);
+
+query IIII
+SELECT rtrim(issuer, '/') = rtrim('{TRESOR_CONFORMANCE_ISSUER}', '/'), subject <> '', expires_at > now(), login
+FROM corp.whoami();
+----
+true	true	true	browser
+
+statement ok
+DETACH corp;

@@ -1,0 +1,220 @@
+// Package config reads and validates the reference server's configuration (specs/003).
+package config
+
+import (
+	"errors"
+	"fmt"
+	"net"
+	"net/url"
+	"os"
+	"path"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Config is the whole server configuration.
+type Config struct {
+	Listen    string   `yaml:"listen"`
+	PublicURL string   `yaml:"public_url"`
+	TLS       TLS      `yaml:"tls"`
+	Store     Store    `yaml:"store"`
+	Issuers   []Issuer `yaml:"issuers"`
+	Policy    Policy   `yaml:"policy"`
+}
+
+// TLS names the certificate the server serves with; empty means plain http (loopback only).
+type TLS struct {
+	Cert string `yaml:"cert"`
+	Key  string `yaml:"key"`
+}
+
+// Store says where the secrets are kept: memory when Path is empty, else an encrypted file.
+type Store struct {
+	Path   string `yaml:"path"`
+	KeyEnv string `yaml:"key_env"`
+}
+
+// Issuer is one identity provider the server accepts tokens from.
+type Issuer struct {
+	Issuer       string   `yaml:"issuer"`
+	Audience     string   `yaml:"audience"`
+	ClientID     string   `yaml:"client_id"`
+	Scopes       []string `yaml:"scopes"`
+	HumanFlows   []string `yaml:"human_flows"`
+	ServiceFlows []string `yaml:"service_flows"`
+	RolesClaim   string   `yaml:"roles_claim"`
+	GroupsClaim  string   `yaml:"groups_claim"`
+	Algorithms   []string `yaml:"algorithms"`
+	// Service says how this issuer's client-credentials tokens are told apart from people's. Without
+	// it every caller of the issuer is a person: no claim is a service marker by convention (RFC 9068
+	// puts client_id into every access token, a person's included).
+	Service *ServiceRule `yaml:"service"`
+}
+
+// ServiceRule marks a token as a service's: Claim is present (and equals Equals, when set); the
+// client's name is ClientClaim (default azp).
+type ServiceRule struct {
+	Claim       string `yaml:"claim"`
+	Equals      string `yaml:"equals"`
+	ClientClaim string `yaml:"client_claim"`
+}
+
+// Policy is the service-level part of the permissions: admins and who may create what.
+type Policy struct {
+	Admins []string     `yaml:"admins"`
+	Create []CreateRule `yaml:"create"`
+}
+
+// CreateRule lets a principal create secrets whose names match one of the patterns (path.Match).
+type CreateRule struct {
+	Principal string   `yaml:"principal"`
+	Names     []string `yaml:"names"`
+}
+
+// Load reads and validates a YAML file.
+func Load(file string) (*Config, error) {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+	return Parse(data)
+}
+
+// Parse validates a YAML document; unknown keys are an error, not ignored.
+func Parse(data []byte) (*Config, error) {
+	var cfg Config
+	dec := yaml.NewDecoder(strings.NewReader(string(data)))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	if err := cfg.validate(); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	return &cfg, nil
+}
+
+var allowedAlgorithms = map[string]bool{
+	"RS256": true, "RS384": true, "RS512": true,
+	"PS256": true, "PS384": true, "PS512": true,
+	"ES256": true, "ES384": true, "ES512": true, "EdDSA": true,
+}
+
+// the per-secret verbs this server grants; `delegate` joins when delegation does
+var knownVerbs = map[string]bool{
+	"use": true, "update": true, "delete": true, "annotate": true, "grant": true,
+}
+
+// KnownVerb says whether v is one of the protocol's per-secret verbs.
+func KnownVerb(v string) bool { return knownVerbs[v] }
+
+func (c *Config) validate() error {
+	if c.Listen == "" {
+		return errors.New("listen is required")
+	}
+	host, _, err := net.SplitHostPort(c.Listen)
+	if err != nil {
+		return fmt.Errorf("listen %q: %w", c.Listen, err)
+	}
+	if (c.TLS.Cert == "") != (c.TLS.Key == "") {
+		return errors.New("tls needs both cert and key")
+	}
+	if c.TLS.Cert == "" && !IsLoopback(host) {
+		return fmt.Errorf("plain http is allowed only on a loopback listen address, not %q - configure tls", host)
+	}
+	u, err := url.Parse(c.PublicURL)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return fmt.Errorf("public_url %q must be an absolute http(s) URL", c.PublicURL)
+	}
+	if u.Scheme == "http" && !IsLoopback(u.Hostname()) {
+		return fmt.Errorf("public_url %q: http only for a loopback host", c.PublicURL)
+	}
+	if c.Store.Path != "" && c.Store.KeyEnv == "" {
+		return errors.New("store.key_env is required with store.path: the store is always encrypted")
+	}
+	if c.Store.Path == "" && c.Store.KeyEnv != "" {
+		return errors.New("store.key_env without store.path: the store would silently be memory only")
+	}
+	if len(c.Issuers) == 0 {
+		return errors.New("at least one issuer is required")
+	}
+	seen := map[string]bool{}
+	for i := range c.Issuers {
+		is := &c.Issuers[i]
+		// kept verbatim: an issuer identifier is compared exactly (RFC 8414), and some end in '/'
+		// (Auth0, Entra v1); only the lookup key is normalised (IssuerKey)
+		if is.Issuer == "" || is.Audience == "" {
+			return fmt.Errorf("issuers[%d]: issuer and audience are required", i)
+		}
+		iu, err := url.Parse(is.Issuer)
+		if err != nil || iu.Host == "" || (iu.Scheme != "https" && !(iu.Scheme == "http" && IsLoopback(iu.Hostname()))) {
+			// its discovery and JWKS are fetched from here: over plain http anyone on the path could
+			// substitute the signing keys
+			return fmt.Errorf("issuer %q must be https (http only for a loopback host)", is.Issuer)
+		}
+		if seen[IssuerKey(is.Issuer)] {
+			return fmt.Errorf("issuer %q listed twice", is.Issuer)
+		}
+		seen[IssuerKey(is.Issuer)] = true
+		if len(is.HumanFlows) > 0 && is.ClientID == "" {
+			return fmt.Errorf("issuer %q: human_flows need the public client_id people log in with", is.Issuer)
+		}
+		if is.Service != nil {
+			if is.Service.Claim == "" {
+				return fmt.Errorf("issuer %q: service.claim is required", is.Issuer)
+			}
+			if is.Service.ClientClaim == "" {
+				is.Service.ClientClaim = "azp"
+			}
+		}
+		if len(is.Algorithms) == 0 {
+			is.Algorithms = []string{"RS256", "ES256"}
+		}
+		for _, alg := range is.Algorithms {
+			if !allowedAlgorithms[alg] {
+				return fmt.Errorf("issuer %q: algorithm %q is not allowed (asymmetric only)", is.Issuer, alg)
+			}
+		}
+	}
+	for _, p := range c.Policy.Admins {
+		if err := checkPrincipal(p); err != nil {
+			return fmt.Errorf("policy.admins: %w", err)
+		}
+	}
+	for _, r := range c.Policy.Create {
+		if err := checkPrincipal(r.Principal); err != nil {
+			return fmt.Errorf("policy.create: %w", err)
+		}
+		if len(r.Names) == 0 {
+			return fmt.Errorf("policy.create: %s has no names", r.Principal)
+		}
+		for _, n := range r.Names {
+			if _, err := path.Match(n, ""); err != nil {
+				return fmt.Errorf("policy.create: bad pattern %q", n)
+			}
+		}
+	}
+	return nil
+}
+
+func checkPrincipal(p string) error {
+	for _, prefix := range []string{"role:", "group:", "subject:", "client:"} {
+		if strings.HasPrefix(p, prefix) && len(p) > len(prefix) {
+			return nil
+		}
+	}
+	return fmt.Errorf("principal %q: role:, group:, subject: or client: expected", p)
+}
+
+// IssuerKey is how an issuer is looked up by a token's iss: without a trailing '/'.
+func IssuerKey(issuer string) string { return strings.TrimRight(issuer, "/") }
+
+// IsLoopback says whether host (a name or an IP) is this machine.
+func IsLoopback(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}

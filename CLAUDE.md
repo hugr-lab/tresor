@@ -36,10 +36,11 @@ ATTACH prefix works).
 src/                        # the extension: the tresor ATTACH type, tresor_version()
 duckdb-ext-common/          # submodule: shared contracts + hook bases; tresor OWNS hooks/ (it is the
                             #   first consumer) and contracts/tresor_*.hpp there (charter R6)
-server/                     # the reference duckdb-secrets/1 server (Go) — for tests and as an example
+server/                     # the reference duckdb-secrets/1 server (Go module) + the Keycloak test realm
 website/                    # docs (docusaurus); docs/protocol.md is the specification
 test/sql/                   # sqllogictests; attach/ needs the fake service
 test/fake/                  # fake duckdb-secrets service + IdP (Python stdlib) and the fake browser
+test/keycloak/browser.py    # fills Keycloak's login form: the person's browser in the Keycloak tests
 scripts/ci/                 # smoke_load.sh, test_attach.sh, assert_ran.sh, check_docs_links.py
 specs/                      # one lightweight spec per feature (see specs/README.md)
 design/                     # LOCAL, gitignored research
@@ -53,6 +54,8 @@ make vcpkg-setup                            # once (or VCPKG_TOOLCHAIN_PATH=<an 
 GEN=ninja make                              # release: duckdb (2.0) + tresor
 build/release/test/unittest 'test/sql/*'    # sqllogictests (test/sql/attach/* skip without TRESOR_TEST_PORT)
 scripts/ci/test_attach.sh                   # attach/login tests against test/fake/fake_service.py
+scripts/ci/test_keycloak.sh                 # server/ + Keycloak (docker): test/sql/conformance, test/sql/reference_server
+(cd server && GOWORK=off go test ./...)     # the reference server (GOWORK=off: a parent go.work may exist locally)
 scripts/ci/smoke_load.sh                    # out of tree: explicit LOAD, and ATTACH 'tresor:...' loading it alone
 find src \( -name '*.cpp' -o -name '*.hpp' \) | xargs clang-format -i      # pin: clang_format==11.0.1
 cd website && npm ci && npx docusaurus build                               # docs (onBrokenLinks: throw)

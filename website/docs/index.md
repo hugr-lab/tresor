@@ -21,7 +21,8 @@ FROM 's3://lake/sales/*.parquet';                      -- found by scope, like a
 
 :::caution Status
 tresor is being built. This site describes the design it is built to; pages mark what exists.
-Today the extension registers the `tresor` ATTACH type — attaching a service is the next step.
+Attaching a service, logging in and `corp.whoami()` work today. Next come the secrets themselves:
+lookup, then writes.
 :::
 
 ## What it is

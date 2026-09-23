@@ -1,0 +1,45 @@
+# name: test/sql/conformance/service_login.test
+# description: duckdb-secrets/1 conformance - a service logs in and the service knows who it is (specs/003)
+# group: [conformance]
+
+# the service under test: TRESOR_CONFORMANCE_HOST (tresor:<host>[:port][/base]), _INSECURE (true for a
+# loopback http service), and a client-credentials client of one of its issuers (_ISSUER, _CLIENT_ID,
+# _CLIENT_SECRET); scripts/ci/test_keycloak.sh runs this against the reference server
+require-env TRESOR_CONFORMANCE_HOST
+
+require-env TRESOR_CONFORMANCE_INSECURE
+
+require-env TRESOR_CONFORMANCE_ISSUER
+
+require-env TRESOR_CONFORMANCE_CLIENT_ID
+
+require-env TRESOR_CONFORMANCE_CLIENT_SECRET
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+CREATE SECRET conformance_login (TYPE tresor, SCOPE 'tresor:{TRESOR_CONFORMANCE_HOST}',
+    FLOW 'client_credentials', CLIENT_ID '{TRESOR_CONFORMANCE_CLIENT_ID}',
+    CLIENT_SECRET '{TRESOR_CONFORMANCE_CLIENT_SECRET}', ISSUER '{TRESOR_CONFORMANCE_ISSUER}');
+
+# discovery, the issuer's discovery, the grant, and the service's whoami accepting the token
+statement ok
+ATTACH 'tresor:{TRESOR_CONFORMANCE_HOST}' AS svc (INSECURE_HTTP {TRESOR_CONFORMANCE_INSECURE});
+
+# whoami: the issuer the token came from, a subject, a future expiry, no actor, the flow used
+query IIIIII
+SELECT rtrim(issuer, '/') = rtrim('{TRESOR_CONFORMANCE_ISSUER}', '/'), subject <> '', expires_at > now(),
+       actor IS NULL, roles IS NOT NULL AND can_create IS NOT NULL, login
+FROM svc.whoami();
+----
+true	true	true	true	true	client_credentials
+
+# the api the discovery named is absolute
+query I
+SELECT service LIKE 'http%://%' FROM svc.whoami();
+----
+true
+
+statement ok
+DETACH svc;
