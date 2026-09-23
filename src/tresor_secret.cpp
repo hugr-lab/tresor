@@ -88,6 +88,11 @@ unique_ptr<BaseSecret> CreateTresorProvided(ClientContext &context, CreateSecret
 	};
 	auto service = option("tresor_service");
 	auto name = option("tresor_secret");
+	// the secret is created under its own name (httpfs's refresh passes it): TRESOR_SECRET names the same
+	if (!StringUtil::CIEquals(input.name.GetIdentifierName(), name)) {
+		throw InvalidInputException("tresor provider: the secret is %s, but TRESOR_SECRET names %s",
+		                            input.name.GetIdentifierName(), name);
+	}
 	// service material stays in the service's own storage: never memory, never a file on disk
 	if (!StringUtil::CIEquals(input.storage_type.GetIdentifierName(), service)) {
 		throw InvalidInputException("tresor provider: a secret of the service %s is created only IN %s", service,
@@ -130,7 +135,7 @@ void RegisterTresorSecret(ExtensionLoader &loader) {
 	loader.RegisterFunction(function);
 
 	// the S3-family types are httpfs's: duckdb checks a type at CREATE, not here, so httpfs may load later
-	for (auto type : {"s3", "r2", "gcs"}) {
+	for (auto type : {"s3", "r2", "gcs", "aws"}) { // httpfs's S3SecretConfig::SecretTypes()
 		CreateSecretFunction provided;
 		provided.secret_type = type;
 		provided.provider = Identifier("tresor");

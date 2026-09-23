@@ -29,12 +29,12 @@ SELECT rtrim(content, chr(10)) FROM read_text('s3://dynbucket/hello.txt');
 ----
 hello from s3
 
-# the lookup now serves a later mint (the requests of one read may fail in parallel; a mint younger than
-# two seconds answers all of their refreshes) - and the refresh wrote nothing to the service
+# the lookup now serves the second mint: the first stayed cached (it lives 600 s) until S3 refused it,
+# then exactly one refresh minted anew - and wrote nothing to the service
 query I
-SELECT tresor_secret_param('dyn_s3', 'key_id') NOT IN ('VARCHAR DYN-S3-1');
+SELECT tresor_secret_param('dyn_s3', 'key_id');
 ----
-true
+VARCHAR DYN-S3-2
 
 query I
 SELECT comment FROM corp.secrets() WHERE name = 'dyn_s3';
@@ -50,16 +50,17 @@ NULL	NULL
 
 # the provider creates only IN its service: service material never lands in memory or on disk
 statement error
-CREATE SECRET copy (TYPE s3, PROVIDER tresor, TRESOR_SERVICE 'corp', TRESOR_SECRET 'dyn_s3');
+CREATE SECRET dyn_s3 (TYPE s3, PROVIDER tresor, TRESOR_SERVICE 'corp', TRESOR_SECRET 'dyn_s3');
 ----
 is created only IN corp
 
 statement error
-CREATE SECRET copy IN corp (TYPE s3, PROVIDER tresor, TRESOR_SERVICE 'elsewhere', TRESOR_SECRET 'dyn_s3');
+CREATE SECRET dyn_s3 IN corp (TYPE s3, PROVIDER tresor, TRESOR_SERVICE 'elsewhere', TRESOR_SECRET 'dyn_s3');
 ----
 is created only IN elsewhere
 
-# ... what httpfs's refresh does, by hand: IN corp, a fresh mint, still no write
+# ... what httpfs's refresh does, by hand: IN corp, under the secret's own name - still no write (a
+# refresh a moment after another shares its mint)
 statement ok
 CREATE OR REPLACE PERSISTENT SECRET dyn_s3 IN corp (TYPE s3, PROVIDER tresor, TRESOR_SERVICE 'corp', TRESOR_SECRET 'dyn_s3');
 
@@ -68,9 +69,27 @@ SELECT comment FROM corp.secrets() WHERE name = 'dyn_s3';
 ----
 writes 0
 
-# an s3 secret written with REFRESH auto reaches the service without the recipe
+# the provider refreshes only a dynamic secret (a static one would be a write), and only under its own name
+statement error
+CREATE OR REPLACE PERSISTENT SECRET static_with_refresh IN corp (TYPE s3, PROVIDER tresor, TRESOR_SERVICE 'corp', TRESOR_SECRET 'static_with_refresh');
+----
+is not a dynamic s3 secret - there is nothing to refresh
+
+statement error
+CREATE OR REPLACE PERSISTENT SECRET other_name IN corp (TYPE s3, PROVIDER tresor, TRESOR_SERVICE 'corp', TRESOR_SECRET 'dyn_s3');
+----
+the secret is other_name, but TRESOR_SECRET names dyn_s3
+
+query I
+SELECT comment FROM corp.secrets() WHERE name = 'static_with_refresh';
+----
+fetched 1
+
+# an s3 secret written with REFRESH auto reaches the service without the recipe - nor its redact key
+# (httpfs redacts refresh_info when there is an SSE-C key)
 statement ok
-CREATE PERSISTENT SECRET written_refresh IN corp (TYPE s3, KEY_ID 'W', SECRET 'w', REFRESH auto, SCOPE 's3://written-refresh');
+CREATE PERSISTENT SECRET written_refresh IN corp (TYPE s3, KEY_ID 'W', SECRET 'w', REFRESH auto,
+    SSE_C_KEY 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=', SCOPE 's3://written-refresh');
 
 query II
 SELECT tresor_secret_param('written_refresh', 'key_id'), tresor_secret_param('written_refresh', 'refresh_info');

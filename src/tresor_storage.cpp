@@ -176,7 +176,12 @@ bool IsRefreshKey(const string &key) {
 //! The secret types whose refresh httpfs drives (REFRESH auto): a dynamic service secret of these types is
 //! refreshed through the tresor provider
 bool RefreshableType(const string &type) {
-	return type == "s3" || type == "r2" || type == "gcs";
+	return type == "s3" || type == "r2" || type == "gcs" || type == "aws"; // httpfs's S3SecretConfig::SecretTypes()
+}
+
+//! The provider a descriptor's secret carries in DuckDB: tresor for a refreshable dynamic one
+string ProviderOf(const Descriptor &d) {
+	return d.dynamic && RefreshableType(d.type) ? string("tresor") : d.provider;
 }
 
 //! A service's secret of type tresor is a login for DuckDB to use, never one a service may plant: it
@@ -342,8 +347,9 @@ string SecretBody(const KeyValueSecret &secret) {
 	string redact;
 	for (auto &key : secret.redact_keys) {
 		auto param = secret.secret_map.find(key);
-		if (param == secret.secret_map.end() || param->second.IsNull()) {
-			continue;
+		if (param == secret.secret_map.end() || param->second.IsNull() ||
+		    IsRefreshKey(StringUtil::Lower(key.GetIdentifierName()))) {
+			continue; // only keys that are params of the body
 		}
 		redact += (redact.empty() ? "" : ",") + JsonText(StringUtil::Lower(key.GetIdentifierName()));
 	}
@@ -519,7 +525,7 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const shared_ptr<Tr
 	// a dynamic S3-family secret is refreshed by tresor (httpfs's REFRESH auto calls the provider recorded
 	// in the secret, with the options of its refresh_info); every other one keeps the service's provider
 	auto refreshable = d.dynamic && RefreshableType(d.type);
-	auto provider = refreshable ? string("tresor") : d.provider;
+	auto provider = ProviderOf(d);
 	auto secret = make_uniq<KeyValueSecret>(d.scope, Identifier(d.type), Identifier(provider), Identifier(d.name));
 	if (refreshable) {
 		child_list_t<Value> recipe;
@@ -579,7 +585,6 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const shared_ptr<Tr
 	if (valid_until > now) {
 		Material material;
 		material.version = d.version;
-		material.fetched_at = now;
 		material.valid_until = valid_until;
 		material.secret = secret->Clone();
 		materials[d.name] = std::move(material);
@@ -655,7 +660,7 @@ vector<SecretEntry> TresorSecretStorage::AllSecrets(optional_ptr<CatalogTransact
 	for (auto &d : list) {
 		if (Lookupable(d)) {
 			out.push_back(EntryOf(
-			    make_uniq<KeyValueSecret>(d.scope, Identifier(d.type), Identifier(d.provider), Identifier(d.name))));
+			    make_uniq<KeyValueSecret>(d.scope, Identifier(d.type), Identifier(ProviderOf(d)), Identifier(d.name))));
 		}
 	}
 	return out;
@@ -681,14 +686,22 @@ unique_ptr<const BaseSecret> TresorSecretStorage::RefreshMaterial(const string &
 		if (!StringUtil::CIEquals(d.name, name) || !Lookupable(d) || !d.May("use")) {
 			continue;
 		}
+		// only a dynamic secret is refreshed: a static one's credential is fixed in the service, and
+		// re-creating it would be a write (the rotation is the service's business)
+		if (!d.dynamic || !RefreshableType(d.type)) {
+			throw InvalidInputException("tresor: the secret %s of %s is not a dynamic %s secret - there is "
+			                            "nothing to refresh",
+			                            d.name, storage_name, d.type);
+		}
 		{
-			// fresh, not cached: the credential in hand was just refused. But requests of one scan fail in
-			// parallel, and each asks for a refresh: a mint younger than a couple of seconds is the answer
-			// to all of them, not a reason for another
+			// fresh, not cached: the credential in hand was just refused. A mint made by another refresh a
+			// moment ago is the answer to this one too (requests of one scan may refresh in parallel); a
+			// mint made by an ordinary lookup is not - it may be the very credential that was refused
 			lock_guard<mutex> guard(lock);
 			auto cached = materials.find(d.name);
-			if (cached != materials.end() && NowSeconds() - cached->second.fetched_at < FRESH_MINT_SECONDS &&
-			    cached->second.valid_until > NowSeconds()) {
+			auto now = NowSeconds();
+			if (cached != materials.end() && cached->second.version == d.version && cached->second.refreshed_at != 0 &&
+			    now - cached->second.refreshed_at < FRESH_MINT_SECONDS && cached->second.valid_until > now) {
 				return cached->second.secret->Clone();
 			}
 			materials.erase(d.name);
@@ -696,6 +709,11 @@ unique_ptr<const BaseSecret> TresorSecretStorage::RefreshMaterial(const string &
 		auto material = MaterialOf(current, d, transaction);
 		if (!material) {
 			break;
+		}
+		lock_guard<mutex> guard(lock);
+		auto cached = materials.find(d.name);
+		if (cached != materials.end()) {
+			cached->second.refreshed_at = NowSeconds();
 		}
 		return material;
 	}

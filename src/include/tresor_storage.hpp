@@ -80,7 +80,7 @@ public:
 private:
 	struct Material {
 		string version;
-		int64_t fetched_at = 0;
+		int64_t refreshed_at = 0; // minted by a refresh (RefreshMaterial): parallel refreshes share it
 		int64_t valid_until = 0;
 		unique_ptr<const BaseSecret> secret;
 	};

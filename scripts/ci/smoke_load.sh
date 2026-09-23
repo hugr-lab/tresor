@@ -43,4 +43,22 @@ grep -q "tresor: discovery of secrets.example.invalid failed" <<<"$att" || {
 	echo "$att" >&2
 	exit 1
 }
+# 3. why the path has no scheme (specs/001, CLAUDE.md): without httpfs, duckdb's ATTACH treats an https://
+#    path as a remote database file and demands httpfs before it looks at the type. A build without
+#    httpfs pins that here; a TRESOR_TEST_HTTPFS build (specs/006) links httpfs into the CLI, and then
+#    tresor's own refusal is what is checked.
+sch="$("$duckdb_abs" -unsigned -csv -noheader -c "
+SET extension_directories = ['$tmp/extensions'];
+SET autoload_known_extensions = false;
+INSTALL tresor FROM '$repo_abs';
+ATTACH 'tresor:https://secrets.example.invalid' AS corp;
+" 2>&1)" && { echo "smoke_load: a schemed tresor path attached" >&2; exit 1; }
+if grep -q "name the service without a scheme" <<<"$sch"; then
+	# this CLI carries httpfs (a TRESOR_TEST_HTTPFS build): the path reached tresor, which refused the scheme
+	echo "smoke_load: httpfs is linked in this CLI - the schemed path was refused by tresor itself"
+elif ! grep -q "requires extension 'httpfs'" <<<"$sch"; then
+	echo "smoke_load: a schemed path no longer demands httpfs - revisit why tresor paths have no scheme:" >&2
+	echo "$sch" >&2
+	exit 1
+fi
 echo "smoke_load: ok ($out; ATTACH 'tresor:...' loads the installed extension; size $(wc -c <"$ext_abs" | tr -d ' ') bytes)"

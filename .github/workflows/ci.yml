@@ -68,6 +68,7 @@ jobs:
     env:
       GEN: ninja
       CCACHE_DIR: ${{ github.workspace }}/.ccache
+      TRESOR_TEST_HTTPFS: '1'   # httpfs in the test build (specs/006; extension_config.cmake)
       VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/vcpkg_bincache,readwrite'
     steps:
       - uses: actions/checkout@v7
@@ -157,6 +158,7 @@ jobs:
     env:
       GEN: ninja
       CCACHE_DIR: ${{ github.workspace }}/.ccache
+      TRESOR_TEST_HTTPFS: '1'   # httpfs in the test build (specs/006; extension_config.cmake)
       VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/vcpkg_bincache,readwrite'
     steps:
       - uses: actions/checkout@v7

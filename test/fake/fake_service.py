@@ -99,8 +99,9 @@ SECRETS = {
         "type": "mssql", "scope": ["mssql://bare"], "permissions": ["use"],
         "params": {"port": 1433}, "redact_keys": [],
     },
-    # a dynamic s3 secret for the REFRESH auto path (specs/006): each mint is a new key, the endpoint is this
-    # fake's S3 (which refuses the first key it sees); its comment counts the writes the service received
+    # a dynamic s3 secret for the REFRESH auto path (specs/006): each mint is a new key valid for 600 s (so the
+    # client caches it), the endpoint is this fake's S3, which refuses the first mint; its comment counts the
+    # writes the service received for it
     "dyn_s3": {
         "type": "s3", "scope": ["s3://dynbucket"], "owner": "role:other", "permissions": ["use"], "dynamic": True,
         "lifetime": 600, "params": {"key_id": "DYN-S3"}, "redact_keys": ["secret"],
@@ -124,7 +125,7 @@ SECRETS = {
     },
 }
 FETCHED = {}  # secret name -> material fetches
-WRITES = [0]  # PUT / DELETE / PATCH the service received
+WRITES = {}  # secret name -> PUT / DELETE / PATCH the service received for it
 
 
 def descriptor(name, sec):
@@ -132,7 +133,7 @@ def descriptor(name, sec):
     return {
         "name": name, "type": sec["type"], "provider": sec.get("provider", "config"), "scope": sec["scope"],
         "comment": sec["comment"] if "comment" in sec else (
-            "writes %d" % WRITES[0] if name == "dyn_s3" else "fetched %d" % FETCHED.get(name, 0)),
+            "writes %d" % WRITES.get(name, 0) if name == "dyn_s3" else "fetched %d" % FETCHED.get(name, 0)),
         "owner": sec.get("owner", "role:admins"),
         "created_at": "2026-09-01T10:00:00Z", "updated_at": "2026-09-10T08:30:00Z",
         "version": str(sec.get("version", 7)),
@@ -189,13 +190,13 @@ class Handler(BaseHTTPRequestHandler):
             return parts[1], "/" + (parts[2] if len(parts) > 2 else "")
         return "", path
 
-    # --- a minimal S3 (specs/006): /dynbucket/<key>, refusing the first access key it ever sees ---------
+    # --- a minimal S3 (specs/006): /dynbucket/<key>, refusing dyn_s3's first mint (DYN-S3-1) -------------
     S3_OBJECT = b"hello from s3\n"
 
     def s3(self, head):
         auth = self.headers.get("Authorization", "")
         key_id = auth.split("Credential=")[1].split("/")[0] if "Credential=" in auth else ""
-        if not key_id or key_id.endswith("-1"):
+        if not key_id or key_id == "DYN-S3-1":
             body = b"<Error><Code>AccessDenied</Code><Message>expired</Message></Error>"
             self.send_response(403)
             self.send_header("Content-Type", "application/xml")
@@ -344,6 +345,8 @@ class Handler(BaseHTTPRequestHandler):
                         "key_id": "DYN-S3-%d" % FETCHED[name], "secret": {"type": "VARCHAR", "value": "s"},
                         "region": "us-east-1", "endpoint": "127.0.0.1:%d" % self.server.server_address[1],
                         "url_style": "path", "use_ssl": {"type": "BOOLEAN", "value": False}})
+                    body["expires_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                       time.gmtime(time.time() + sec["lifetime"]))
                 elif sec.get("dynamic"):
                     body["params"]["key_id"] = "DYN-%d" % FETCHED[name]
                     body["expires_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ",
@@ -367,7 +370,6 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length) or b"null")
 
     def do_PUT(self):
-        WRITES[0] += 1
         realm, rest = self.split(urllib.parse.urlparse(self.path).path)
         if not rest.startswith("/v1/secrets/") or not self.authorised():
             if rest.startswith("/v1/secrets/"):
@@ -377,6 +379,7 @@ class Handler(BaseHTTPRequestHandler):
         parts = [urllib.parse.unquote(p) for p in rest[len("/v1/secrets/"):].split("/")]
         body = self.body()
         with LOCK:
+            WRITES[parts[0]] = WRITES.get(parts[0], 0) + 1
             if len(parts) == 3 and parts[1] == "grants":
                 sec = SECRETS.get(parts[0])
                 if sec is None:
@@ -412,7 +415,6 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200 if exists else 201, descriptor(name, SECRETS[name]))
 
     def do_DELETE(self):
-        WRITES[0] += 1
         realm, rest = self.split(urllib.parse.urlparse(self.path).path)
         if not rest.startswith("/v1/secrets/"):
             self.send(404, {"type": "not_found"})
@@ -421,6 +423,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         parts = [urllib.parse.unquote(p) for p in rest[len("/v1/secrets/"):].split("/")]
         with LOCK:
+            WRITES[parts[0]] = WRITES.get(parts[0], 0) + 1
             sec = SECRETS.get(parts[0])
             if sec is None or (len(parts) == 3 and parts[2] not in sec.get("grants", {})):
                 self.problem(404, "not_found", "no such secret or grant")
@@ -435,7 +438,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send(204, b"", "text/plain")
 
     def do_PATCH(self):
-        WRITES[0] += 1
         realm, rest = self.split(urllib.parse.urlparse(self.path).path)
         if not rest.startswith("/v1/secrets/"):
             self.send(404, {"type": "not_found"})
@@ -445,6 +447,7 @@ class Handler(BaseHTTPRequestHandler):
         name = urllib.parse.unquote(rest[len("/v1/secrets/"):])
         body = self.body()
         with LOCK:
+            WRITES[name] = WRITES.get(name, 0) + 1
             sec = SECRETS.get(name)
             if sec is None:
                 self.problem(404, "not_found", "no secret")
