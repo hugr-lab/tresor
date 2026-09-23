@@ -38,6 +38,29 @@ jobs:
           yamllint .github/workflows
       - name: No absolute internal doc links
         run: python3 scripts/ci/check_docs_links.py
+      - name: gofmt (the reference server)
+        run: |
+          out="$(gofmt -l server)"
+          if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi
+
+  # the reference duckdb-secrets/1 server (specs/003): its own tests - token verification, every
+  # route with its permission and precondition cases, the encrypted store - no C++ build needed
+  server:
+    name: Reference server (go)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test -race ./...
 
   build-test-linux:
     name: Build + test (linux_amd64)
@@ -104,6 +127,17 @@ jobs:
         run: |
           scripts/ci/test_attach.sh 2>&1 | tee attach.log
           scripts/ci/assert_ran.sh attach.log 3 30 'require-env TRESOR_TEST_PORT'
+
+      # the reference server next to a real Keycloak (specs/003): the conformance suite, a real
+      # browser login (PKCE, Keycloak's redirect checks) and a real client-credentials grant
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Keycloak end to end
+        run: |
+          scripts/ci/test_keycloak.sh 2>&1 | tee keycloak.log
+          scripts/ci/assert_ran.sh keycloak.log 2 15 'require-env TRESOR_CONFORMANCE'
 
       - name: Upload extension artifact
         if: github.event_name != 'pull_request'

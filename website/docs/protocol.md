@@ -240,5 +240,8 @@ it is a bearer credential and is revocable centrally.
 
 ## Conformance
 
-A conformance suite (sqllogictests driven against a service URL) and a minimal reference server ship
-with tresor's repository; a service is `duckdb-secrets/1` when it passes the suite.
+A service is `duckdb-secrets/1` when it passes the **conformance suite**: sqllogictests in tresor's
+repository (`test/sql/conformance/`), driven against the service's URL through environment
+variables. It checks what a client can observe; today that is a service login and a person login,
+each followed by `whoami`. The suite grows with the client. The
+[reference server](./reference-server.md) passes it in CI, next to a real Keycloak.

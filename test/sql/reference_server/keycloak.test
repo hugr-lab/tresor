@@ -1,0 +1,49 @@
+# name: test/sql/reference_server/keycloak.test
+# description: The reference server's own policy, against the Keycloak realm of server/testdata (specs/003)
+# group: [reference_server]
+
+# set by scripts/ci/test_keycloak.sh: the reference server with server/testdata/keycloak/server.yaml
+require-env TRESOR_KC_HOST
+
+require-env TRESOR_KC_ISSUER
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+# alice: Keycloak realm role analysts -> role:analysts, which may create team_a_*
+statement ok
+ATTACH 'tresor:{TRESOR_KC_HOST}' AS alice (INSECURE_HTTP true, LOGIN 'browser', LOGIN_TIMEOUT 60);
+
+query III
+SELECT list_contains(roles, 'role:analysts'), list_contains(roles, 'client:etl'), can_create FROM alice.whoami();
+----
+true	false	[team_a_*]
+
+# the etl service account: client:etl, which may create anything
+statement ok
+CREATE SECRET etl (TYPE tresor, SCOPE 'tresor:{TRESOR_KC_HOST}', FLOW 'client_credentials', CLIENT_ID 'etl',
+    CLIENT_SECRET 'etl-secret', ISSUER '{TRESOR_KC_ISSUER}');
+
+statement ok
+ATTACH 'tresor:{TRESOR_KC_HOST}' AS etl (INSECURE_HTTP true);
+
+query III
+SELECT list_contains(roles, 'client:etl'), list_contains(roles, 'role:etl'), can_create FROM etl.whoami();
+----
+true	true	[*]
+
+# two sessions, two identities, side by side
+query I
+SELECT (SELECT subject FROM alice.whoami()) <> (SELECT subject FROM etl.whoami());
+----
+true
+
+# a wrong client secret is Keycloak's own refusal
+statement ok
+CREATE SECRET etl_bad (TYPE tresor, SCOPE 'tresor:elsewhere', FLOW 'client_credentials', CLIENT_ID 'etl',
+    CLIENT_SECRET 'wrong', ISSUER '{TRESOR_KC_ISSUER}');
+
+statement error
+ATTACH 'tresor:{TRESOR_KC_HOST}' AS bad (INSECURE_HTTP true, SECRET etl_bad);
+----
+unauthorized_client

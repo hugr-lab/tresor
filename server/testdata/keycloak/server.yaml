@@ -1,0 +1,16 @@
+# The reference server next to the Keycloak of docker-compose.yml (specs/003, scripts/ci/test_keycloak.sh).
+listen: 127.0.0.1:18443
+public_url: http://127.0.0.1:18443
+issuers:
+  - issuer: http://127.0.0.1:18480/realms/tresor
+    audience: duckdb-secrets
+    client_id: duckdb
+    scopes: [openid]
+    human_flows: [authorization_code, device_code]
+    service_flows: [client_credentials]
+    roles_claim: realm_access.roles
+policy:
+  admins: [role:secrets_admin]
+  create:
+    - {principal: role:analysts, names: ["team_a_*"]}
+    - {principal: client:etl, names: ["*"]}

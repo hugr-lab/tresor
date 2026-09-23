@@ -1,5 +1,5 @@
 ---
-sidebar_position: 6
+sidebar_position: 7
 title: Development
 ---
 
@@ -15,6 +15,8 @@ GEN=ninja make                              # duckdb (2.0 line) + tresor
 build/release/test/unittest 'test/sql/*'    # sqllogictests (the attach tests skip without the fake)
 scripts/ci/test_attach.sh                   # the attach tests, against a fake service + IdP
 scripts/ci/smoke_load.sh                    # the artifact, used out of tree, loaded by ATTACH alone
+scripts/ci/test_keycloak.sh                 # the reference server + Keycloak (docker, go): conformance
+(cd server && go test ./...)                # the reference server's own tests
 ```
 
 `scripts/ci/test_attach.sh` starts `test/fake/fake_service.py` (Python standard library: a fake
@@ -38,7 +40,7 @@ one DuckDB, and loadable extensions must match the host's duckdb exactly. Bump t
 | --- | --- |
 | `src/` | the extension |
 | `duckdb-ext-common/` | submodule: shared contracts and hook bases (the audit hook tresor publishes lives there) |
-| `server/` | the reference `duckdb-secrets/1` server (for tests and as an example) |
+| `server/` | the [reference server](./reference-server.md) (Go), with the Keycloak realm its tests import |
 | `website/` | this site; the [protocol](./protocol.md) page is the specification |
 | `specs/` | one lightweight spec per feature |
 

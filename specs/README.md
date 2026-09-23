@@ -20,3 +20,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | --- | --- | --- |
 | [001](001-architecture/spec.md) | attach a secrets service, one OIDC login, role-based secrets | accepted |
 | [002](002-attach-login/spec.md) | attach — discovery, one OIDC login (people and services), `corp.whoami()` | implemented |
+| [003](003-reference-server/spec.md) | the reference server — duckdb-secrets/1 in Go, Keycloak end to end, the conformance suite | draft |
