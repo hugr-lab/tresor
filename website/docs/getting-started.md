@@ -97,10 +97,13 @@ ATTACH 'tresor:127.0.0.1:8080' AS dev (INSECURE_HTTP true);
 Secrets from the service take part in DuckDB's ordinary lookup, and nothing names tresor. The attach
 registers a secret storage under the catalog's name (`corp`):
 - It matches scopes like any storage: the longest scope wins, and on a tie a local secret wins.
-- It fetches a secret's material only when a lookup picks it, and keeps it in memory only, for a
-  few minutes (a dynamic secret until shortly before it expires).
-- A secret you may see but not `use` never matches.
-- `DETACH corp` takes the secrets out of the lookup.
+- It fetches a secret's material only when a lookup picks it, and keeps it in memory only. A static
+  secret is kept for up to 5 minutes or until its version changes. A dynamic one is kept until
+  shortly before it expires.
+- A secret you may see but not `use` never matches, and is not found by name either.
+- `DETACH corp` takes the secrets out of the lookup. So does an ATTACH that is rolled back.
+- The service's own secrets of type `tresor` (logins) are listed in `corp.secrets()`, but never take
+  part in the lookup: a service cannot plant how you log in elsewhere.
 
 ```sql
 ATTACH '' AS crm (TYPE mssql, SECRET crm_ro);
@@ -108,8 +111,15 @@ FROM 's3://lake/sales/*.parquet';
 FROM which_secret('s3://lake/sales/x.parquet', 's3');   -- which secret, from which storage
 ```
 
-`duckdb_secrets()` lists the service's secrets too, but without material. If the service cannot be
-reached, a lookup fails with its name rather than quietly going without a credential.
+`duckdb_secrets()` lists the service's secrets too, but without material.
+
+If the service becomes unreachable, the last list it gave still decides what it covers:
+- A lookup that one of its secrets would win fails with the service's name, rather than quietly going
+  without a credential.
+- Other paths, `duckdb_secrets()` and your local secrets keep working.
+
+A local secret with the same name as one of the service's makes `SECRET name` ambiguous (DuckDB's
+rule). Name it with the storage, or rename one of them.
 
 ## Store and manage
 

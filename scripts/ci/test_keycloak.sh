@@ -55,7 +55,12 @@ fi
 
 # a secret for the conformance suite to find, put through the protocol by the etl service itself
 etl_token="$(curl -sf -d grant_type=client_credentials -d client_id=etl -d client_secret=etl-secret \
-	"$issuer/protocol/openid-connect/token" | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
+	"$issuer/protocol/openid-connect/token" | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' ||
+	true)"
+[ -n "$etl_token" ] || {
+	echo "test_keycloak: no token for the etl service - cannot seed the conformance secret" >&2
+	exit 1
+}
 curl -sf -o /dev/null -X PUT "http://127.0.0.1:$server_port/v1/secrets/conformance_lake" \
 	-H "Authorization: Bearer $etl_token" -H 'Content-Type: application/json' -H 'If-None-Match: *' \
 	-d '{"type":"s3","provider":"config","scope":["s3://conformance-lake"],

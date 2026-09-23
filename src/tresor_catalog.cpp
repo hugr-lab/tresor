@@ -7,8 +7,14 @@
 namespace duckdb {
 namespace tresor {
 
-TresorCatalog::TresorCatalog(AttachedDatabase &db, shared_ptr<TresorSession> session_p, TresorSecretStorage &storage_p)
-    : DuckCatalog(db), session(std::move(session_p)), storage(storage_p) {
+TresorCatalog::TresorCatalog(AttachedDatabase &db, shared_ptr<TresorSession> session_p, TresorSecretStorage &storage_p,
+                             vector<Descriptor> initial_p)
+    : DuckCatalog(db), session(std::move(session_p)), storage(storage_p), initial(std::move(initial_p)) {
+}
+
+TresorCatalog::~TresorCatalog() {
+	storage.Deactivate(*session);
+	session->Close();
 }
 
 void TresorCatalog::Initialize(bool load_builtin) {
@@ -22,6 +28,9 @@ void TresorCatalog::Initialize(bool load_builtin) {
 	CreateTableFunctionInfo secrets(SecretsFunction(session, storage));
 	secrets.internal = false;
 	CreateTableFunction(transaction, secrets);
+	// the secrets join the lookup only now, with the catalog that serves them: an ATTACH failing before
+	// this point leaves nothing behind (specs/004)
+	storage.Activate(session, std::move(initial));
 	// from here on the database is read-only: its storage stays an ordinary in-memory one (duckdb refuses
 	// an in-memory storage opened read-only), and every statement that would modify `corp` is refused by
 	// duckdb's own check before it runs
@@ -29,7 +38,7 @@ void TresorCatalog::Initialize(bool load_builtin) {
 }
 
 void TresorCatalog::OnDetach(ClientContext &context) {
-	storage.Deactivate();
+	storage.Deactivate(*session);
 	session->Close();
 	DuckCatalog::OnDetach(context);
 }

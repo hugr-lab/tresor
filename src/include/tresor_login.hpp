@@ -48,7 +48,7 @@ string DescribeProblem(int status, const string &body);
 //! One parsed JSON document, freed with its scope whatever throws in between.
 struct JsonDoc {
 	duckdb_yyjson::yyjson_doc *doc = nullptr;
-	explicit JsonDoc(const string &body);
+	explicit JsonDoc(const string &body, duckdb_yyjson::yyjson_read_flag flags = 0);
 	~JsonDoc();
 	JsonDoc(const JsonDoc &) = delete;
 	JsonDoc &operator=(const JsonDoc &) = delete;

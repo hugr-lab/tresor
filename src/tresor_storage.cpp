@@ -21,8 +21,8 @@ using namespace duckdb_yyjson; // NOLINT
 
 namespace {
 
-constexpr int64_t LIST_TTL_SECONDS = 30;     // a descriptor list is refreshed after this
-constexpr int64_t STALE_GRACE_SECONDS = 300; // an old list serves this long past its TTL when the service is down
+constexpr int64_t LIST_TTL_SECONDS = 30;   // a descriptor list is refreshed after this
+constexpr int64_t RETRY_AFTER_SECONDS = 5; // a failed refresh is not retried sooner
 constexpr int64_t STATIC_MATERIAL_SECONDS = 300;
 constexpr int64_t DYNAMIC_MARGIN_SECONDS = 30; // a dynamic secret is refetched this long before it expires
 
@@ -68,9 +68,16 @@ string Encode(const string &segment) {
 
 //! Keys redacted whatever the service says: a conservative net under a service that forgets to.
 const vector<string> &AlwaysRedacted() {
-	static const vector<string> keys {"secret",      "password",      "token",        "session_token",
-	                                  "private_key", "client_secret", "bearer_token", "access_token"};
+	static const vector<string> keys {"secret",      "password",         "token",        "session_token",
+	                                  "private_key", "client_secret",    "bearer_token", "access_token",
+	                                  "account_key", "connection_string"};
 	return keys;
+}
+
+//! A service's secret of type tresor is a login for DuckDB to use, never one a service may plant: it
+//! takes no part in the lookup (tresor's own login search walks every storage).
+bool Lookupable(const Descriptor &d) {
+	return d.type != "tresor";
 }
 
 //! The instance's tresor storages, by catalog name: kept in the instance's object cache, so the raw
@@ -97,42 +104,70 @@ LogicalType ParseType(const string &type, optional_ptr<ClientContext> context) {
 	// no connection to parse with (a background lookup): the simple types only
 	auto id = TransformStringToLogicalTypeId(type);
 	if (id == LogicalTypeId::UNBOUND || id == LogicalTypeId::INVALID) {
-		throw InvalidInputException("cannot parse the type \"%s\" without a connection", type);
+		throw InvalidInputException("a composite type needs a connection to parse");
 	}
 	return LogicalType(id);
 }
 
+//! JSON (numbers as raw text) to a Value of `type`. Messages thrown here never carry the value.
 Value FromJson(const LogicalType &type, yyjson_val *value) {
 	if (!value || yyjson_is_null(value)) {
 		return Value(type);
 	}
 	switch (type.id()) {
-	case LogicalTypeId::LIST: {
+	case LogicalTypeId::LIST:
+	case LogicalTypeId::ARRAY: {
 		if (!yyjson_is_arr(value)) {
-			throw InvalidInputException("a LIST needs a JSON array");
+			throw InvalidInputException("needs a JSON array");
 		}
-		auto &child = ListType::GetChildType(type);
+		auto &child = type.id() == LogicalTypeId::LIST ? ListType::GetChildType(type) : ArrayType::GetChildType(type);
 		vector<Value> items;
 		size_t idx, max;
 		yyjson_val *item;
 		yyjson_arr_foreach(value, idx, max, item) {
 			items.push_back(FromJson(child, item));
 		}
-		return Value::LIST(child, std::move(items));
+		if (type.id() == LogicalTypeId::LIST) {
+			return Value::LIST(child, std::move(items));
+		}
+		if (items.size() != ArrayType::GetSize(type)) {
+			throw InvalidInputException("needs %d elements", ArrayType::GetSize(type));
+		}
+		return Value::ARRAY(child, std::move(items));
 	}
 	case LogicalTypeId::STRUCT: {
 		if (!yyjson_is_obj(value)) {
-			throw InvalidInputException("a STRUCT needs a JSON object");
+			throw InvalidInputException("needs a JSON object");
 		}
-		vector<Value> fields;
-		for (auto &child : StructType::GetChildTypes(type)) {
-			fields.push_back(FromJson(child.second, yyjson_obj_get(value, child.first.GetIdentifierName().c_str())));
+		auto &children = StructType::GetChildTypes(type);
+		vector<Value> fields(children.size());
+		vector<bool> seen(children.size(), false);
+		size_t idx, max;
+		yyjson_val *key, *item;
+		yyjson_obj_foreach(value, idx, max, key, item) {
+			// field names compare like DuckDB identifiers: case-insensitively; an unknown one is an error
+			bool matched = false;
+			for (idx_t i = 0; i < children.size(); i++) {
+				if (StringUtil::CIEquals(children[i].first.GetIdentifierName(), yyjson_get_str(key))) {
+					fields[i] = FromJson(children[i].second, item);
+					seen[i] = matched = true;
+					break;
+				}
+			}
+			if (!matched) {
+				throw InvalidInputException("has a field its STRUCT does not");
+			}
+		}
+		for (idx_t i = 0; i < children.size(); i++) {
+			if (!seen[i]) {
+				fields[i] = Value(children[i].second); // a missing field is NULL
+			}
 		}
 		return Value::STRUCT(type, std::move(fields));
 	}
 	case LogicalTypeId::MAP: {
 		if (!yyjson_is_obj(value)) {
-			throw InvalidInputException("a MAP needs a JSON object");
+			throw InvalidInputException("needs a JSON object");
 		}
 		auto &key_type = MapType::KeyType(type);
 		auto &value_type = MapType::ValueType(type);
@@ -148,21 +183,17 @@ Value FromJson(const LogicalType &type, yyjson_val *value) {
 	default:
 		break;
 	}
-	Value scalar;
+	// scalars are cast from their JSON text: a raw number keeps every digit (HUGEINT, DECIMAL)
 	if (yyjson_is_str(value)) {
-		scalar = Value(yyjson_get_str(value));
-	} else if (yyjson_is_bool(value)) {
-		scalar = Value::BOOLEAN(yyjson_get_bool(value));
-	} else if (yyjson_is_uint(value)) {
-		scalar = Value::UBIGINT(yyjson_get_uint(value));
-	} else if (yyjson_is_int(value)) {
-		scalar = Value::BIGINT(yyjson_get_sint(value));
-	} else if (yyjson_is_real(value)) {
-		scalar = Value::DOUBLE(yyjson_get_real(value));
-	} else {
-		throw InvalidInputException("a %s needs a JSON scalar", type.ToString());
+		return Value(yyjson_get_str(value)).DefaultCastAs(type);
 	}
-	return scalar.DefaultCastAs(type);
+	if (yyjson_is_raw(value)) {
+		return Value(string(yyjson_get_raw(value), yyjson_get_len(value))).DefaultCastAs(type);
+	}
+	if (yyjson_is_bool(value)) {
+		return Value::BOOLEAN(yyjson_get_bool(value)).DefaultCastAs(type);
+	}
+	throw InvalidInputException("needs a JSON scalar");
 }
 
 } // namespace
@@ -171,50 +202,23 @@ Value ProtocolValue(const string &secret, const string &key, const string &type,
                     optional_ptr<ClientContext> context) {
 	try {
 		return FromJson(type.empty() ? LogicalType::VARCHAR : ParseType(type, context), value);
-	} catch (std::exception &ex) {
-		// the message names the secret, the key and the type - never the value
-		ErrorData error(ex);
-		throw InvalidInputException("tresor: the parameter %s of the secret %s is not a valid %s: %s", key, secret,
-		                            type.empty() ? "VARCHAR" : type, error.RawMessage());
+	} catch (std::exception &) {
+		// the secret, the key and the type - never the value, nor a cast message that would quote it
+		throw InvalidInputException("tresor: the parameter %s of the secret %s is not a valid %s", key, secret,
+		                            type.empty() ? "VARCHAR" : type);
 	}
 }
 
-TresorSecretStorage::TresorSecretStorage(const string &name, int64_t offset) : SecretStorage(name, offset) {
-	persistent = true; // the secrets live in the service (writes: specs/005)
-}
-
-void TresorSecretStorage::Activate(shared_ptr<TresorSession> session_p) {
-	lock_guard<mutex> guard(lock);
-	session = std::move(session_p);
-	descriptors.clear();
-	materials.clear();
-	listed = false;
-	listed_at = 0;
-}
-
-void TresorSecretStorage::Deactivate() {
-	lock_guard<mutex> guard(lock);
-	session.reset();
-	descriptors.clear();
-	materials.clear();
-	listed = false;
-}
-
-bool TresorSecretStorage::IncludeInLookups() {
-	lock_guard<mutex> guard(lock);
-	return session != nullptr;
-}
-
-vector<Descriptor> TresorSecretStorage::FetchDescriptors() {
-	auto response = session->Call("GET", "/v1/secrets");
+vector<Descriptor> FetchDescriptors(TresorSession &session) {
+	auto response = session.Call("GET", "/v1/secrets");
 	if (response.status != 200) {
-		throw IOException("tresor: listing the secrets of %s: %s", session->Info().host,
+		throw IOException("tresor: listing the secrets of %s: %s", session.Info().host,
 		                  DescribeProblem(response.status, response.body));
 	}
 	JsonDoc doc(response.body);
 	auto root = doc.Root();
 	if (!root || !yyjson_is_arr(root)) {
-		throw IOException("tresor: %s answered the secrets list with no JSON array", session->Info().host);
+		throw IOException("tresor: %s answered the secrets list with no JSON array", session.Info().host);
 	}
 	vector<Descriptor> out;
 	size_t idx, max;
@@ -242,53 +246,114 @@ vector<Descriptor> TresorSecretStorage::FetchDescriptors() {
 	return out;
 }
 
-const vector<Descriptor> &TresorSecretStorage::Descriptors() {
-	auto now = NowSeconds();
-	if (listed && now - listed_at < LIST_TTL_SECONDS) {
+TresorSecretStorage::TresorSecretStorage(const string &name, int64_t offset) : SecretStorage(name, offset) {
+	persistent = true; // the secrets live in the service (writes: specs/005)
+}
+
+void TresorSecretStorage::Activate(shared_ptr<TresorSession> session_p, vector<Descriptor> initial) {
+	lock_guard<mutex> guard(lock);
+	session = std::move(session_p);
+	descriptors = std::move(initial);
+	listed_at = NowSeconds();
+	failed_at = 0;
+	materials.clear();
+}
+
+void TresorSecretStorage::Deactivate(const TresorSession &which) {
+	lock_guard<mutex> guard(lock);
+	if (session.get() != &which) {
+		return; // another ATTACH of this name serves now
+	}
+	session.reset();
+	descriptors.clear();
+	materials.clear();
+}
+
+bool TresorSecretStorage::IncludeInLookups() {
+	lock_guard<mutex> guard(lock);
+	return session != nullptr;
+}
+
+vector<Descriptor> TresorSecretStorage::Snapshot(shared_ptr<TresorSession> &session_out) {
+	{
+		lock_guard<mutex> guard(lock);
+		session_out = session;
+		auto now = NowSeconds();
+		if (!session || now - listed_at < LIST_TTL_SECONDS || now - failed_at < RETRY_AFTER_SECONDS) {
+			return descriptors;
+		}
+	}
+	// stale: one refresh at a time, outside the state lock; a lookup arriving meanwhile goes on with the
+	// list it has rather than queueing behind the network
+	unique_lock<mutex> fetching(fetch_lock, std::try_to_lock);
+	if (!fetching.owns_lock()) {
+		lock_guard<mutex> guard(lock);
 		return descriptors;
 	}
 	try {
-		descriptors = FetchDescriptors();
-		listed = true;
-		listed_at = now;
-	} catch (std::exception &) {
-		// a service that never answered: fail closed - a missing credential must not quietly become an
-		// anonymous request. An old list serves a while longer.
-		if (!listed || now - listed_at > LIST_TTL_SECONDS + STALE_GRACE_SECONDS) {
-			throw;
+		auto fresh = FetchDescriptors(*session_out);
+		lock_guard<mutex> guard(lock);
+		if (session == session_out) {
+			descriptors = std::move(fresh);
+			listed_at = NowSeconds();
 		}
+		return descriptors;
+	} catch (std::exception &) {
+		// the service is unreachable: the last list stays authoritative for matching (a secret it covers
+		// fails at its material fetch - closed; a path it does not cover is not this storage's business)
+		lock_guard<mutex> guard(lock);
+		failed_at = NowSeconds();
+		return descriptors;
 	}
-	return descriptors;
 }
 
 vector<Descriptor> TresorSecretStorage::Refresh() {
-	lock_guard<mutex> guard(lock);
-	if (!session) {
+	shared_ptr<TresorSession> current;
+	{
+		lock_guard<mutex> guard(lock);
+		current = session;
+	}
+	if (!current) {
 		throw InvalidInputException("tresor: %s is detached", storage_name);
 	}
-	descriptors = FetchDescriptors();
-	listed = true;
-	listed_at = NowSeconds();
-	return descriptors;
+	auto fresh = FetchDescriptors(*current);
+	lock_guard<mutex> guard(lock);
+	if (session == current) {
+		descriptors = fresh;
+		listed_at = NowSeconds();
+		failed_at = 0;
+	}
+	return fresh;
 }
 
-unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Descriptor &d,
+unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const shared_ptr<TresorSession> &current,
+                                                             const Descriptor &d,
                                                              optional_ptr<CatalogTransaction> transaction) {
 	auto now = NowSeconds();
-	auto cached = materials.find(d.name);
-	if (cached != materials.end() && cached->second.version == d.version && cached->second.valid_until > now) {
-		return cached->second.secret->Clone();
+	{
+		lock_guard<mutex> guard(lock);
+		auto cached = materials.find(d.name);
+		if (cached != materials.end() && cached->second.version == d.version && cached->second.valid_until > now) {
+			return cached->second.secret->Clone();
+		}
 	}
-	auto response = session->Call("GET", "/v1/secrets/" + Encode(d.name));
+	auto response = current->Call("GET", "/v1/secrets/" + Encode(d.name));
+	if (response.status == 404 || response.status == 403) {
+		// gone, or no longer ours to use, since the list was fetched: not a match - and the list is stale
+		lock_guard<mutex> guard(lock);
+		listed_at = 0;
+		return nullptr;
+	}
 	if (response.status != 200) {
-		throw InvalidInputException("tresor: the secret %s of %s: %s", d.name, session->Info().host,
-		                            DescribeProblem(response.status, response.body));
+		throw IOException("tresor: the secret %s of %s: %s", d.name, current->Info().host,
+		                  DescribeProblem(response.status, response.body));
 	}
-	JsonDoc doc(response.body);
+	// numbers as raw text: a HUGEINT or DECIMAL keeps every digit
+	JsonDoc doc(response.body, YYJSON_READ_NUMBER_AS_RAW);
 	auto root = doc.Root();
 	auto params = root && yyjson_is_obj(root) ? yyjson_obj_get(root, "params") : nullptr;
 	if (!params || !yyjson_is_obj(params)) {
-		throw IOException("tresor: the secret %s of %s came without params", d.name, session->Info().host);
+		throw IOException("tresor: the secret %s of %s came without params", d.name, current->Info().host);
 	}
 	optional_ptr<ClientContext> context = transaction ? transaction->context : nullptr;
 	auto secret = make_uniq<KeyValueSecret>(d.scope, Identifier(d.type), Identifier(d.provider), Identifier(d.name));
@@ -299,9 +364,13 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Descriptor &d
 		auto lowered = StringUtil::Lower(name);
 		if (yyjson_is_str(item)) {
 			secret->secret_map[Identifier(lowered)] = Value(yyjson_get_str(item)); // shorthand for VARCHAR
-		} else {
+		} else if (yyjson_is_obj(item) && !Str(item, "type").empty()) {
 			secret->secret_map[Identifier(lowered)] =
 			    ProtocolValue(d.name, name, Str(item, "type"), yyjson_obj_get(item, "value"), context);
+		} else {
+			throw InvalidInputException("tresor: the parameter %s of the secret %s is neither a string nor "
+			                            "{type, value}",
+			                            name, d.name);
 		}
 	}
 	for (auto &redact : StrList(yyjson_obj_get(root, "redact_keys"))) {
@@ -312,24 +381,35 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Descriptor &d
 			secret->redact_keys.insert(Identifier(redact));
 		}
 	}
-	// how long this material may be served: a dynamic secret until shortly before it expires, a static one
-	// a few minutes (or until its version changes)
-	Material material;
-	material.version = d.version;
-	material.valid_until = now + STATIC_MATERIAL_SECONDS;
+	// how long this material may be served: a static secret a few minutes (or until its version changes),
+	// a dynamic one until shortly before it expires - with a margin of at most half its life, so a
+	// short-lived credential is not minted anew for every file of a scan
+	int64_t valid_until = now + STATIC_MATERIAL_SECONDS;
 	auto expires = Str(root, "expires_at");
-	if (!expires.empty()) {
-		timestamp_t parsed;
-		if (Timestamp::TryConvertTimestamp(expires.c_str(), expires.size(), parsed, true) ==
-		    TimestampCastResult::SUCCESS) {
-			auto expires_at = Timestamp::GetEpochSeconds(parsed);
-			material.valid_until = MinValue<int64_t>(material.valid_until, expires_at - DYNAMIC_MARGIN_SECONDS);
-		}
+	timestamp_t parsed;
+	if (!expires.empty() &&
+	    Timestamp::TryConvertTimestamp(expires.c_str(), expires.size(), parsed, true) == TimestampCastResult::SUCCESS) {
+		auto expires_at = Timestamp::GetEpochSeconds(parsed);
+		auto margin = MinValue<int64_t>(DYNAMIC_MARGIN_SECONDS, MaxValue<int64_t>(0, (expires_at - now) / 2));
+		valid_until = MinValue<int64_t>(valid_until, expires_at - margin);
 	} else if (d.dynamic) {
-		material.valid_until = now; // a dynamic secret without an expiry is never reused
+		valid_until = now; // a dynamic secret without a readable expiry is never reused
 	}
-	material.secret = secret->Clone();
-	materials[d.name] = std::move(material);
+	lock_guard<mutex> guard(lock);
+	if (session != current) {
+		return std::move(secret); // detached meanwhile: served once, never cached
+	}
+	// expired entries go now: material is kept for a bounded time, not until DETACH
+	for (auto it = materials.begin(); it != materials.end();) {
+		it = it->second.valid_until <= now ? materials.erase(it) : std::next(it);
+	}
+	if (valid_until > now) {
+		Material material;
+		material.version = d.version;
+		material.valid_until = valid_until;
+		material.secret = secret->Clone();
+		materials[d.name] = std::move(material);
+	}
 	return std::move(secret);
 }
 
@@ -342,60 +422,67 @@ SecretEntry TresorSecretStorage::EntryOf(unique_ptr<const BaseSecret> secret) {
 
 SecretMatch TresorSecretStorage::LookupSecret(const string &path, const string &type,
                                               optional_ptr<CatalogTransaction> transaction) {
-	lock_guard<mutex> guard(lock);
-	if (!session) {
+	shared_ptr<TresorSession> current;
+	auto list = Snapshot(current);
+	if (!current) {
 		return SecretMatch();
 	}
 	// score the usable descriptors by duckdb's own rule, on placeholders without material
 	SecretMatch best;
 	optional_ptr<const Descriptor> best_descriptor;
-	for (auto &d : Descriptors()) {
-		if (!StringUtil::CIEquals(d.type, type) || !d.May("use")) {
+	for (auto &d : list) {
+		if (!Lookupable(d) || !StringUtil::CIEquals(d.type, type) || !d.May("use")) {
 			continue; // a secret the caller may not use never matches: its material would be refused
 		}
 		auto entry =
 		    EntryOf(make_uniq<KeyValueSecret>(d.scope, Identifier(d.type), Identifier(d.provider), Identifier(d.name)));
 		best = SelectBestMatch(entry, path, tie_break_offset, best);
-		if (best.HasMatch() && best.GetSecret().GetName() == Identifier(d.name)) {
-			best_descriptor = &d; // this descriptor is the best so far (names are unique in a list)
+		if (best.HasMatch() && best.GetSecret().GetName().GetIdentifierName() == d.name) {
+			best_descriptor = &d; // this descriptor is the best so far
 		}
 	}
 	if (!best_descriptor) {
 		return SecretMatch();
 	}
-	auto entry = EntryOf(MaterialOf(*best_descriptor, transaction));
+	auto material = MaterialOf(current, *best_descriptor, transaction);
+	if (!material) {
+		return SecretMatch();
+	}
+	auto entry = EntryOf(std::move(material));
 	return SecretMatch(entry, best.score);
 }
 
 unique_ptr<SecretEntry> TresorSecretStorage::GetSecretByName(const string &name,
                                                              optional_ptr<CatalogTransaction> transaction) {
-	lock_guard<mutex> guard(lock);
-	if (!session) {
+	shared_ptr<TresorSession> current;
+	auto list = Snapshot(current);
+	if (!current) {
 		return nullptr;
 	}
-	for (auto &d : Descriptors()) {
-		if (!StringUtil::CIEquals(d.name, name)) {
-			continue;
+	for (auto &d : list) {
+		// a secret the caller may see but not use is not one it can have by name: not found here, so a
+		// local secret of that name is not shadowed by an error
+		if (d.name == name && Lookupable(d) && d.May("use")) {
+			auto material = MaterialOf(current, d, transaction);
+			return material ? make_uniq<SecretEntry>(EntryOf(std::move(material))) : nullptr;
 		}
-		if (!d.May("use")) {
-			throw InvalidInputException("tresor: you may see the secret %s of %s, but not use it", d.name,
-			                            session->Info().host);
-		}
-		return make_uniq<SecretEntry>(EntryOf(MaterialOf(d, transaction)));
 	}
 	return nullptr;
 }
 
 vector<SecretEntry> TresorSecretStorage::AllSecrets(optional_ptr<CatalogTransaction> transaction) {
-	lock_guard<mutex> guard(lock);
+	shared_ptr<TresorSession> current;
+	auto list = Snapshot(current); // never throws: duckdb_secrets() must work while a service is down
 	vector<SecretEntry> out;
-	if (!session) {
+	if (!current) {
 		return out;
 	}
 	// descriptors only: listing never fetches material
-	for (auto &d : Descriptors()) {
-		out.push_back(EntryOf(
-		    make_uniq<KeyValueSecret>(d.scope, Identifier(d.type), Identifier(d.provider), Identifier(d.name))));
+	for (auto &d : list) {
+		if (Lookupable(d)) {
+			out.push_back(EntryOf(
+			    make_uniq<KeyValueSecret>(d.scope, Identifier(d.type), Identifier(d.provider), Identifier(d.name))));
+		}
 	}
 	return out;
 }
@@ -412,6 +499,10 @@ void TresorSecretStorage::DropSecretByName(const Identifier &name, OnEntryNotFou
 }
 
 TresorSecretStorage &StorageFor(ClientContext &context, const string &name) {
+	auto &manager = SecretManager::Get(context);
+	// duckdb loads its own storages (memory, local_file) lazily, at the first secret operation: have it do
+	// so now, or a tresor storage registered first under one of their names would break its initialization
+	(void)manager.AllSecrets(CatalogTransaction::GetSystemCatalogTransaction(context));
 	auto registry = ObjectCache::GetObjectCache(context).GetOrCreate<StorageRegistry>(StorageRegistry::ObjectType());
 	if (!registry) {
 		throw InternalException("tresor: the storage registry's cache key is taken by another object");
@@ -422,9 +513,9 @@ TresorSecretStorage &StorageFor(ClientContext &context, const string &name) {
 	if (existing != registry->storages.end()) {
 		return *existing->second;
 	}
-	auto &manager = SecretManager::Get(context);
-	// the offset must be unique among the instance's storages (duckdb's tie-break rule): skip the taken ones
-	for (int attempt = 0; attempt < 100; attempt++) {
+	// the offset must be unique among the instance's storages (duckdb's tie-break rule) and stay below 100,
+	// where it would start to outweigh one character of scope: skip the taken ones
+	while (registry->next_offset < 100) {
 		auto storage = make_uniq<TresorSecretStorage>(name, registry->next_offset++);
 		auto &ref = *storage;
 		try {
@@ -438,7 +529,7 @@ TresorSecretStorage &StorageFor(ClientContext &context, const string &name) {
 		registry->storages[key] = &ref;
 		return ref;
 	}
-	throw InternalException("tresor: no free secret storage offset");
+	throw InvalidInputException("tresor: too many distinct names attached in this process - reuse a name");
 }
 
 } // namespace tresor

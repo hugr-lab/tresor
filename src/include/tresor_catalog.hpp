@@ -29,7 +29,11 @@ struct TresorFunctionInfo : public TableFunctionInfo {
 
 class TresorCatalog : public DuckCatalog {
 public:
-	TresorCatalog(AttachedDatabase &db, shared_ptr<TresorSession> session, TresorSecretStorage &storage);
+	TresorCatalog(AttachedDatabase &db, shared_ptr<TresorSession> session, TresorSecretStorage &storage,
+	              vector<Descriptor> initial);
+	//! A catalog that goes without a DETACH (a rolled-back ATTACH, a failure after the storage callback)
+	//! takes its secrets out of the lookup too.
+	~TresorCatalog() override;
 
 	void Initialize(bool load_builtin) override;
 	string GetCatalogType() override {
@@ -45,6 +49,7 @@ public:
 private:
 	shared_ptr<TresorSession> session;
 	TresorSecretStorage &storage; // owned by the SecretManager, for the instance's lifetime
+	vector<Descriptor> initial;   // the list the ATTACH fetched: the storage starts from it
 };
 
 //! The catalog's table functions (tresor_whoami.cpp, tresor_secrets.cpp).

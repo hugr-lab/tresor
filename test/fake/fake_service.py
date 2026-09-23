@@ -16,7 +16,9 @@ a sqllogictest can only steer the fake through what it attaches:
                client renews it (a renewed token is accepted for good)
     revoking   like expiring, and its issuer (/idp-revoking) refuses every refresh: invalid_grant
     noflows    lists human_flows and service_flows, both empty: a client attempts no login at all
-    broken     logs in, but its secrets list answers 503: lookups must fail closed
+    broken     logs in and lists its secrets, but every material fetch answers 503: a lookup that picks
+               one of them fails closed, and nothing else is disturbed
+    nolist     logs in, but its secrets list answers 503: nothing to attach
 
 Every realm serves the same secrets (SECRETS below) to every identity. A descriptor's comment counts
 how often its material was fetched ("fetched N") - the only window a sqllogictest has into caching.
@@ -44,7 +46,7 @@ PERSON = {"subject": "alice", "roles": ["role:analysts", "group:sales"], "create
 SERVICE = {"subject": "client:etl", "roles": ["role:etl"], "create": True}
 CLIENTS = {"etl": "s3cr3t"}
 STATIC_TOKENS = {"static-token": {"subject": "client:static", "roles": [], "create": False}}
-REALMS = {"", "multi", "wrong", "expiring", "revoking", "noflows", "broken"}
+REALMS = {"", "multi", "wrong", "expiring", "revoking", "noflows", "broken", "nolist"}
 ISSUERS = {"idp", "idp2", "idp-revoking"}
 FIRST_USES = 2  # expiring/revoking: how many whoami calls a token as first issued survives
 
@@ -61,6 +63,8 @@ SECRETS = {
             "extra_http_headers": {"type": "MAP(VARCHAR, VARCHAR)", "value": {"X-Tenant": "sales"}},
             "limits": {"type": "STRUCT(max_rows BIGINT, ratio DOUBLE)", "value": {"max_rows": 1000, "ratio": 0.5}},
             "replicas": {"type": "VARCHAR[]", "value": ["crm-a", "crm-b"]},
+            "big": {"type": "HUGEINT", "value": 123456789012345678901234567890},
+            "amount": {"type": "DECIMAL(38,2)", "value": "12345678901234567890.12"},
         },
         "redact_keys": ["password"],
     },
@@ -78,9 +82,22 @@ SECRETS = {
         "type": "s3", "scope": ["s3://lake/restricted"], "permissions": ["annotate"],
         "params": {"key_id": "NEVER"}, "redact_keys": [],
     },
-    "dyn": {
-        "type": "s3", "scope": ["s3://dyn"], "permissions": ["use"], "dynamic": True,
+    "dyn": {  # expires 20 s after each fetch: served from the cache for half of that
+        "type": "s3", "scope": ["s3://dyn"], "permissions": ["use"], "dynamic": True, "lifetime": 20,
         "params": {"key_id": "DYN"}, "redact_keys": [],
+    },
+    "dyn_expired": {  # already expired when served: never reused
+        "type": "s3", "scope": ["s3://dyn-expired"], "permissions": ["use"], "dynamic": True, "lifetime": -60,
+        "params": {"key_id": "DYN"}, "redact_keys": [],
+    },
+    # a login a service must never be able to plant: it covers every loopback ATTACH
+    "planted": {
+        "type": "tresor", "scope": ["tresor:127.0.0.1"], "permissions": ["use"],
+        "params": {"flow": "token", "token": "planted-token"}, "redact_keys": ["token"],
+    },
+    "bare_number": {
+        "type": "mssql", "scope": ["mssql://bare"], "permissions": ["use"],
+        "params": {"port": 1433}, "redact_keys": [],
     },
     "bad_value": {
         "type": "mssql", "scope": ["mssql://bad"], "permissions": ["use"],
@@ -226,7 +243,7 @@ class Handler(BaseHTTPRequestHandler):
             if not known:
                 self.problem(401, "unauthenticated", "token missing, invalid or expired")
                 return
-            if realm == "broken":
+            if realm == "nolist" or (realm == "broken" and rest != "/v1/secrets"):
                 self.problem(503, "service_unavailable", "the store is down")
                 return
             if rest == "/v1/secrets":
@@ -247,7 +264,8 @@ class Handler(BaseHTTPRequestHandler):
                             expires_at=None)
                 if sec.get("dynamic"):
                     body["params"]["key_id"] = "DYN-%d" % FETCHED[name]
-                    body["expires_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 20))
+                    body["expires_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                       time.gmtime(time.time() + sec["lifetime"]))
             self.send(200, body)
             return
         self.send(404, {"type": "not_found"})

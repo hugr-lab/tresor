@@ -11,8 +11,9 @@
 #include "duckdb/main/settings.hpp"
 
 // corp.secrets() (specs/004): what the caller may see in the service and what it may do with each -
-// descriptors, never material. And tresor_secret_param(): a secret's parameter as DuckDB holds it, for
-// checking what arrived - only where unredacted secrets may be shown at all.
+// descriptors, never material. And tresor_secret_param(): a diagnostic - a secret's parameter as DuckDB
+// holds it, with its type; only where unredacted secrets may be shown at all, and never a redacted key's
+// value.
 
 namespace duckdb {
 namespace tresor {
@@ -121,8 +122,10 @@ void SecretParamFun(DataChunk &args, ExpressionState &state, Vector &result) {
 			result.SetValue(row, Value(LogicalType::VARCHAR));
 			continue;
 		}
-		// the value as DuckDB holds it, with its type: 'INTEGER 1433', 'MAP(VARCHAR, VARCHAR) {X-Tenant=sales}'
-		result.SetValue(row, Value(found->second.type().ToString() + " " + found->second.ToString()));
+		// the value as DuckDB holds it, with its type: 'INTEGER 1433', 'MAP(VARCHAR, VARCHAR) {X-Tenant=sales}';
+		// a redacted key shows its type only - this is a diagnostic, not a way around redaction
+		auto shown = key_value->redact_keys.count(found->first) ? string("<redacted>") : found->second.ToString();
+		result.SetValue(row, Value(found->second.type().ToString() + " " + shown));
 	}
 }
 

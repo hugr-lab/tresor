@@ -35,17 +35,23 @@ struct Descriptor {
 	}
 };
 
-//! The secret storage of one attached service, named after its catalog. duckdb cannot remove a storage,
-//! so DETACH deactivates it and a later ATTACH of the same name reactivates it with the new session.
+//! GET /v1/secrets, parsed; throws when the service does not answer with a list.
+vector<Descriptor> FetchDescriptors(TresorSession &session);
+
+//! The secret storage of one attached service, named after its catalog. duckdb cannot remove a storage:
+//! it is registered once per name and instance, activated by the catalog of each ATTACH that commits
+//! (TresorCatalog::Initialize) and deactivated when that catalog goes (DETACH, or a rolled-back ATTACH).
 class TresorSecretStorage : public SecretStorage {
 public:
 	TresorSecretStorage(const string &name, int64_t offset);
 
-	//! ATTACH: serve this session. DETACH: Deactivate - no session, no caches, empty answers.
-	void Activate(shared_ptr<TresorSession> session);
-	void Deactivate();
+	//! Serve this session, starting from the list the ATTACH fetched.
+	void Activate(shared_ptr<TresorSession> session, vector<Descriptor> initial);
+	//! Stop serving - only if `session` is still the one served (a later ATTACH may have taken over).
+	void Deactivate(const TresorSession &session);
 
-	//! A fresh descriptor list (corp.secrets()); refreshes the cache.
+	//! A fresh descriptor list (corp.secrets()); refreshes the cache. Service secrets of type tresor
+	//! included - they are shown, never looked up.
 	vector<Descriptor> Refresh();
 
 	unique_ptr<SecretEntry> StoreSecret(unique_ptr<const BaseSecret> secret, OnCreateConflict on_conflict,
@@ -66,25 +72,30 @@ private:
 		unique_ptr<const BaseSecret> secret;
 	};
 
-	//! The cached list, refreshed when stale (30 s); throws when the service never answered. Lock held.
-	const vector<Descriptor> &Descriptors();
-	vector<Descriptor> FetchDescriptors();
-	//! The material of a listed secret, from the cache or the service. Lock held.
-	unique_ptr<const BaseSecret> MaterialOf(const Descriptor &descriptor, optional_ptr<CatalogTransaction> transaction);
+	//! The descriptors to decide with, and the session to fetch with (null: inactive). The list is
+	//! refreshed when stale; a failed refresh keeps the last list authoritative and backs off.
+	vector<Descriptor> Snapshot(shared_ptr<TresorSession> &session_out);
+	//! The material of a listed secret, from the cache or the service; null when the service no longer
+	//! has it for this caller (404/403). No lock held across the network.
+	unique_ptr<const BaseSecret> MaterialOf(const shared_ptr<TresorSession> &session, const Descriptor &descriptor,
+	                                        optional_ptr<CatalogTransaction> transaction);
 	SecretEntry EntryOf(unique_ptr<const BaseSecret> secret);
 
-	mutex lock;
+	mutex lock;       // the state below
+	mutex fetch_lock; // one list refresh at a time; others go on with the list they have
 	shared_ptr<TresorSession> session;
 	vector<Descriptor> descriptors;
 	int64_t listed_at = 0;
-	bool listed = false;
+	int64_t failed_at = 0;
 	unordered_map<string, Material> materials;
 };
 
-//! The storage for `name` in this instance: registered at the first ATTACH of the name, reused after.
+//! The storage for `name` in this instance: registered (inactive) at the first ATTACH of the name,
+//! before any login - a name duckdb's secret manager already uses is refused up front.
 TresorSecretStorage &StorageFor(ClientContext &context, const string &name);
 
-//! A typed protocol value ({type, value} or a bare string) as a DuckDB Value; throws naming secret and key.
+//! A typed protocol value ({type, value} or a bare string) as a DuckDB Value; throws naming secret and
+//! key, never the value. Numbers are expected as raw text (read with YYJSON_READ_NUMBER_AS_RAW).
 Value ProtocolValue(const string &secret, const string &key, const string &type, duckdb_yyjson::yyjson_val *value,
                     optional_ptr<ClientContext> context);
 
