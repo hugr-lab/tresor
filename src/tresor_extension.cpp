@@ -41,8 +41,12 @@ unique_ptr<Catalog> TresorAttach(optional_ptr<StorageExtensionInfo> storage_info
 		throw BinderException("Failed to attach database: database with name \"%s\" already exists", name);
 	}
 	auto session = tresor::Login(context, request);
+	// the service's secrets join the lookup under the catalog's name (specs/004); a storage of an earlier
+	// ATTACH of this name is reused - duckdb cannot remove one
+	auto &storage = tresor::StorageFor(context, name);
+	storage.Activate(session);
 	info.path = IN_MEMORY_PATH;
-	return make_uniq<tresor::TresorCatalog>(db, std::move(session));
+	return make_uniq<tresor::TresorCatalog>(db, std::move(session), storage);
 }
 
 unique_ptr<TransactionManager> TresorCreateTransactionManager(optional_ptr<StorageExtensionInfo> storage_info,
@@ -58,6 +62,7 @@ void LoadInternal(ExtensionLoader &loader) {
 	StorageExtension::Register(config, "tresor", std::move(storage));
 
 	RegisterTresorSecret(loader);
+	RegisterTresorSecretParam(loader);
 
 	loader.SetDescription("Client for an external secrets service: one OIDC login, role-based secrets");
 	loader.RegisterFunction(ScalarFunction(Identifier("tresor_version"), {}, LogicalType::VARCHAR, TresorVersionFun));

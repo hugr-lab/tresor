@@ -124,6 +124,10 @@ create.
 }
 ```
 
+A client lists descriptors (cheap, no material) and fetches material only for the secret its lookup
+picks. tresor caches the list for 30 s and material for a few minutes (a dynamic secret until
+shortly before `expires_at`, a static one until its `version` changes).
+
 `permissions` lists the verbs **the caller** holds on this secret. `delegation` summarises the
 secret's delegation rules, when the caller may see them.
 

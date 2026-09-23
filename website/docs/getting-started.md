@@ -6,8 +6,8 @@ title: Getting started
 # Getting started
 
 :::caution Work in progress
-Attaching, logging in and `corp.whoami()` work today. The sections from *Use the secrets* on describe
-the interface tresor is being built to.
+Attaching, logging in, `corp.whoami()`, `corp.secrets()` and using the service's secrets work today.
+*Store and manage* describes what comes next.
 :::
 
 ## Install
@@ -50,7 +50,7 @@ written to disk, so a new DuckDB process logs in again.
 
 ```sql
 FROM corp.whoami();      -- service, issuer, subject, roles, token expiry, what you may create, login flow
-FROM corp.secrets();     -- the secrets your role may use, with what you may do to each (coming next)
+FROM corp.secrets();     -- the secrets you may see, with what you may do with each (no material)
 ```
 
 The attached catalog `corp` holds functions only. It is read-only: you cannot create tables in it.
@@ -94,12 +94,22 @@ ATTACH 'tresor:127.0.0.1:8080' AS dev (INSECURE_HTTP true);
 
 ## Use the secrets
 
-Secrets from the service take part in DuckDB's ordinary lookup — nothing names tresor:
+Secrets from the service take part in DuckDB's ordinary lookup, and nothing names tresor. The attach
+registers a secret storage under the catalog's name (`corp`):
+- It matches scopes like any storage: the longest scope wins, and on a tie a local secret wins.
+- It fetches a secret's material only when a lookup picks it, and keeps it in memory only, for a
+  few minutes (a dynamic secret until shortly before it expires).
+- A secret you may see but not `use` never matches.
+- `DETACH corp` takes the secrets out of the lookup.
 
 ```sql
 ATTACH '' AS crm (TYPE mssql, SECRET crm_ro);
 FROM 's3://lake/sales/*.parquet';
+FROM which_secret('s3://lake/sales/x.parquet', 's3');   -- which secret, from which storage
 ```
+
+`duckdb_secrets()` lists the service's secrets too, but without material. If the service cannot be
+reached, a lookup fails with its name rather than quietly going without a credential.
 
 ## Store and manage
 

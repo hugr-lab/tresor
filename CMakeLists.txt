@@ -27,6 +27,8 @@ set(EXTENSION_SOURCES
     src/tresor_catalog.cpp
     src/tresor_login.cpp
     src/tresor_secret.cpp
+    src/tresor_secrets.cpp
+    src/tresor_storage.cpp
     src/tresor_session.cpp
     src/tresor_whoami.cpp
     ${DUCKDB_EXT_COMMON_OIDC_SOURCES})

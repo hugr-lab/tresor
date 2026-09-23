@@ -7,8 +7,8 @@
 namespace duckdb {
 namespace tresor {
 
-TresorCatalog::TresorCatalog(AttachedDatabase &db, shared_ptr<TresorSession> session_p)
-    : DuckCatalog(db), session(std::move(session_p)) {
+TresorCatalog::TresorCatalog(AttachedDatabase &db, shared_ptr<TresorSession> session_p, TresorSecretStorage &storage_p)
+    : DuckCatalog(db), session(std::move(session_p)), storage(storage_p) {
 }
 
 void TresorCatalog::Initialize(bool load_builtin) {
@@ -19,6 +19,9 @@ void TresorCatalog::Initialize(bool load_builtin) {
 	CreateTableFunctionInfo whoami(WhoamiFunction(session));
 	whoami.internal = false;
 	CreateTableFunction(transaction, whoami);
+	CreateTableFunctionInfo secrets(SecretsFunction(session, storage));
+	secrets.internal = false;
+	CreateTableFunction(transaction, secrets);
 	// from here on the database is read-only: its storage stays an ordinary in-memory one (duckdb refuses
 	// an in-memory storage opened read-only), and every statement that would modify `corp` is refused by
 	// duckdb's own check before it runs
@@ -26,6 +29,7 @@ void TresorCatalog::Initialize(bool load_builtin) {
 }
 
 void TresorCatalog::OnDetach(ClientContext &context) {
+	storage.Deactivate();
 	session->Close();
 	DuckCatalog::OnDetach(context);
 }
