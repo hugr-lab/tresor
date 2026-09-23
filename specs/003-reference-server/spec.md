@@ -1,6 +1,6 @@
 # Spec 003: the reference server — duckdb-secrets/1 in Go, Keycloak end to end, the conformance suite
 
-- **Status**: draft
+- **Status**: implemented
 - **Date**: 2026-09-23
 - **Author**: VGSML (with Claude)
 
