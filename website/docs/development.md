@@ -16,7 +16,7 @@ build/release/test/unittest 'test/sql/*'    # sqllogictests (the attach tests sk
 scripts/ci/test_attach.sh                   # the attach tests, against a fake service + IdP
 scripts/ci/smoke_load.sh                    # the artifact, used out of tree, loaded by ATTACH alone
 scripts/ci/test_keycloak.sh                 # the reference server + Keycloak (docker, go): conformance
-(cd server && go test ./...)                # the reference server's own tests
+(cd server && GOWORK=off go test ./...)     # the reference server's own tests
 ```
 
 `scripts/ci/test_attach.sh` starts `test/fake/fake_service.py` (Python standard library: a fake

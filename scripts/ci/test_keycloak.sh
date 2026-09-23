@@ -11,8 +11,17 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 unittest="${1:-$root/build/release/test/unittest}"
 work="$(mktemp -d)"
 kc_port="${KEYCLOAK_PORT:-18480}"
+server_port="${TRESOR_SERVER_PORT:-18443}"
 issuer="http://127.0.0.1:$kc_port/realms/tresor"
-compose=(docker compose -p tresor-kc -f "$root/server/docker-compose.yml")
+# a project of its own: `docker compose -p tresor-kc` is the developer's standing Keycloak, left alone
+compose=(docker compose -p tresor-kc-test -f "$root/server/docker-compose.yml")
+
+for port in "$kc_port" "$server_port"; do
+	if curl -s -o /dev/null "http://127.0.0.1:$port/"; then
+		echo "test_keycloak: 127.0.0.1:$port is taken - set KEYCLOAK_PORT / TRESOR_SERVER_PORT" >&2
+		exit 1
+	fi
+done
 
 cleanup() {
 	[ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null || true
@@ -32,13 +41,21 @@ curl -sf "$issuer/.well-known/openid-configuration" >/dev/null || {
 
 echo "test_keycloak: building and starting tresor-server"
 (cd "$root/server" && GOWORK=off go build -o "$work/tresor-server" ./cmd/tresor-server)
-"$work/tresor-server" -config "$root/server/testdata/keycloak/server.yaml" >"$work/server.log" 2>&1 &
+# the test config, on the ports of this run
+sed -e "s/127.0.0.1:18480/127.0.0.1:$kc_port/g" -e "s/127.0.0.1:18443/127.0.0.1:$server_port/g" \
+	"$root/server/testdata/keycloak/server.yaml" >"$work/server.yaml"
+"$work/tresor-server" -config "$work/server.yaml" >"$work/server.log" 2>&1 &
 server_pid=$!
-for _ in $(seq 50); do curl -sf http://127.0.0.1:18443/.well-known/duckdb-secrets >/dev/null && break; sleep 0.2; done
+for _ in $(seq 50); do curl -sf "http://127.0.0.1:$server_port/.well-known/duckdb-secrets" >/dev/null && break; sleep 0.2; done
+if ! kill -0 "$server_pid" 2>/dev/null || ! curl -sf "http://127.0.0.1:$server_port/.well-known/duckdb-secrets" >/dev/null; then
+	cat "$work/server.log" >&2
+	echo "test_keycloak: tresor-server did not come up" >&2
+	exit 1
+fi
 
-export TRESOR_CONFORMANCE_HOST=127.0.0.1:18443 TRESOR_CONFORMANCE_INSECURE=true
+export TRESOR_CONFORMANCE_HOST=127.0.0.1:$server_port TRESOR_CONFORMANCE_INSECURE=true
 export TRESOR_CONFORMANCE_ISSUER="$issuer" TRESOR_CONFORMANCE_CLIENT_ID=etl TRESOR_CONFORMANCE_CLIENT_SECRET=etl-secret
-export TRESOR_CONFORMANCE_PERSON=1 TRESOR_KC_HOST=127.0.0.1:18443 TRESOR_KC_ISSUER="$issuer"
+export TRESOR_CONFORMANCE_PERSON=1 TRESOR_KC_HOST=127.0.0.1:$server_port TRESOR_KC_ISSUER="$issuer"
 export BROWSER="$root/test/keycloak/browser.py" TRESOR_KC_USER=alice TRESOR_KC_PASS=alice-pass
 cd "$root"
 status=0
@@ -49,7 +66,8 @@ if ! grep -q "All tests passed" "$work/reference.log" || grep -q "skipped" "$wor
 	cat "$work/reference.log" >&2
 	status=1
 else
-	echo "test_keycloak: the reference server's tests passed ($(grep -o '[0-9]* assertions in [0-9]* test case[s]*' "$work/reference.log"))"
+	# not in the runner's summary format: assert_ran must only ever read the conformance run's line
+	echo "test_keycloak: the reference server's tests passed"
 fi
 "$unittest" --skip-error-messages '' 'test/sql/conformance/*' || status=1
 if [ "$status" != 0 ]; then

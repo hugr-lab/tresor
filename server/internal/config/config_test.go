@@ -22,8 +22,8 @@ func TestGood(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Issuers[0].Issuer != "http://127.0.0.1:18080/realms/tresor" {
-		t.Fatal("the issuer's trailing slash is normalised")
+	if cfg.Issuers[0].Issuer != "http://127.0.0.1:18080/realms/tresor/" || IssuerKey(cfg.Issuers[0].Issuer) != "http://127.0.0.1:18080/realms/tresor" {
+		t.Fatal("the issuer is kept verbatim (RFC 8414 compares exactly); only its lookup key is normalised")
 	}
 	if len(cfg.Issuers[0].Algorithms) != 2 {
 		t.Fatal("algorithms default to RS256, ES256")

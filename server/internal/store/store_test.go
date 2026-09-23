@@ -96,3 +96,31 @@ func TestVerbsOf(t *testing.T) {
 		t.Fatal("no grant, no verbs")
 	}
 }
+
+// a change that cannot reach the disk is undone in memory too
+func TestPersistFailureRollsBack(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(filepath.Join(dir, "secrets.enc"), key(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Update("kept", func(*Secret) (*Secret, error) { return &Secret{Type: "s3"}, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700)
+	if _, err := s.Update("lost", func(*Secret) (*Secret, error) { return &Secret{Type: "s3"}, nil }); err == nil {
+		t.Skip("the directory is writable anyway (running as root?)")
+	}
+	if _, err := s.Get("lost"); !errors.Is(err, ErrNotFound) {
+		t.Fatal("a create that did not persist must not stay in memory")
+	}
+	if _, err := s.Update("kept", func(*Secret) (*Secret, error) { return nil, nil }); err == nil {
+		t.Fatal("the delete should fail to persist")
+	}
+	if _, err := s.Get("kept"); err != nil {
+		t.Fatal("a delete that did not persist must not stay in memory")
+	}
+}

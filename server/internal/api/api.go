@@ -26,7 +26,9 @@ import (
 // Protocol is the discovery document's protocol string.
 const Protocol = "duckdb-secrets/1"
 
-var allVerbs = []string{"use", "update", "delete", "annotate", "grant", "delegate"}
+// the per-secret verbs, in the protocol's order; `delegate` joins with delegation (capabilities says it
+// is off)
+var allVerbs = []string{"use", "update", "delete", "annotate", "grant"}
 
 // Server serves the protocol.
 type Server struct {
@@ -56,6 +58,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/secrets/{name}/grants", s.authed(s.listGrants))
 	mux.HandleFunc("PUT /v1/secrets/{name}/grants/{id}", s.authed(s.putGrant))
 	mux.HandleFunc("DELETE /v1/secrets/{name}/grants/{id}", s.authed(s.deleteGrant))
+	// anything else - an unknown path, a known path with another method - is a problem document too
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		problem(w, http.StatusNotFound, "not_found", "no such resource: "+r.Method+" "+r.URL.Path)
+	})
 	var h http.Handler = mux
 	if u, err := url.Parse(s.cfg.PublicURL); err == nil && strings.TrimRight(u.Path, "/") != "" {
 		h = http.StripPrefix(strings.TrimRight(u.Path, "/"), mux)
@@ -99,9 +105,10 @@ type loggedCallerKey struct{}
 // authed verifies the bearer token; a failure is 401 unauthenticated with the reason in the log only.
 func (s *Server) authed(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// the scheme is case-insensitive (RFC 9110 §11.1)
 		header := r.Header.Get("Authorization")
-		raw, ok := strings.CutPrefix(header, "Bearer ")
-		if !ok || raw == "" {
+		scheme, raw, ok := strings.Cut(header, " ")
+		if !ok || !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(raw) == "" {
 			problem(w, http.StatusUnauthorized, "unauthenticated", "a bearer token is required")
 			return
 		}
@@ -131,14 +138,24 @@ func problem(w http.ResponseWriter, status int, kind, detail string) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"type": kind, "title": kind, "status": status, "detail": detail})
 }
 
+// readJSON reads one JSON document of at most 1 MiB, with no unknown fields and nothing after it.
 func readJSON(r *http.Request, into any) error {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20+1))
 	if err != nil {
 		return err
 	}
+	if len(body) > 1<<20 {
+		return errors.New("the body is larger than 1 MiB")
+	}
 	dec := json.NewDecoder(strings.NewReader(string(body)))
 	dec.DisallowUnknownFields()
-	return dec.Decode(into)
+	if err := dec.Decode(into); err != nil {
+		return err
+	}
+	if dec.More() {
+		return errors.New("trailing data after the JSON document")
+	}
+	return nil
 }
 
 // --- permissions ------------------------------------------------------------------------------------
@@ -342,6 +359,9 @@ func validParams(params map[string]json.RawMessage, redact []string) error {
 		if key == "" {
 			return errors.New("an empty parameter name")
 		}
+		if strings.TrimSpace(string(raw)) == "null" {
+			return fmt.Errorf("parameter %q is null", key)
+		}
 		var str string
 		if json.Unmarshal(raw, &str) == nil {
 			continue
@@ -352,7 +372,7 @@ func validParams(params map[string]json.RawMessage, redact []string) error {
 		}
 		dec := json.NewDecoder(strings.NewReader(string(raw)))
 		dec.DisallowUnknownFields()
-		if dec.Decode(&typed) != nil || typed.Type == "" || typed.Value == nil {
+		if dec.Decode(&typed) != nil || typed.Type == "" || typed.Value == nil || string(typed.Value) == "null" {
 			return fmt.Errorf("parameter %q is neither a string nor {type, value}", key)
 		}
 	}
@@ -380,7 +400,8 @@ func (s *Server) putSecret(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusUnprocessableEntity, "invalid_secret", err.Error())
 		return
 	}
-	createOnly := strings.TrimSpace(r.Header.Get("If-None-Match")) == "*"
+	// If-None-Match: "*" (CREATE) fails on any existing secret; with an ETag, on that version only
+	ifNoneMatch := strings.TrimSpace(r.Header.Get("If-None-Match"))
 	ifMatch := strings.TrimSpace(r.Header.Get("If-Match"))
 	type refusal struct {
 		status       int
@@ -411,10 +432,11 @@ func (s *Server) putSecret(w http.ResponseWriter, r *http.Request) {
 			refused = &refusal{http.StatusForbidden, "no_verb", "the caller may not create " + strconv.Quote(name)}
 			return nil, errors.New("refused")
 		}
-		if createOnly {
+		currentTag := strconv.Quote(strconv.FormatInt(current.Version, 10))
+		if ifNoneMatch == "*" || (ifNoneMatch != "" && ifNoneMatch == currentTag) {
 			return nil, store.ErrPrecondition
 		}
-		if ifMatch != "" && ifMatch != strconv.Quote(strconv.FormatInt(current.Version, 10)) && ifMatch != "*" {
+		if ifMatch != "" && ifMatch != currentTag && ifMatch != "*" {
 			return nil, store.ErrPrecondition
 		}
 		if !slices.Contains(verbs, "update") {
@@ -483,6 +505,8 @@ func (s *Server) mutate(w http.ResponseWriter, r *http.Request, verb string,
 		problem(w, http.StatusNotFound, "not_found", fmt.Sprintf("no secret %q", name))
 	case forbidden:
 		problem(w, http.StatusForbidden, "no_verb", "the caller's roles do not hold "+verb)
+	case errors.Is(err, errNotHeld):
+		problem(w, http.StatusForbidden, "no_verb", strings.TrimPrefix(err.Error(), errNotHeld.Error()+": "))
 	case errors.Is(err, errInvalid):
 		problem(w, http.StatusUnprocessableEntity, "invalid_secret", strings.TrimPrefix(err.Error(), errInvalid.Error()+": "))
 	case errors.Is(err, store.ErrNotFound):
@@ -496,7 +520,10 @@ func (s *Server) mutate(w http.ResponseWriter, r *http.Request, verb string,
 	return nil, false
 }
 
-var errInvalid = errors.New("invalid")
+var (
+	errInvalid = errors.New("invalid")
+	errNotHeld = errors.New("not held")
+)
 
 func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.mutate(w, r, "delete", func(*store.Secret) (*store.Secret, error) { return nil, nil }); ok {
@@ -555,13 +582,19 @@ func (s *Server) putGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	c := callerOf(r)
 	saved, ok := s.mutate(w, r, "grant", func(current *store.Secret) (*store.Secret, error) {
 		if !validPrincipal(body.Principal) || len(body.Verbs) == 0 {
 			return nil, fmt.Errorf("%w: a grant is {principal, verbs[]} with a role:, group:, subject: or client: principal", errInvalid)
 		}
+		held := s.verbs(c, current)
 		for _, v := range body.Verbs {
 			if !config.KnownVerb(v) {
 				return nil, fmt.Errorf("%w: unknown verb %q", errInvalid, v)
+			}
+			// a grant never passes on more than its grantor holds: `grant` alone must not become `use`
+			if !slices.Contains(held, v) {
+				return nil, fmt.Errorf("%w: the caller does not hold %q, so it cannot grant it", errNotHeld, v)
 			}
 		}
 		grant := store.Grant{ID: id, Principal: body.Principal, Verbs: body.Verbs}

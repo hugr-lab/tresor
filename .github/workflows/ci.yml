@@ -119,12 +119,14 @@ jobs:
       # the floor keeps a suite that silently skipped everything from passing
       - name: Unit suites
         run: |
+          set -o pipefail   # a failing script must fail the step, whatever the summary line says
           build/release/test/unittest 'test/sql/*' 2>&1 | tee suite.log
           scripts/ci/assert_ran.sh suite.log 3 20
 
       # the attach tests against the fake service + IdP (specs/002); none of them may skip here
       - name: Attach suites
         run: |
+          set -o pipefail   # a failing script must fail the step, whatever the summary line says
           scripts/ci/test_attach.sh 2>&1 | tee attach.log
           scripts/ci/assert_ran.sh attach.log 3 30 'require-env TRESOR_TEST_PORT'
 
@@ -136,6 +138,7 @@ jobs:
           cache-dependency-path: server/go.sum
       - name: Keycloak end to end
         run: |
+          set -o pipefail   # a failing script must fail the step, whatever the summary line says
           scripts/ci/test_keycloak.sh 2>&1 | tee keycloak.log
           scripts/ci/assert_ran.sh keycloak.log 2 15 'require-env TRESOR_CONFORMANCE'
 
@@ -196,12 +199,14 @@ jobs:
 
       - name: Unit suites
         run: |
+          set -o pipefail   # a failing script must fail the step, whatever the summary line says
           build/release/test/unittest 'test/sql/*' 2>&1 | tee suite.log
           scripts/ci/assert_ran.sh suite.log 3 20
 
       # the attach tests against the fake service + IdP (specs/002); none of them may skip here
       - name: Attach suites
         run: |
+          set -o pipefail   # a failing script must fail the step, whatever the summary line says
           scripts/ci/test_attach.sh 2>&1 | tee attach.log
           scripts/ci/assert_ran.sh attach.log 3 30 'require-env TRESOR_TEST_PORT'
 

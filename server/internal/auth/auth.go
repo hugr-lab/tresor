@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -23,19 +24,15 @@ type Caller struct {
 	Issuer     string
 	Subject    string
 	Principals []string // subject:, role:, group:, client:
-	Service    bool     // a client-credentials token: Principals carries client:<azp>
+	Service    bool     // a client-credentials token (the issuer's service rule): Principals carries client:
 	ExpiresAt  time.Time
 }
 
-// Owner is the principal a caller's creations belong to: its client: for a service, else its subject:.
+// Owner is the principal a caller's creations belong to: always its subject: - iss and sub, unique
+// across issuers and across callers. (A client: principal is a client's name, shared by every token
+// of that client and, with several issuers, by same-named clients of each: it names who may do
+// something, never who someone is.)
 func (c *Caller) Owner() string {
-	if c.Service {
-		for _, p := range c.Principals {
-			if strings.HasPrefix(p, "client:") {
-				return p
-			}
-		}
-	}
 	return "subject:" + c.Issuer + "|" + c.Subject
 }
 
@@ -55,16 +52,25 @@ type Verifier struct {
 }
 
 type issuer struct {
-	cfg      config.Issuer
-	mu       sync.Mutex
-	verifier *oidc.IDTokenVerifier
+	cfg        config.Issuer
+	mu         sync.Mutex
+	verifier   *oidc.IDTokenVerifier
+	failedAt   time.Time // the last failed discovery: retried after retryAfter, not on every request
+	lastFailed error
 }
+
+// discoveryTimeout bounds one discovery (the lock is held across it); retryAfter spaces the retries
+// after a failure, so tokens naming an unreachable issuer do not each trigger an outbound request.
+const (
+	discoveryTimeout = 10 * time.Second
+	retryAfter       = 5 * time.Second
+)
 
 // NewVerifier prepares (without contacting them) the issuers of cfg.
 func NewVerifier(cfg []config.Issuer) *Verifier {
 	v := &Verifier{issuers: map[string]*issuer{}, Now: time.Now}
 	for _, is := range cfg {
-		v.issuers[is.Issuer] = &issuer{cfg: is}
+		v.issuers[config.IssuerKey(is.Issuer)] = &issuer{cfg: is}
 	}
 	return v
 }
@@ -75,10 +81,21 @@ func (is *issuer) get(ctx context.Context, now func() time.Time) (*oidc.IDTokenV
 	if is.verifier != nil {
 		return is.verifier, nil
 	}
-	provider, err := oidc.NewProvider(ctx, is.cfg.Issuer) // discovery + the RFC 8414 issuer check
-	if err != nil {
-		return nil, fmt.Errorf("issuer %s not reachable yet: %w", is.cfg.Issuer, err)
+	if is.lastFailed != nil && now().Sub(is.failedAt) < retryAfter {
+		return nil, is.lastFailed
 	}
+	// bounded, and not the request's context: one caller's deadline must not fail the discovery for
+	// everyone, and a hung IdP must not hold the lock for long
+	discoverCtx, cancel := context.WithTimeout(context.Background(), discoveryTimeout)
+	defer cancel()
+	discoverCtx = oidc.ClientContext(discoverCtx, &http.Client{Timeout: discoveryTimeout})
+	provider, err := oidc.NewProvider(discoverCtx, is.cfg.Issuer) // discovery + the RFC 8414 issuer check
+	if err != nil {
+		is.failedAt, is.lastFailed = now(), fmt.Errorf("issuer %s not reachable yet: %w", is.cfg.Issuer, err)
+		return nil, is.lastFailed
+	}
+	// the JWKS is fetched later, by Verify, under the same bounded client (go-oidc keeps the client
+	// of this context, not its deadline)
 	is.verifier = provider.Verifier(&oidc.Config{
 		// the audience is checked below against the configured one: go-oidc's ClientID check is the
 		// same test, but an access token's aud is not a client id, so it is done explicitly
@@ -95,7 +112,7 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (*Caller, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnauthenticated, err)
 	}
-	is, ok := v.issuers[strings.TrimRight(iss, "/")]
+	is, ok := v.issuers[config.IssuerKey(iss)]
 	if !ok {
 		return nil, fmt.Errorf("%w: issuer %q is not configured", ErrUnauthenticated, iss)
 	}
@@ -120,23 +137,21 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (*Caller, error) {
 	return callerFrom(is.cfg, token.Issuer, token.Subject, token.Expiry, claims), nil
 }
 
-// callerFrom maps claims to principals: identity is iss+sub, never an email or a username.
+// callerFrom maps claims to principals: identity is iss+sub, never an email or a username. A service
+// is recognised only by the issuer's configured rule: no claim marks one by convention.
 func callerFrom(cfg config.Issuer, iss, sub string, exp time.Time, claims map[string]any) *Caller {
-	c := &Caller{Issuer: strings.TrimRight(iss, "/"), Subject: sub, ExpiresAt: exp}
-	c.Principals = append(c.Principals, "subject:"+c.Issuer+"|"+sub)
+	c := &Caller{Issuer: iss, Subject: sub, ExpiresAt: exp}
+	c.Principals = append(c.Principals, "subject:"+iss+"|"+sub)
 	for _, r := range stringsAt(claims, cfg.RolesClaim) {
 		c.Principals = append(c.Principals, "role:"+r)
 	}
 	for _, g := range stringsAt(claims, cfg.GroupsClaim) {
 		c.Principals = append(c.Principals, "group:"+strings.TrimPrefix(g, "/")) // Keycloak's groups are paths
 	}
-	// a client-credentials token: Keycloak marks a service account with a client_id claim, Entra with
-	// idtyp=app; the client is azp (appid on Entra v1)
-	_, keycloakService := claims["client_id"]
-	entraApp := claims["idtyp"] == "app"
-	if keycloakService || entraApp {
-		client := firstString(claims, "azp", "client_id", "appid")
-		if client != "" {
+	if rule := cfg.Service; rule != nil {
+		marker, present := claims[rule.Claim]
+		matches := present && (rule.Equals == "" || marker == rule.Equals)
+		if client := firstString(claims, rule.ClientClaim); matches && client != "" {
 			c.Service = true
 			c.Principals = append(c.Principals, "client:"+client)
 		}

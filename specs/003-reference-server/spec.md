@@ -67,6 +67,7 @@ issuers:
     roles_claim: realm_access.roles      # dotted path to a list of strings -> role:<name>
     groups_claim: groups                 # -> group:<name>
     algorithms: [RS256, ES256]           # never none, never HS*
+    service: {claim: client_id}          # what marks a client-credentials token; absent: no services
 policy:
   admins: [role:secrets_admin]           # every verb on every secret, create anything
   create:                                # who may create, by name pattern (path.Match)
@@ -76,17 +77,22 @@ policy:
 
 ### Principals and verification
 
-- A request carries `Authorization: Bearer <jwt>`. The server reads the unverified `iss` only to
-  pick the configured issuer. It then verifies with that issuer's JWKS (go-oidc: signature, `iss`,
-  `exp`/`nbf` with a small skew, the configured algorithms) and requires `aud` to contain the
-  issuer's `audience`. Anything else answers `401 unauthenticated`, and the reason goes to the log,
-  never the token.
-- Principals of a caller: `subject:<iss>|<sub>` always, plus `role:<r>` for each role and `group:<g>`
-  for each group claim value. A service token (a client-credentials grant) also gets
-  `client:<azp>`. It is recognised by Keycloak's `client_id` claim or Entra's `idtyp: app`. Identity
-  is `iss` + `sub`, never an email or a username.
-- Issuers are discovered lazily and retried: the server starts before its IdP is up, as it does in
-  CI.
+- A request carries `Authorization: Bearer <jwt>` (the scheme is case-insensitive). The server
+  reads the unverified `iss` only to pick the configured issuer. It then verifies with that
+  issuer's JWKS (go-oidc: signature, `iss` compared verbatim, `exp`, the configured algorithms) and
+  requires `aud` to contain the issuer's `audience`. Anything else answers `401 unauthenticated`,
+  and the reason goes to the log, never the token. An issuer must be https unless it is on
+  loopback, because its keys are fetched from it.
+- Principals of a caller: `subject:<iss>|<sub>` always, which is its **identity and the owner of
+  what it creates**. Add `role:<r>` for each role and `group:<g>` for each group claim value. A
+  token is a **service's only by the issuer's `service` rule** (a claim present, optionally with a
+  value). A service also gets `client:<name>` from the rule's `client_claim` (default `azp`). No
+  claim is a service marker by convention: RFC 9068 puts `client_id` into every access token, a
+  person's included. `client:` names are not issuer-qualified; they name what a caller holds, never
+  who it is.
+- Issuers are discovered lazily, bounded by a 10 s timeout on a client of their own. A failure is
+  remembered for 5 s, so tokens naming an unreachable issuer do not each trigger an outbound
+  request. The server starts before its IdP is up, as it does in CI.
 
 ### Permissions
 
@@ -95,6 +101,9 @@ A caller's verbs on a secret are the union of:
 - every verb, if it owns the secret. The owner is the creator's `subject:` or `client:` principal
   (a service owns what it creates);
 - the verbs of every grant whose principal is one of the caller's.
+
+A grant passes on at most what its grantor holds. `delegate` cannot be granted while delegation is
+off.
 
 `create` is service-level: admins, or a `policy.create` rule whose principal the caller has and
 whose pattern matches the name. `GET /v1/secrets` lists the secrets the caller holds any verb on,
@@ -186,6 +195,31 @@ The server's own Go tests cover the protocol at the HTTP level, where SQL cannot
   a wrong client secret) and `test/sql/conformance/*` (a service login and a browser login, each
   followed by whoami).
 - `gofmt` in the lint job.
+
+## The review's findings (applied)
+
+An independent review, several of them reproduced:
+
+- **People became services.** Any token with a `client_id` claim counted as a service and owned
+  by `client:<azp>`. RFC 9068 tokens carry `client_id` for people too, so everyone using the public
+  client owned everyone else's secrets. Now a service is recognised only by a per-issuer rule, and
+  the owner is always the `subject:`.
+- **`client:` names are not issuer-qualified.** They no longer confer ownership. The docs say they
+  are shared across issuers.
+- **`grant` alone escalated to every verb.** A grant now passes on at most what its grantor holds.
+- **http issuers off loopback were accepted.** They are now refused: their keys come from there.
+- **Discovery held its lock with no timeout.** It is now bounded, with a negative cache.
+- **Issuers ending in `/` could never verify** (Auth0, Entra v1). They are now kept verbatim; only
+  the lookup key is normalised.
+- **CI lost a script's exit status behind `| tee`.** Now `pipefail`.
+- **Bodies.** `null` params and trailing data are refused. `If-None-Match` with an ETag is honoured.
+  A lower-case `bearer` is accepted. Unknown routes answer problem documents.
+- **`test_keycloak.sh`** now uses a compose project of its own, takes its ports from the environment
+  (the server config follows), checks that the server is alive, and never prints a line
+  `assert_ran` could mistake for the conformance summary.
+- **Protocol ambiguities, now written into the protocol page:** OR REPLACE semantics, `If-Match`,
+  the answer codes, invisible names on `PUT`, grants passing on at most what the grantor holds,
+  `roles` in whoami, name canonicalisation, unknown fields, and every error as a problem document.
 
 ## Alternatives considered
 

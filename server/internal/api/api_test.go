@@ -45,6 +45,7 @@ issuers:
     scopes: [openid, duckdb-secrets]
     human_flows: [authorization_code]
     roles_claim: realm_access.roles
+    service: {claim: client_id}
 policy:
   admins: [role:secrets_admin]
   create:
@@ -268,11 +269,111 @@ func TestSecretsLifecycle(t *testing.T) {
 func TestServiceOwnsWhatItCreates(t *testing.T) {
 	f := newFixture(t, "")
 	r := f.do("PUT", "/v1/secrets/anything", f.etl, `{"type":"http","params":{"bearer_token":"t"}}`)
-	if r.status != 201 || r.json(t)["owner"] != "client:etl" {
+	if r.status != 201 || r.json(t)["owner"] != "subject:"+f.idp.URL+"|sa-etl" {
 		t.Fatalf("etl create: %d %s", r.status, r.body)
 	}
 	if r := f.do("PUT", "/v1/secrets/anything", f.etl, `{"type":"http","params":{}}`); r.status != 200 {
 		t.Fatalf("etl replace (OR REPLACE, as owner): %d", r.status)
+	}
+	if owner := f.do("GET", "/v1/secrets/anything", f.etl, "").json(t)["owner"]; owner != "subject:"+f.idp.URL+"|sa-etl" {
+		t.Fatalf("a service owns by its subject: %v", owner)
+	}
+}
+
+// the review's findings, pinned
+
+// two people whose tokens both carry the public client's client_id (RFC 9068) are two owners
+func TestPeopleNeverShareOwnership(t *testing.T) {
+	f := newFixture(t, "")
+	dave := f.idp.Token(t, testidp.Claims{"sub": "dave", "aud": "duckdb-secrets", "azp": "duckdb",
+		"realm_access": map[string]any{"roles": []any{"analysts"}}})
+	erin := f.idp.Token(t, testidp.Claims{"sub": "erin", "aud": "duckdb-secrets", "azp": "duckdb"})
+	if r := f.do("PUT", "/v1/secrets/team_a_dave", dave, s3Secret); r.status != 201 {
+		t.Fatalf("dave create: %d %s", r.status, r.body)
+	}
+	if r := f.do("GET", "/v1/secrets/team_a_dave", erin, ""); r.status != 404 {
+		t.Fatalf("erin must not see dave's secret: %d", r.status)
+	}
+}
+
+// `grant` alone never becomes `use`: a grant passes on at most what its grantor holds
+func TestGrantCannotEscalate(t *testing.T) {
+	f := newFixture(t, "")
+	carol := "subject:" + f.idp.URL + "|carol-id"
+	f.do("PUT", "/v1/secrets/team_a_x", f.alice, s3Secret)
+	if r := f.do("PUT", "/v1/secrets/team_a_x/grants/c", f.alice, `{"principal":"`+carol+`","verbs":["grant"]}`); r.status != 200 {
+		t.Fatalf("grant: %d", r.status)
+	}
+	r := f.do("PUT", "/v1/secrets/team_a_x/grants/self", f.carol, `{"principal":"`+carol+`","verbs":["use"]}`)
+	if r.status != 403 || r.problemType(t) != "no_verb" {
+		t.Fatalf("carol granting herself use: %d %s", r.status, r.body)
+	}
+	if r := f.do("GET", "/v1/secrets/team_a_x", f.carol, ""); r.status != 403 {
+		t.Fatalf("carol still may not use: %d", r.status)
+	}
+	// what she holds she may pass on
+	if r := f.do("PUT", "/v1/secrets/team_a_x/grants/d", f.carol, `{"principal":"role:x","verbs":["grant"]}`); r.status != 200 {
+		t.Fatalf("passing on grant: %d", r.status)
+	}
+	// delete a grant; a missing one is not found
+	if r := f.do("DELETE", "/v1/secrets/team_a_x/grants/d", f.alice, ""); r.status != 204 {
+		t.Fatalf("delete grant: %d", r.status)
+	}
+	if r := f.do("DELETE", "/v1/secrets/team_a_x/grants/d", f.alice, ""); r.status != 404 {
+		t.Fatalf("delete a missing grant: %d", r.status)
+	}
+	if r := f.do("PUT", "/v1/secrets/team_a_x/grants/e", f.alice, `{"principal":"role:x","verbs":["delegate"]}`); r.status != 422 {
+		t.Fatalf("delegate is not grantable while delegation is off: %d", r.status)
+	}
+}
+
+func TestPreconditionsAndBodies(t *testing.T) {
+	f := newFixture(t, "")
+	if r := f.do("PUT", "/v1/secrets/team_a_p", f.alice, s3Secret, "If-Match", `"1"`); r.status != 412 {
+		t.Fatalf("If-Match on a missing secret: %d", r.status)
+	}
+	f.do("PUT", "/v1/secrets/team_a_p", f.alice, s3Secret)
+	if r := f.do("PUT", "/v1/secrets/team_a_p", f.alice, s3Secret, "If-None-Match", `"1"`); r.status != 412 {
+		t.Fatalf("If-None-Match with the current ETag: %d", r.status)
+	}
+	if r := f.do("PUT", "/v1/secrets/team_a_p", f.alice, s3Secret, "If-None-Match", `"7"`); r.status != 200 {
+		t.Fatalf("If-None-Match with another ETag: %d", r.status)
+	}
+	if r := f.do("PUT", "/v1/secrets/team_a_p", f.alice, s3Secret, "If-Match", "*"); r.status != 200 {
+		t.Fatalf("If-Match: * on an existing secret: %d", r.status)
+	}
+	// a non-owner holding update may replace
+	f.do("PUT", "/v1/secrets/team_a_p/grants/u", f.alice, `{"principal":"subject:`+f.idp.URL+`|carol-id","verbs":["update"]}`)
+	if r := f.do("PUT", "/v1/secrets/team_a_p", f.carol, s3Secret); r.status != 200 {
+		t.Fatalf("carol with update: %d %s", r.status, r.body)
+	}
+	for name, body := range map[string]string{
+		"a null param":       `{"type":"s3","params":{"a":null}}`,
+		"a null typed value": `{"type":"s3","params":{"a":{"type":"INTEGER","value":null}}}`,
+		"trailing data":      `{"type":"s3"} garbage`,
+		"a second document":  `{"type":"s3"}{"type":"s3"}`,
+	} {
+		if r := f.do("PUT", "/v1/secrets/team_a_q", f.alice, body); r.status != 422 {
+			t.Errorf("%s: %d", name, r.status)
+		}
+	}
+}
+
+func TestProtocolEdges(t *testing.T) {
+	f := newFixture(t, "")
+	// the scheme is case-insensitive
+	req, _ := http.NewRequest("GET", f.base+"/v1/whoami", nil)
+	req.Header.Set("Authorization", "bearer "+f.alice)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil || res.StatusCode != 200 {
+		t.Fatalf("lower-case bearer: %v %v", res, err)
+	}
+	res.Body.Close()
+	// unknown routes and methods answer problem documents
+	for _, probe := range [][2]string{{"GET", "/v1/nothing"}, {"POST", "/v1/secrets/x"}} {
+		if r := f.do(probe[0], probe[1], f.alice, "{}"); r.status != 404 || r.problemType(t) != "not_found" {
+			t.Errorf("%s %s: %d %s", probe[0], probe[1], r.status, r.body)
+		}
 	}
 }
 

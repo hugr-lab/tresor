@@ -15,15 +15,21 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 )
 
-// IdP serves an issuer at URL.
+// IdP serves an issuer at URL; Issuer is its identifier (URL, or URL + "/" for NewSlashed).
 type IdP struct {
 	URL    string
+	Issuer string
 	Key    *rsa.PrivateKey
 	server *httptest.Server
 }
 
 // New starts an issuer; it stops with the test.
-func New(t *testing.T) *IdP {
+func New(t *testing.T) *IdP { return start(t, "") }
+
+// NewSlashed starts an issuer whose identifier ends in '/' (Auth0, Entra v1).
+func NewSlashed(t *testing.T) *IdP { return start(t, "/") }
+
+func start(t *testing.T, suffix string) *IdP {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -33,7 +39,7 @@ func New(t *testing.T) *IdP {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"issuer":                                idp.URL,
+			"issuer":                                idp.Issuer,
 			"jwks_uri":                              idp.URL + "/jwks",
 			"authorization_endpoint":                idp.URL + "/authorize",
 			"token_endpoint":                        idp.URL + "/token",
@@ -47,6 +53,7 @@ func New(t *testing.T) *IdP {
 	})
 	idp.server = httptest.NewServer(mux)
 	idp.URL = idp.server.URL
+	idp.Issuer = idp.URL + suffix
 	t.Cleanup(idp.server.Close)
 	return idp
 }
@@ -61,7 +68,7 @@ func (idp *IdP) Token(t *testing.T, claims Claims) string {
 }
 
 func (idp *IdP) fill(claims Claims) Claims {
-	out := Claims{"iss": idp.URL, "iat": time.Now().Unix(), "exp": time.Now().Add(5 * time.Minute).Unix()}
+	out := Claims{"iss": idp.Issuer, "iat": time.Now().Unix(), "exp": time.Now().Add(5 * time.Minute).Unix()}
 	for k, v := range claims {
 		out[k] = v
 	}

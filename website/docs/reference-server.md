@@ -18,10 +18,13 @@ It is **not meant for production**: one process, one encrypted file, no high ava
 - Grants.
 - Token verification against any number of OIDC issuers:
   - the signature against the issuer's JWKS;
-  - `iss`, expiry, and the audience;
+  - `iss` (verbatim: an issuer ending in `/`, like Auth0 or Entra v1, works), expiry, and the
+    audience;
   - asymmetric algorithms only.
 
-Delegation and dynamic secrets are not implemented yet (`capabilities` says so).
+Delegation and dynamic secrets are not implemented yet (`capabilities` says so, and `delegate`
+cannot be granted). Issuers must be https unless they are on loopback: their signing keys are
+fetched from them.
 
 ## Run it
 
@@ -47,6 +50,7 @@ issuers:
     service_flows: [client_credentials]
     roles_claim: realm_access.roles      # Keycloak; Entra/Okta: roles
     groups_claim: groups
+    service: {claim: client_id}          # what marks a client-credentials token (see below)
 policy:
   admins: [role:secrets_admin]
   create:
@@ -56,12 +60,20 @@ policy:
 
 ## Who may do what
 
-- **Principals.** Every caller is `subject:<issuer>|<sub>`. Its roles become `role:<name>` and its
-  groups `group:<name>`. A client-credentials token also carries `client:<client_id>`: on Keycloak
-  it has a `client_id` claim, and on Entra `idtyp` is `app`.
+- **Principals.** Every caller is `subject:<issuer>|<sub>`, which is its identity. Its roles become
+  `role:<name>` and its groups `group:<name>`.
+- **Services.** A token is a service's only by its issuer's `service` rule: `claim` is present, and
+  equals `equals` when that is set. The service then also gets `client:<name>`, taken from
+  `client_claim` (default `azp`). No claim marks a service by convention. RFC 9068 puts `client_id`
+  into every access token, a person's included. Without a rule, every caller is a person.
+  - Keycloak: `{claim: client_id}`. The `service_account` scope sets it on client-credentials
+    tokens only.
+  - Entra: `{claim: idtyp, equals: app}`.
 - **Verbs on a secret.** An admin holds every verb on every secret. The owner holds every verb on
-  its own secret; the owner is whoever created it (a service owns what it creates). Everyone else
-  holds the verbs of the grants made to their principals.
+  its own secret; the owner is the `subject:` that created it, a service's included. Everyone else
+  holds the verbs of the grants made to their principals, and can grant on only the verbs they hold.
+- **`client:` names are shared.** They carry no issuer, so with several issuers a `client:etl` in a
+  policy or grant matches the `etl` of each. Name services by `subject:` where that matters.
 - **Creating** is allowed to admins and to the `policy.create` rules, by name pattern.
 - **Invisible secrets.** A secret you hold no verb on answers 404, exactly like one that does not
   exist.

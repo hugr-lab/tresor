@@ -46,6 +46,18 @@ type Issuer struct {
 	RolesClaim   string   `yaml:"roles_claim"`
 	GroupsClaim  string   `yaml:"groups_claim"`
 	Algorithms   []string `yaml:"algorithms"`
+	// Service says how this issuer's client-credentials tokens are told apart from people's. Without
+	// it every caller of the issuer is a person: no claim is a service marker by convention (RFC 9068
+	// puts client_id into every access token, a person's included).
+	Service *ServiceRule `yaml:"service"`
+}
+
+// ServiceRule marks a token as a service's: Claim is present (and equals Equals, when set); the
+// client's name is ClientClaim (default azp).
+type ServiceRule struct {
+	Claim       string `yaml:"claim"`
+	Equals      string `yaml:"equals"`
+	ClientClaim string `yaml:"client_claim"`
 }
 
 // Policy is the service-level part of the permissions: admins and who may create what.
@@ -89,8 +101,9 @@ var allowedAlgorithms = map[string]bool{
 	"ES256": true, "ES384": true, "ES512": true, "EdDSA": true,
 }
 
+// the per-secret verbs this server grants; `delegate` joins when delegation does
 var knownVerbs = map[string]bool{
-	"use": true, "update": true, "delete": true, "annotate": true, "grant": true, "delegate": true,
+	"use": true, "update": true, "delete": true, "annotate": true, "grant": true,
 }
 
 // KnownVerb says whether v is one of the protocol's per-secret verbs.
@@ -120,20 +133,41 @@ func (c *Config) validate() error {
 	if c.Store.Path != "" && c.Store.KeyEnv == "" {
 		return errors.New("store.key_env is required with store.path: the store is always encrypted")
 	}
+	if c.Store.Path == "" && c.Store.KeyEnv != "" {
+		return errors.New("store.key_env without store.path: the store would silently be memory only")
+	}
 	if len(c.Issuers) == 0 {
 		return errors.New("at least one issuer is required")
 	}
 	seen := map[string]bool{}
 	for i := range c.Issuers {
 		is := &c.Issuers[i]
-		is.Issuer = strings.TrimRight(is.Issuer, "/")
+		// kept verbatim: an issuer identifier is compared exactly (RFC 8414), and some end in '/'
+		// (Auth0, Entra v1); only the lookup key is normalised (IssuerKey)
 		if is.Issuer == "" || is.Audience == "" {
 			return fmt.Errorf("issuers[%d]: issuer and audience are required", i)
 		}
-		if seen[is.Issuer] {
+		iu, err := url.Parse(is.Issuer)
+		if err != nil || iu.Host == "" || (iu.Scheme != "https" && !(iu.Scheme == "http" && IsLoopback(iu.Hostname()))) {
+			// its discovery and JWKS are fetched from here: over plain http anyone on the path could
+			// substitute the signing keys
+			return fmt.Errorf("issuer %q must be https (http only for a loopback host)", is.Issuer)
+		}
+		if seen[IssuerKey(is.Issuer)] {
 			return fmt.Errorf("issuer %q listed twice", is.Issuer)
 		}
-		seen[is.Issuer] = true
+		seen[IssuerKey(is.Issuer)] = true
+		if len(is.HumanFlows) > 0 && is.ClientID == "" {
+			return fmt.Errorf("issuer %q: human_flows need the public client_id people log in with", is.Issuer)
+		}
+		if is.Service != nil {
+			if is.Service.Claim == "" {
+				return fmt.Errorf("issuer %q: service.claim is required", is.Issuer)
+			}
+			if is.Service.ClientClaim == "" {
+				is.Service.ClientClaim = "azp"
+			}
+		}
 		if len(is.Algorithms) == 0 {
 			is.Algorithms = []string{"RS256", "ES256"}
 		}
@@ -152,6 +186,9 @@ func (c *Config) validate() error {
 		if err := checkPrincipal(r.Principal); err != nil {
 			return fmt.Errorf("policy.create: %w", err)
 		}
+		if len(r.Names) == 0 {
+			return fmt.Errorf("policy.create: %s has no names", r.Principal)
+		}
 		for _, n := range r.Names {
 			if _, err := path.Match(n, ""); err != nil {
 				return fmt.Errorf("policy.create: bad pattern %q", n)
@@ -169,6 +206,9 @@ func checkPrincipal(p string) error {
 	}
 	return fmt.Errorf("principal %q: role:, group:, subject: or client: expected", p)
 }
+
+// IssuerKey is how an issuer is looked up by a token's iss: without a trailing '/'.
+func IssuerKey(issuer string) string { return strings.TrimRight(issuer, "/") }
 
 // IsLoopback says whether host (a name or an IP) is this machine.
 func IsLoopback(host string) bool {
