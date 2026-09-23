@@ -1,9 +1,11 @@
 #include "tresor_extension.hpp"
 
+#include "duckdb/catalog/catalog_transaction.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/secret/secret.hpp"
+#include "tresor_storage.hpp"
 
 // The `tresor` secret type (specs/002): how a SERVICE logs in to a secrets service. Found by the ATTACH
 // path through its SCOPE ('tresor:<host>'), or named by ATTACH ... (SECRET name). People need no secret.
@@ -73,6 +75,41 @@ unique_ptr<BaseSecret> CreateTresorSecret(ClientContext &context, CreateSecretIn
 	return std::move(secret);
 }
 
+//! The tresor provider of s3 / r2 / gcs (specs/006): httpfs's REFRESH auto re-creates a dynamic service
+//! secret through it, IN the service's storage, with the options of its refresh_info. It fetches fresh
+//! material from the service; its StoreSecret is a refresh, not a write.
+unique_ptr<BaseSecret> CreateTresorProvided(ClientContext &context, CreateSecretInput &input) {
+	auto option = [&](const char *name) {
+		auto entry = input.options.find(name);
+		if (entry == input.options.end() || entry->second.IsNull()) {
+			throw InvalidInputException("tresor provider: %s is required", StringUtil::Upper(name));
+		}
+		return entry->second.ToString();
+	};
+	auto service = option("tresor_service");
+	auto name = option("tresor_secret");
+	// service material stays in the service's own storage: never memory, never a file on disk
+	if (!StringUtil::CIEquals(input.storage_type.GetIdentifierName(), service)) {
+		throw InvalidInputException("tresor provider: a secret of the service %s is created only IN %s", service,
+		                            service);
+	}
+	auto storage = tresor::FindStorage(context, service);
+	if (!storage) {
+		throw InvalidInputException("tresor provider: %s is not an attached tresor service", service);
+	}
+	auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
+	auto fresh = storage->RefreshMaterial(name, &transaction);
+	if (!StringUtil::CIEquals(fresh->GetType().GetIdentifierName(), input.type.GetIdentifierName())) {
+		throw InvalidInputException("tresor provider: the secret %s of %s is of type %s, not %s", name, service,
+		                            fresh->GetType().GetIdentifierName(), input.type.GetIdentifierName());
+	}
+	auto key_value = dynamic_cast<const KeyValueSecret *>(fresh.get());
+	if (!key_value) {
+		throw InternalException("tresor provider: service material is not a key-value secret");
+	}
+	return make_uniq<KeyValueSecret>(*key_value);
+}
+
 } // namespace
 
 void RegisterTresorSecret(ExtensionLoader &loader) {
@@ -91,6 +128,17 @@ void RegisterTresorSecret(ExtensionLoader &loader) {
 		function.named_parameters[name] = LogicalType::VARCHAR;
 	}
 	loader.RegisterFunction(function);
+
+	// the S3-family types are httpfs's: duckdb checks a type at CREATE, not here, so httpfs may load later
+	for (auto type : {"s3", "r2", "gcs"}) {
+		CreateSecretFunction provided;
+		provided.secret_type = type;
+		provided.provider = Identifier("tresor");
+		provided.function = CreateTresorProvided;
+		provided.named_parameters["tresor_service"] = LogicalType::VARCHAR;
+		provided.named_parameters["tresor_secret"] = LogicalType::VARCHAR;
+		loader.RegisterFunction(provided);
+	}
 }
 
 } // namespace duckdb

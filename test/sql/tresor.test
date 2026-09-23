@@ -26,11 +26,12 @@ ATTACH 'secrets.example.invalid:8443/v1' AS corp (TYPE tresor);
 
 # why no scheme: before it looks at the type, duckdb's ATTACH treats an http(s):// path as a remote
 # database FILE - it demands httpfs and forces READ_ONLY (DatabaseManager::AttachDatabase,
-# FileSystem::IsRemoteFile). A scheme would drag both into every tresor attach.
+# FileSystem::IsRemoteFile). A scheme would drag both into every tresor attach. Where httpfs is loaded
+# (this test shell links it since specs/006), the path reaches tresor, which refuses the scheme itself.
 statement ok
 SET autoload_known_extensions = false;
 
 statement error
 ATTACH 'tresor:https://secrets.example.invalid' AS corp;
 ----
-<REGEX>:.*requires extension 'httpfs'.*
+<REGEX>:.*(requires extension 'httpfs'|name the service without a scheme).*

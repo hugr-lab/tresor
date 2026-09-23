@@ -65,7 +65,10 @@ cd website && npm ci && npx docusaurus build                               # doc
 test could prove that `ATTACH 'tresor:…'` loads the installed extension. So `require tresor` does not
 work — load by build path (`LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension'`), or
 `INSTALL tresor FROM '__BUILD_DIRECTORY__/repository'` into `SET extension_directories = [...]`
-(`extension_directory` is deprecated on 2.0). In gate tests set `autoload_known_extensions = false`. Tests that need a service
+(`extension_directory` is deprecated on 2.0). In gate tests set `autoload_known_extensions = false`.
+The test build also has **httpfs** (`extension_config.cmake`, at the commit duckdb's 2.0 tree pins in
+`duckdb/.github/config/extensions/httpfs.cmake`; move both with the duckdb pin): the s3/gcs/r2 types and
+the real `REFRESH auto` path (specs/006). tresor itself does not depend on it. Tests that need a service
 `require-env TRESOR_TEST_PORT` and run through `scripts/ci/test_attach.sh` (the fake speaks http on
 loopback, so they ATTACH with `INSECURE_HTTP true`; `BROWSER` is the fake browser).
 

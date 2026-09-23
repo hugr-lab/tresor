@@ -99,6 +99,19 @@ SECRETS = {
         "type": "mssql", "scope": ["mssql://bare"], "permissions": ["use"],
         "params": {"port": 1433}, "redact_keys": [],
     },
+    # a dynamic s3 secret for the REFRESH auto path (specs/006): each mint is a new key, the endpoint is this
+    # fake's S3 (which refuses the first key it sees); its comment counts the writes the service received
+    "dyn_s3": {
+        "type": "s3", "scope": ["s3://dynbucket"], "owner": "role:other", "permissions": ["use"], "dynamic": True,
+        "lifetime": 600, "params": {"key_id": "DYN-S3"}, "redact_keys": ["secret"],
+    },
+    # a static s3 secret someone stored with httpfs's refresh recipe: the client must drop it
+    "static_with_refresh": {
+        "type": "s3", "scope": ["s3://staticbucket"], "owner": "role:other", "permissions": ["use"],
+        "params": {"key_id": "STATIC", "refresh": "auto",
+                   "refresh_info": {"type": "STRUCT(key_id VARCHAR)", "value": {"key_id": "STATIC"}}},
+        "redact_keys": [],
+    },
     # a name another tool gave, in mixed case: the service compares names exactly
     "Mixed_Case": {
         "type": "http", "scope": ["https://mixed.example"], "owner": "role:other",
@@ -111,13 +124,15 @@ SECRETS = {
     },
 }
 FETCHED = {}  # secret name -> material fetches
+WRITES = [0]  # PUT / DELETE / PATCH the service received
 
 
 def descriptor(name, sec):
     # a written secret carries its own comment and version; the seeded ones count their material fetches
     return {
         "name": name, "type": sec["type"], "provider": sec.get("provider", "config"), "scope": sec["scope"],
-        "comment": sec["comment"] if "comment" in sec else "fetched %d" % FETCHED.get(name, 0),
+        "comment": sec["comment"] if "comment" in sec else (
+            "writes %d" % WRITES[0] if name == "dyn_s3" else "fetched %d" % FETCHED.get(name, 0)),
         "owner": sec.get("owner", "role:admins"),
         "created_at": "2026-09-01T10:00:00Z", "updated_at": "2026-09-10T08:30:00Z",
         "version": str(sec.get("version", 7)),
@@ -174,8 +189,53 @@ class Handler(BaseHTTPRequestHandler):
             return parts[1], "/" + (parts[2] if len(parts) > 2 else "")
         return "", path
 
+    # --- a minimal S3 (specs/006): /dynbucket/<key>, refusing the first access key it ever sees ---------
+    S3_OBJECT = b"hello from s3\n"
+
+    def s3(self, head):
+        auth = self.headers.get("Authorization", "")
+        key_id = auth.split("Credential=")[1].split("/")[0] if "Credential=" in auth else ""
+        if not key_id or key_id.endswith("-1"):
+            body = b"<Error><Code>AccessDenied</Code><Message>expired</Message></Error>"
+            self.send_response(403)
+            self.send_header("Content-Type", "application/xml")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if not head:
+                self.wfile.write(body)
+            return
+        data = self.S3_OBJECT
+        status, start, end = 200, 0, len(data) - 1
+        rng = self.headers.get("Range", "")
+        if rng.startswith("bytes="):
+            first, _, last = rng[len("bytes="):].partition("-")
+            start, end = int(first or 0), min(int(last) if last else len(data) - 1, len(data) - 1)
+            status = 206
+        chunk = data[start:end + 1]
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(chunk) if not head else len(data)))
+        self.send_header("Last-Modified", "Wed, 01 Jan 2026 00:00:00 GMT")
+        self.send_header("ETag", '"s3-object"')
+        if status == 206:
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, len(data)))
+        self.end_headers()
+        if not head:
+            self.wfile.write(chunk)
+
+    def do_HEAD(self):
+        if urllib.parse.urlparse(self.path).path.startswith("/dynbucket/"):
+            self.s3(True)
+            return
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
+        if url.path.startswith("/dynbucket/"):
+            self.s3(False)
+            return
         query = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
         base = self.base()
         realm, rest = self.split(url.path)
@@ -279,7 +339,12 @@ class Handler(BaseHTTPRequestHandler):
                 FETCHED[name] = FETCHED.get(name, 0) + 1
                 body = dict(descriptor(name, sec), params=dict(sec["params"]), redact_keys=sec["redact_keys"],
                             expires_at=None)
-                if sec.get("dynamic"):
+                if name == "dyn_s3":
+                    body["params"].update({
+                        "key_id": "DYN-S3-%d" % FETCHED[name], "secret": {"type": "VARCHAR", "value": "s"},
+                        "region": "us-east-1", "endpoint": "127.0.0.1:%d" % self.server.server_address[1],
+                        "url_style": "path", "use_ssl": {"type": "BOOLEAN", "value": False}})
+                elif sec.get("dynamic"):
                     body["params"]["key_id"] = "DYN-%d" % FETCHED[name]
                     body["expires_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ",
                                                        time.gmtime(time.time() + sec["lifetime"]))
@@ -302,6 +367,7 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length) or b"null")
 
     def do_PUT(self):
+        WRITES[0] += 1
         realm, rest = self.split(urllib.parse.urlparse(self.path).path)
         if not rest.startswith("/v1/secrets/") or not self.authorised():
             if rest.startswith("/v1/secrets/"):
@@ -346,6 +412,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200 if exists else 201, descriptor(name, SECRETS[name]))
 
     def do_DELETE(self):
+        WRITES[0] += 1
         realm, rest = self.split(urllib.parse.urlparse(self.path).path)
         if not rest.startswith("/v1/secrets/"):
             self.send(404, {"type": "not_found"})
@@ -368,6 +435,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send(204, b"", "text/plain")
 
     def do_PATCH(self):
+        WRITES[0] += 1
         realm, rest = self.split(urllib.parse.urlparse(self.path).path)
         if not rest.startswith("/v1/secrets/"):
             self.send(404, {"type": "not_found"})

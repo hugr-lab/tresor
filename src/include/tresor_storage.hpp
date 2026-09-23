@@ -70,6 +70,9 @@ public:
 	//! After a write: the list is stale, the name's material gone (and a refresh already under way
 	//! cannot store the list it fetched before the write).
 	void Invalidate(const string &name);
+	//! Fresh material for a listed secret, bypassing the cache (the tresor provider: httpfs's REFRESH auto).
+	unique_ptr<const BaseSecret> RefreshMaterial(const string &name, optional_ptr<CatalogTransaction> transaction);
+
 	//! The service's own spelling of a secret's name: DuckDB compares names case-insensitively, the
 	//! service exactly - a listed secret is addressed as the service lists it, a new one in lower case.
 	string ServiceName(const string &name);
@@ -77,6 +80,7 @@ public:
 private:
 	struct Material {
 		string version;
+		int64_t fetched_at = 0;
 		int64_t valid_until = 0;
 		unique_ptr<const BaseSecret> secret;
 	};
@@ -99,6 +103,9 @@ private:
 	uint64_t generation = 0; // bumped by every write: a refresh started before it does not land
 	unordered_map<string, Material> materials;
 };
+
+//! The tresor storage registered under `name` in this instance, if any (never registers one).
+optional_ptr<TresorSecretStorage> FindStorage(ClientContext &context, const string &name);
 
 //! The storage for `name` in this instance: registered (inactive) at the first ATTACH of the name,
 //! before any login - a name duckdb's secret manager already uses is refused up front.
