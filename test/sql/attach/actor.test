@@ -118,7 +118,7 @@ actor_not_allowed
 query I
 SELECT acl_stub_stamp(99);
 ----
-1
+2
 
 statement error
 SELECT * FROM corp.whoami();
@@ -131,7 +131,7 @@ SELECT count(*) FROM which_secret('s3://acting/x.parquet', 's3') WHERE storage =
 0
 
 query I
-SELECT acl_stub_stamp(1);
+SELECT acl_stub_stamp(2);
 ----
 99
 

@@ -103,8 +103,16 @@ TresorActor::~TresorActor() {
 
 void TresorActor::CheckHooks(DatabaseInstance &db) {
 	string why;
-	if (!acl::AclSessionHooks::Reach(db.GetObjectCache(), why)) {
+	auto hooks = acl::AclSessionHooks::Reach(db.GetObjectCache(), why);
+	if (!hooks) {
 		throw InvalidInputException("tresor: ACT_FOR_SESSIONS cannot observe duckdb-acl's sessions: %s", why);
+	}
+	// the registry exists on either side's first touch: only a publisher's mark says sessions are published
+	// here (ACLC 2) - without it every statement would look like the node's own work
+	string publisher;
+	if (!hooks->Publisher(publisher)) {
+		throw InvalidInputException("tresor: ACT_FOR_SESSIONS needs duckdb-acl, and nothing publishes acl sessions "
+		                            "in this instance - LOAD acl before this ATTACH");
 	}
 }
 

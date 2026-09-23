@@ -117,6 +117,12 @@ void StampFun(DataChunk &args, ExpressionState &state, Vector &result) {
 } // namespace
 
 void AclStubExtension::Load(ExtensionLoader &loader) {
+	// the publisher's mark (ACLC 2), as duckdb-acl sets it at load: sessions are published in this instance
+	string why;
+	auto hooks = acl::AclSessionHooks::Reach(loader.GetDatabaseInstance().GetObjectCache(), why);
+	if (hooks) {
+		hooks->MarkPublisher("acl_stub (ACLC 2)");
+	}
 	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
 	config.AddExtensionOption(Identifier("acl_stub_session"), "acl_stub: the session the next statements run under",
 	                          LogicalType::VARCHAR, Value(""), OnSessionSetting);

@@ -65,6 +65,8 @@ CREATE SECRET node (TYPE tresor, FLOW client_credentials, ISSUER 'https://idp.ex
 ATTACH 'tresor:secrets.example' AS corp (SECRET node, ACT_FOR_SESSIONS true);
 ```
 
+Load duckdb-acl before this ATTACH: `ACT_FOR_SESSIONS` is refused where nothing publishes acl sessions.
+
 When a user's acl session opens, tresor:
 1. exchanges the session's token at the identity provider for one meant for the service;
 2. trades that token for a delegation grant;
