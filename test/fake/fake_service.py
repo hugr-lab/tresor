@@ -280,7 +280,9 @@ class Handler(BaseHTTPRequestHandler):
                 "protocol": "duckdb-secrets/2" if realm == "wrong" else "duckdb-secrets/1",
                 "api": prefix,
                 "issuers": issuers,
-                "capabilities": {"write": False, "annotate": False, "dynamic": False, "delegation": False},
+                # delegation is offered everywhere but the expiring realm (specs/007: the client checks it)
+                "capabilities": {"write": True, "annotate": True, "dynamic": True,
+                                 "delegation": realm != "expiring"},
             })
             return
         if rest == "/v1/whoami":
@@ -319,6 +321,14 @@ class Handler(BaseHTTPRequestHandler):
             if rest == "/v1/secrets":
                 with LOCK:
                     self.send(200, [descriptor(n, s) for n, s in SECRETS.items()])
+                return
+            if rest.endswith("/delegations"):
+                sec = SECRETS.get(urllib.parse.unquote(rest[len("/v1/secrets/"):-len("/delegations")]))
+                if sec is None:
+                    self.problem(404, "not_found", "no secret")
+                    return
+                with LOCK:
+                    self.send(200, list(sec.get("rules", {}).values()))
                 return
             if rest.endswith("/grants"):
                 sec = SECRETS.get(urllib.parse.unquote(rest[len("/v1/secrets/"):-len("/grants")]))
@@ -425,6 +435,13 @@ class Handler(BaseHTTPRequestHandler):
         with LOCK:
             WRITES[parts[0]] = WRITES.get(parts[0], 0) + 1
             sec = SECRETS.get(parts[0])
+            if len(parts) == 3 and parts[1] == "delegations":
+                if sec is None or parts[2] not in sec.get("rules", {}):
+                    self.problem(404, "not_found", "no such rule")
+                    return
+                del sec["rules"][parts[2]]
+                self.send(204, b"", "text/plain")
+                return
             if sec is None or (len(parts) == 3 and parts[2] not in sec.get("grants", {})):
                 self.problem(404, "not_found", "no such secret or grant")
                 return
@@ -459,6 +476,25 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         url = urllib.parse.urlparse(self.path)
         realm, rest = self.split(url.path)
+        if rest.startswith("/v1/secrets/") and rest.endswith("/delegations"):
+            if not self.authorised():
+                return
+            name = urllib.parse.unquote(rest[len("/v1/secrets/"):-len("/delegations")])
+            body = self.body()
+            with LOCK:
+                sec = SECRETS.get(name)
+                if sec is None:
+                    self.problem(404, "not_found", "no secret")
+                    return
+                if body.get("mode") != "shared":
+                    self.problem(422, "invalid_secret", "only shared rules here")
+                    return
+                rules = sec.setdefault("rules", {})
+                rule_id = "d-%d" % (len(rules) + 1)
+                rules[rule_id] = dict(body, id=rule_id)
+                WRITES[name] = WRITES.get(name, 0) + 1
+                self.send(201, rules[rule_id])
+            return
         form = self.form()
         if realm not in ISSUERS:
             self.send(404, {"type": "not_found"})

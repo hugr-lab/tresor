@@ -51,6 +51,9 @@ policy:
   create:
     - {principal: role:analysts, names: ["team_a_*"]}
     - {principal: client:etl, names: ["*"]}
+  actors:
+    - {principal: client:node, verbs: [use]}
+    - {principal: client:admin-node, verbs: [use, annotate]}
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -322,8 +325,8 @@ func TestGrantCannotEscalate(t *testing.T) {
 	if r := f.do("DELETE", "/v1/secrets/team_a_x/grants/d", f.alice, ""); r.status != 404 {
 		t.Fatalf("delete a missing grant: %d", r.status)
 	}
-	if r := f.do("PUT", "/v1/secrets/team_a_x/grants/e", f.alice, `{"principal":"role:x","verbs":["delegate"]}`); r.status != 422 {
-		t.Fatalf("delegate is not grantable while delegation is off: %d", r.status)
+	if r := f.do("PUT", "/v1/secrets/team_a_x/grants/e", f.alice, `{"principal":"role:x","verbs":["delegate"]}`); r.status != 200 {
+		t.Fatalf("delegate is grantable: %d", r.status)
 	}
 }
 

@@ -216,8 +216,8 @@ Optional (`capabilities.delegation`). A secret with no rules is **not delegated*
 | Method | Path | Meaning |
 | --- | --- | --- |
 | `GET` | `/v1/secrets/{name}/delegations` | the secret's rules — requires `delegate` |
-| `POST` | `/v1/secrets/{name}/delegations` | add a rule |
-| `DELETE` | `/v1/secrets/{name}/delegations/{id}` | remove a rule |
+| `POST` | `/v1/secrets/{name}/delegations` | add a rule → `201` with the rule, its `id` assigned by the service |
+| `DELETE` | `/v1/secrets/{name}/delegations/{id}` | remove a rule → `204`, or `404` |
 
 ```json
 {
@@ -231,27 +231,49 @@ Optional (`capabilities.delegation`). A secret with no rules is **not delegated*
 }
 ```
 
+- `actors` are `client:` principals, and `subjects` are any principals.
 - `mode: "user"` — the service issues a credential of the user's own; the resource sees the person.
+  A service that cannot issue personal credentials refuses the rule with `422 invalid_secret`.
 - `mode: "shared"` — the actor receives the shared secret, only to act for that user; the user needs
   no `use` verb.
 - `operations` / `scope` narrow the credential the service issues; enforcement is the credential's.
+  `ttl` bounds the delegated material's lifetime (seconds).
+
+### Actors
+
+A service decides which servers may act for users at all, and for which verbs. It denies management
+verbs (`update`, `delete`, `annotate`, `grant`, `delegate`, and creating) unless configured: a
+compromised server must not manage secrets for everyone who ever connected to it.
+- A server that may not act for users, or not for the verb at hand, gets `403 actor_not_allowed`.
+- **Material** through a grant also needs a rule that names the actor and one of the user's
+  principals. Otherwise the answer is `403 not_delegable`, even when the user holds `use`.
 
 ### Acting for a user
 
 A server obtains a **delegation grant** when a user's session opens on it:
 
-`POST /v1/delegations` — authenticated as the server, with the user's access token in the body:
+`POST /v1/delegations` — authenticated as the server, with the user's access token for this service
+in the body:
 
 ```json
 {"subject_token": "<user's access token>", "ttl": 28800}
 ```
 
-→ `{"id": "…", "subject": "…", "actor": "client:acl-node-prod", "expires_at": "…"}`
+→ `201 {"id": "…", "subject": "…", "actor": "client:acl-node-prod", "expires_at": "…"}`
 
-From then on the server calls any resource with its own token **and** `Delegation: <id>`. The
-service evaluates the **user's** permissions, requires that the actor may act for users for the verb
-at hand (for material: a matching delegation rule), and audits both. A grant is bound to its actor;
-it is a bearer credential and is revocable centrally.
+- **The subject token** is verified like any bearer token. The user's principals are taken at the
+  exchange; a new exchange picks up changed roles.
+- **Lifetime.** A grant may outlive the user's token, because a session outlives an access token.
+  The service caps `ttl`.
+- **Using it.** From then on the server calls any resource with its own token **and**
+  `Delegation: <id>`. The service evaluates the **user's** permissions, applies the actor rules
+  above, and audits both. `whoami` answers the user, with `actor` set to the server's `client:`
+  principal. `GET /v1/secrets` lists what the user sees, plus the secrets delegated to this server
+  for this user.
+- **Binding.** A grant is bound to its actor. Presented with another caller's token it is refused
+  with `401 unauthenticated`: a stolen grant alone is useless.
+- **Revocation.** `DELETE /v1/delegations/{id}`, by its actor or an admin, answers `204`. A grant is a
+  bearer credential: never logged, and revocable centrally.
 
 ## Errors
 

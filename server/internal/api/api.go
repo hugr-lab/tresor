@@ -26,9 +26,8 @@ import (
 // Protocol is the discovery document's protocol string.
 const Protocol = "duckdb-secrets/1"
 
-// the per-secret verbs, in the protocol's order; `delegate` joins with delegation (capabilities says it
-// is off)
-var allVerbs = []string{"use", "update", "delete", "annotate", "grant"}
+// the per-secret verbs, in the protocol's order
+var allVerbs = []string{"use", "update", "delete", "annotate", "grant", "delegate"}
 
 // Server serves the protocol.
 type Server struct {
@@ -37,6 +36,7 @@ type Server struct {
 	store    *store.Store
 	log      *slog.Logger
 	now      func() time.Time
+	grants   grants
 }
 
 // New wires a server; the verifier and the store are the caller's.
@@ -58,6 +58,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/secrets/{name}/grants", s.authed(s.listGrants))
 	mux.HandleFunc("PUT /v1/secrets/{name}/grants/{id}", s.authed(s.putGrant))
 	mux.HandleFunc("DELETE /v1/secrets/{name}/grants/{id}", s.authed(s.deleteGrant))
+	mux.HandleFunc("GET /v1/secrets/{name}/delegations", s.authed(s.listRules))
+	mux.HandleFunc("POST /v1/secrets/{name}/delegations", s.authed(s.addRule))
+	mux.HandleFunc("DELETE /v1/secrets/{name}/delegations/{id}", s.authed(s.removeRule))
+	mux.HandleFunc("POST /v1/delegations", s.authed(s.exchange))
+	mux.HandleFunc("DELETE /v1/delegations/{id}", s.authed(s.revokeGrant))
 	// anything else - an unknown path, a known path with another method - is a problem document too
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		problem(w, http.StatusNotFound, "not_found", "no such resource: "+r.Method+" "+r.URL.Path)
@@ -95,12 +100,21 @@ func (s *Server) logged(next http.Handler) http.Handler {
 		start := time.Now()
 		holder := &auth.Caller{}
 		next.ServeHTTP(rec, r.WithContext(context.WithValue(r.Context(), loggedCallerKey{}, holder)))
-		s.log.Info("request", "method", r.Method, "path", r.URL.Path, "status", rec.status,
+		s.log.Info("request", "method", r.Method, "path", loggedPath(r.URL.Path), "status", rec.status,
 			"subject", holder.Subject, "ms", time.Since(start).Milliseconds())
 	})
 }
 
 type loggedCallerKey struct{}
+
+// loggedPath is a request's path as logged: a delegation grant's id is a bearer credential, so the path
+// that names one (DELETE /v1/delegations/{id}) is logged without it.
+func loggedPath(path string) string {
+	if i := strings.Index(path, "/v1/delegations/"); i >= 0 {
+		return path[:i] + "/v1/delegations/…"
+	}
+	return path
+}
 
 // authed verifies the bearer token; a failure is 401 unauthenticated with the reason in the log only.
 func (s *Server) authed(next http.HandlerFunc) http.HandlerFunc {
@@ -118,8 +132,22 @@ func (s *Server) authed(next http.HandlerFunc) http.HandlerFunc {
 			problem(w, http.StatusUnauthorized, "unauthenticated", "token missing, invalid or expired")
 			return
 		}
+		if r.Header.Get("Delegation") != "" {
+			// a server acting for a user: its own token proved who it is, the grant says for whom
+			user, err := s.delegated(r, caller)
+			if err != nil {
+				s.log.Warn("delegation refused", "actor", caller.Owner(), "reason", err.Error())
+				problem(w, http.StatusUnauthorized, "unauthenticated", "the delegation grant is not valid for this caller")
+				return
+			}
+			caller = user
+		}
 		if holder, ok := r.Context().Value(loggedCallerKey{}).(*auth.Caller); ok {
-			*holder = auth.Caller{Subject: caller.Owner()}
+			subject := caller.Owner() // never the grant id
+			if caller.Actor != "" {
+				subject += " via " + caller.Actor
+			}
+			*holder = auth.Caller{Subject: subject}
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, caller)))
 	}
@@ -164,8 +192,31 @@ func (s *Server) isAdmin(c *auth.Caller) bool {
 	return slices.ContainsFunc(s.cfg.Policy.Admins, c.Has)
 }
 
-// verbs is what the caller may do with sec: every verb for an admin or the owner, else its grants'.
+// verbs is what the caller may do with sec. Without a grant: every verb for an admin or the owner, else
+// its grants'. Under a grant: the user's verbs the actor may exercise - but `use` only through a rule
+// (a secret without a rule is not delegated), and then even if the user does not hold `use` (shared).
 func (s *Server) verbs(c *auth.Caller, sec *store.Secret) []string {
+	user := s.userVerbs(c, sec)
+	if c.Actor == "" {
+		return user
+	}
+	allowed := s.actorVerbs(c.Actor)
+	var out []string
+	for _, v := range allVerbs {
+		switch {
+		case v == "use":
+			if slices.Contains(allowed, "use") && ruleMatches(sec, c) {
+				out = append(out, v)
+			}
+		case slices.Contains(user, v) && slices.Contains(allowed, v):
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// userVerbs is what the user alone may do: every verb for an admin or the owner, else its grants'.
+func (s *Server) userVerbs(c *auth.Caller, sec *store.Secret) []string {
 	if s.isAdmin(c) || c.Owner() == sec.Owner {
 		return slices.Clone(allVerbs)
 	}
@@ -200,6 +251,9 @@ func (s *Server) createPatterns(c *auth.Caller) (all bool, patterns []string) {
 }
 
 func (s *Server) mayCreate(c *auth.Caller, name string) bool {
+	if c.Actor != "" && !slices.Contains(s.actorVerbs(c.Actor), "create") {
+		return false // creating for users is a management verb: denied unless the actor policy lists it
+	}
 	all, patterns := s.createPatterns(c)
 	if all {
 		return true
@@ -212,12 +266,13 @@ func (s *Server) mayCreate(c *auth.Caller, name string) bool {
 	return false
 }
 
-// visible fetches a secret the caller holds any verb on; an invisible one is the same 404 as a missing
-// one, so a name's existence does not leak.
+// visible fetches a secret the caller holds any verb on (under a grant: the user sees it, or a rule
+// delegates it); an invisible one is the same 404 as a missing one, so a name's existence does not leak.
 func (s *Server) visible(w http.ResponseWriter, c *auth.Caller, name string) (*store.Secret, []string, bool) {
 	sec, err := s.store.Get(name)
 	if err == nil {
-		if verbs := s.verbs(c, sec); len(verbs) > 0 {
+		verbs := s.verbs(c, sec)
+		if len(verbs) > 0 || (c.Actor != "" && len(s.userVerbs(c, sec)) > 0) {
 			return sec, verbs, true
 		}
 	}
@@ -250,7 +305,7 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 		"api":      strings.TrimRight(s.cfg.PublicURL, "/"),
 		"issuers":  issuers,
 		"capabilities": map[string]bool{
-			"write": true, "annotate": true, "dynamic": false, "delegation": false,
+			"write": true, "annotate": true, "dynamic": false, "delegation": true,
 		},
 	})
 }
@@ -273,10 +328,17 @@ func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 		"issuer":      c.Issuer,
 		"subject":     c.Subject,
 		"roles":       roles,
-		"actor":       nil,
+		"actor":       nilIfEmpty(c.Actor),
 		"expires_at":  c.ExpiresAt.UTC().Format(time.RFC3339),
 		"permissions": map[string]any{"create": create},
 	})
+}
+
+func nilIfEmpty(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
 }
 
 // --- secrets -----------------------------------------------------------------------------------------
@@ -310,7 +372,8 @@ func (s *Server) listSecrets(w http.ResponseWriter, r *http.Request) {
 		if typ != "" && !strings.EqualFold(sec.Type, typ) {
 			continue
 		}
-		if verbs := s.verbs(c, sec); len(verbs) > 0 {
+		verbs := s.verbs(c, sec)
+		if len(verbs) > 0 || (c.Actor != "" && len(s.userVerbs(c, sec)) > 0) {
 			out = append(out, descriptor(sec, verbs))
 		}
 	}
@@ -324,7 +387,14 @@ func (s *Server) getSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !slices.Contains(verbs, "use") {
-		problem(w, http.StatusForbidden, "no_verb", "the caller's roles do not hold use")
+		switch {
+		case c.Actor != "" && !slices.Contains(s.actorVerbs(c.Actor), "use"):
+			problem(w, http.StatusForbidden, "actor_not_allowed", "this server may not use secrets for users")
+		case c.Actor != "":
+			problem(w, http.StatusForbidden, "not_delegable", "no delegation rule lets this server use it for this user")
+		default:
+			problem(w, http.StatusForbidden, "no_verb", "the caller's roles do not hold use")
+		}
 		return
 	}
 	body := descriptor(sec, verbs)
@@ -484,18 +554,20 @@ func (s *Server) mutate(w http.ResponseWriter, r *http.Request, verb string,
 	c := callerOf(r)
 	name := r.PathValue("name")
 	var missing, forbidden bool
+	var refusedOn *store.Secret
 	saved, err := s.store.Update(name, func(current *store.Secret) (*store.Secret, error) {
 		if current == nil {
 			missing = true
 			return nil, store.ErrNotFound
 		}
 		verbs := s.verbs(c, current)
-		if len(verbs) == 0 {
+		if len(verbs) == 0 && !(c.Actor != "" && len(s.userVerbs(c, current)) > 0) {
 			missing = true
 			return nil, store.ErrNotFound
 		}
 		if !slices.Contains(verbs, verb) {
 			forbidden = true
+			refusedOn = current
 			return nil, errors.New("refused")
 		}
 		return fn(current)
@@ -504,7 +576,7 @@ func (s *Server) mutate(w http.ResponseWriter, r *http.Request, verb string,
 	case missing:
 		problem(w, http.StatusNotFound, "not_found", fmt.Sprintf("no secret %q", name))
 	case forbidden:
-		problem(w, http.StatusForbidden, "no_verb", "the caller's roles do not hold "+verb)
+		s.refuse(w, c, refusedOn, verb)
 	case errors.Is(err, errNotHeld):
 		problem(w, http.StatusForbidden, "no_verb", strings.TrimPrefix(err.Error(), errNotHeld.Error()+": "))
 	case errors.Is(err, errInvalid):
@@ -566,7 +638,7 @@ func (s *Server) listGrants(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !slices.Contains(verbs, "grant") {
-		problem(w, http.StatusForbidden, "no_verb", "the caller's roles do not hold grant")
+		s.refuse(w, callerOf(r), sec, "grant")
 		return
 	}
 	writeJSON(w, http.StatusOK, grantList(sec))

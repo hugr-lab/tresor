@@ -26,6 +26,19 @@ type Caller struct {
 	Principals []string // subject:, role:, group:, client:
 	Service    bool     // a client-credentials token (the issuer's service rule): Principals carries client:
 	ExpiresAt  time.Time
+	// Actor is set when a server acts for this user through a delegation grant (specs/007): its client:
+	// principal. The rest of the Caller is the user's, as taken at the grant's exchange.
+	Actor string
+}
+
+// Client is the caller's client: principal (a service), or "".
+func (c *Caller) Client() string {
+	for _, p := range c.Principals {
+		if strings.HasPrefix(p, "client:") {
+			return p
+		}
+	}
+	return ""
 }
 
 // Owner is the principal a caller's creations belong to: always its subject: - iss and sub, unique

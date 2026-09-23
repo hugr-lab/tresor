@@ -143,6 +143,18 @@ CALL corp.revoke_secret('lake_rw', 'role:data_team');
 DROP PERSISTENT SECRET lake_rw FROM corp;
 ```
 
+Where the service offers delegation, a secret's owner can let a server (a DuckDB node behind a
+gateway) use it **for** certain users. The server never receives the secret on its own authority:
+
+```sql
+CALL corp.add_delegation('crm_prod', ['client:acl-node-prod'], ['role:analysts']);   -- shared by default
+CALL corp.add_delegation('lake_team_a', ['client:acl-node-prod'], ['role:team_a'],
+                         mode := 'user', operations := ['read'], scope := ['s3://lake/team-a/'],
+                         ttl := INTERVAL 1 HOUR);
+FROM corp.delegations('crm_prod');
+CALL corp.remove_delegation('crm_prod', 'd-…');
+```
+
 The service decides whether each of these is allowed, from your role. Some things to know:
 - **Names.** DuckDB compares secret names case-insensitively. A new secret is stored in lower case,
   and an existing one is found by any spelling.

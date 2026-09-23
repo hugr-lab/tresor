@@ -16,3 +16,5 @@ policy:
   create:
     - {principal: role:analysts, names: ["team_a_*"]}
     - {principal: client:etl, names: ["*"]}
+  actors:                                    # servers that may act for users (specs/007)
+    - {principal: client:acl-node, verbs: [use]}
