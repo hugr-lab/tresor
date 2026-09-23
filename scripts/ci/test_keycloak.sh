@@ -102,6 +102,11 @@ else
 fi
 # with duckdb-acl itself (specs/008): TRESOR_ACL_EXTENSION names an acl.duckdb_extension built at this
 # repository's duckdb commit - a real acl session's statements run as its user, through the grant
+# (or the test build carries one: TRESOR_TEST_ACL_DIR, extension_config.cmake)
+built_acl="$(dirname "$unittest")/../extension/acl/acl.duckdb_extension"
+if [ -z "${TRESOR_ACL_EXTENSION:-}" ] && [ -f "$built_acl" ]; then
+	TRESOR_ACL_EXTENSION="$built_acl"
+fi
 if [ -n "${TRESOR_ACL_EXTENSION:-}" ]; then
 	cli="${TRESOR_CLI:-$(dirname "$unittest")/../duckdb}"
 	door_token="$(curl -sf -d grant_type=password -d client_id=acl-door -d username=alice -d password=alice-pass \
@@ -138,7 +143,10 @@ if [ -n "${TRESOR_ACL_EXTENSION:-}" ]; then
 	if [ "$acl_ok" = 1 ]; then
 		echo "test_keycloak: with duckdb-acl, a session's statements ran as its user, and its grant was revoked"
 	else
-		cat "$work/acl.log" >&2
+		# the checks and the errors only, and never a token (even a cut-off one) or a session handle: an error
+		# may quote a statement with alice's token or the handle in it
+		grep -E '^check:|Error' "$work/acl.log" |
+			sed -E -e 's/eyJ[A-Za-z0-9._-]*/<token>/g' -e 's/[0-9A-Fa-f]{32}/<handle>/g' >&2 || true
 		status=1
 	fi
 fi
