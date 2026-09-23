@@ -3,7 +3,7 @@
 tresor is the DuckDB client of an **external secrets service**: `ATTACH 'tresor:<host>' AS corp`
 logs in once through any OIDC provider and makes the secrets the caller's role may use part of
 DuckDB's own secret lookup; the attached catalog is also the storage for `CREATE PERSISTENT SECRET …
-IN corp` and the SQL surface for grants and delegation. The service is anything implementing the
+IN corp` and the SQL surface for grants (an administrator's). The service is anything implementing the
 open protocol `duckdb-secrets/1` — its normative text is **`website/docs/protocol.md`**.
 
 Read **[specs/001-architecture/spec.md](specs/001-architecture/spec.md)** first. Deeper research lives
@@ -94,8 +94,10 @@ pointers, braces always, short comments. 2.0 API drift to expect: `ScalarFunctio
 - **Never** write secret material to disk, log or emit material / tokens / session handles /
   delegation grant ids, or send an IdP token to anyone but its audience.
 - **Login directly with the IdP**, never through the secrets service.
-- **A server never adds its own authority** to a user's request (delegation: user's rights ∧ rule ∧
-  actor allowed).
+- **Admins manage, roles use** (specs/009): only administrators create secrets and grant `use`, to
+  roles and groups; an admin role implies no `use`. **Under a delegation grant** a server uses its own
+  grants for the user's statement (never its bare identity), and passes management on only for a user
+  who is an admin, as the service's policy allows.
 - **The protocol page is normative**: a change to requests/responses is a change to
   `website/docs/protocol.md`, in the same PR.
 - **Audit**: tresor's own hook (`duckdb-ext-common/contracts/tresor_audit.hpp` on `hooks/`),

@@ -24,5 +24,6 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | [004](004-secret-storage/spec.md) | the secret storage — the service's secrets in DuckDB's lookup, `corp.secrets()` | implemented |
 | [005](005-writes-grants/spec.md) | writes — `CREATE / DROP PERSISTENT SECRET … IN corp`, annotations, grants | implemented |
 | [006](006-dynamic-refresh/spec.md) | dynamic secrets — the `tresor` provider behind httpfs's `REFRESH auto` | implemented |
-| [007](007-delegation-rules/spec.md) | delegation — rules, grants, acting for a user (the service side and the rules' SQL) | implemented |
+| [007](007-delegation-rules/spec.md) | delegation — rules, grants, acting for a user (the service side and the rules' SQL) | superseded by 009 |
 | [008](008-delegation-actor/spec.md) | tresor as the actor — a duckdb-acl session's secrets are its user's (exchange, grant, revoke) | implemented |
+| [009](009-permissions-v2/spec.md) | permissions, simply — admins manage, roles use, a grant acts with the server's own rights | implemented |

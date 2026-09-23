@@ -68,13 +68,20 @@ curl -sf -o /dev/null -X PUT "http://127.0.0.1:$server_port/v1/secrets/conforman
 	echo "test_keycloak: seeding the conformance secret failed" >&2
 	exit 1
 }
+# creating is not using (specs/009): the etl service's role is granted use, as an admin grants it
+curl -sf -o /dev/null -X PUT "http://127.0.0.1:$server_port/v1/secrets/conformance_lake/grants/etl" \
+	-H "Authorization: Bearer $etl_token" -H 'Content-Type: application/json' \
+	-d '{"principal":"role:etl","verbs":["use"]}' || {
+	echo "test_keycloak: granting the conformance secret failed" >&2
+	exit 1
+}
 export TRESOR_CONFORMANCE_SECRET=conformance_lake TRESOR_CONFORMANCE_SECRET_TYPE=s3
 export TRESOR_CONFORMANCE_SECRET_PATH=s3://conformance-lake/x.parquet
 export TRESOR_CONFORMANCE_SECRET_KEY=key_id TRESOR_CONFORMANCE_SECRET_VALUE=AKIA-CONFORMANCE
 
 export TRESOR_CONFORMANCE_HOST=127.0.0.1:$server_port TRESOR_CONFORMANCE_INSECURE=true
 export TRESOR_CONFORMANCE_ISSUER="$issuer" TRESOR_CONFORMANCE_CLIENT_ID=etl TRESOR_CONFORMANCE_CLIENT_SECRET=etl-secret
-export TRESOR_CONFORMANCE_DELEGATION=1 TRESOR_CONFORMANCE_PERSON=1 TRESOR_KC_HOST=127.0.0.1:$server_port TRESOR_KC_ISSUER="$issuer"
+export TRESOR_CONFORMANCE_PERSON=1 TRESOR_KC_HOST=127.0.0.1:$server_port TRESOR_KC_ISSUER="$issuer"
 export BROWSER="$root/test/keycloak/browser.py" TRESOR_KC_USER=alice TRESOR_KC_PASS=alice-pass
 cd "$root"
 # a user's token as a duckdb-acl node receives it (specs/008): alice through the acl-door client, whose
@@ -87,7 +94,15 @@ TRESOR_KC_DOOR_TOKEN="$(curl -sf -d grant_type=password -d client_id=acl-door -d
 	echo "test_keycloak: no token for alice through acl-door - cannot run the actor test" >&2
 	exit 1
 }
-export TRESOR_KC_DOOR_TOKEN
+# ... and bob's, an admin: administration through the node (specs/009)
+TRESOR_KC_DOOR_TOKEN_ADMIN="$(curl -sf -d grant_type=password -d client_id=acl-door -d username=bob \
+	-d password=bob-pass -d scope=openid "$issuer/protocol/openid-connect/token" |
+	python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' || true)"
+[ -n "$TRESOR_KC_DOOR_TOKEN_ADMIN" ] || {
+	echo "test_keycloak: no token for bob through acl-door - cannot run the actor test" >&2
+	exit 1
+}
+export TRESOR_KC_DOOR_TOKEN TRESOR_KC_DOOR_TOKEN_ADMIN
 
 status=0
 # the reference server's own tests first, so the conformance run's summary is the last one printed
@@ -122,7 +137,7 @@ if [ -n "${TRESOR_ACL_EXTENSION:-}" ]; then
 	tail -n +"$((logged + 1))" "$work/server.log" >"$work/acl_server.log"
 	checks=(
 		'^check:node [0-9a-f-]{36}\|NULL$'
-		'^check:node-lake 0$'
+		'^check:node-lake 1$'
 		'^check:opened true$'
 		'^check:session [0-9a-f-]{36}\|client:acl-node$'
 		'^check:session-lake acl_lake$'

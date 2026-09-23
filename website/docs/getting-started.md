@@ -128,35 +128,29 @@ If the service becomes unreachable, the last list it gave still decides what it 
 A local secret with the same name as one of the service's makes `SECRET name` ambiguous (DuckDB's
 rule). Name it with the storage, or rename one of them.
 
-## Store and manage
+## Store and manage (administrators)
+
+Only administrators store secrets in the service and grant their use, to roles and groups; a user
+keeps their own credentials in their own DuckDB.
 
 ```sql
 CREATE PERSISTENT SECRET lake_rw IN corp (TYPE s3, KEY_ID '…', SECRET '…', SCOPE 's3://lake');
 CREATE PERSISTENT SECRET IF NOT EXISTS lake_rw IN corp (…);     -- nothing if it exists
-CREATE OR REPLACE PERSISTENT SECRET lake_rw IN corp (…);        -- needs `update` on it
+CREATE OR REPLACE PERSISTENT SECRET lake_rw IN corp (…);        -- replaces it
 SET default_secret_storage = 'corp';                           -- PERSISTENT without IN goes to the service
 
 CALL corp.annotate_secret('lake_rw', 'Read-write on the lake bucket, owned by the data team');
-CALL corp.grant_secret('lake_rw', 'role:data_team', ['use']);   -- one grant per principal, replaced
+CALL corp.grant_secret('lake_rw', 'role:data_team', ['use']);   -- use, to a role or a group
 FROM corp.grants('lake_rw');
 CALL corp.revoke_secret('lake_rw', 'role:data_team');
 DROP PERSISTENT SECRET lake_rw FROM corp;
 ```
 
-Where the service offers delegation, a secret's owner can let a server (a DuckDB node behind a
-gateway) use it **for** certain users. The server never receives the secret on its own authority:
+A server acting for users (a duckdb-acl node) gets a role of its own; grant it what the server serves:
 
 ```sql
-CALL corp.add_delegation('crm_prod', ['client:acl-node-prod'], ['role:analysts']);   -- shared by default
-CALL corp.add_delegation('lake_team_a', ['client:acl-node-prod'], ['role:team_a'],
-                         mode := 'user', operations := ['read'], scope := ['s3://lake/team-a/'],
-                         ttl := INTERVAL 1 HOUR);   -- where the service issues personal credentials
-FROM corp.delegations('crm_prod');
-CALL corp.remove_delegation('crm_prod', 'd-…');
+CALL corp.grant_secret('lake_rw', 'role:acl-nodes', ['use']);   -- the node serves it to its users
 ```
-
-You need `delegate` **and** `use` on a secret to delegate it. A server acting for you can never grant
-the secret onwards on the strength of a rule.
 
 The service decides whether each of these is allowed, from your role. Some things to know:
 - **Names.** DuckDB compares secret names case-insensitively. A new secret is stored in lower case,

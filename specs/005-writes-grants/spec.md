@@ -1,6 +1,6 @@
 # Spec 005: writes — `CREATE / DROP PERSISTENT SECRET … IN corp`, annotations, grants
 
-- **Status**: implemented
+- **Status**: implemented; writes and grants are an administrator's, grants to roles and groups with `use` only - [009](../009-permissions-v2/spec.md)
 - **Date**: 2026-09-23
 - **Author**: VGSML (with Claude)
 

@@ -17,8 +17,8 @@ CREATE PERSISTENT SECRET lake_rw IN corp (TYPE s3, …); -- stored in the servic
   [`duckdb-secrets/1`](website/docs/protocol.md); how it stores secrets is its own business.
 - **The ATTACH is the whole setup** — DuckDB loads the installed extension by the `tresor:` prefix;
   discovery, login and mounting happen inside the ATTACH.
-- **Your role decides** what you may see, use, create, share and delegate — through the CLI or
-  through a server acting for you.
+- **Your role decides** what you may use; administrators manage secrets and grant their use to roles
+  — through the CLI, or through a server acting for you, which serves you its own grants.
 
 **Status: early.** The `tresor` ATTACH type is registered and loads the extension by prefix;
 attaching a service is next. Design: [specs/001](specs/001-architecture/spec.md). Docs:

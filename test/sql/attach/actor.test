@@ -78,35 +78,32 @@ SELECT subject, actor FROM corp.whoami();
 ----
 alice	client:etl
 
+# under the grant the node's own rights apply (specs/009): its secrets, served for alice's statement - the
+# material fetched through the grant, cached for this session only
 query I
 SELECT name FROM corp.secrets() ORDER BY name;
 ----
-alice_lake
+node_lake
 shared_lake
+stats
 
 query II
 SELECT name, storage FROM which_secret('s3://acting/x.parquet', 's3');
 ----
-alice_lake	corp
+node_lake	corp
 
 query I
-SELECT tresor_secret_param('alice_lake', 'key_id');
-----
-VARCHAR ALICE
-
-# the node's own secret is not the session's: not by path, not by name
-statement error
 SELECT tresor_secret_param('node_lake', 'key_id');
 ----
-node_lake
+VARCHAR NODE
 
-# one name, two identities: the session's material, never the node's cached one (and back, below)
 query I
 SELECT DISTINCT tresor_secret_param('shared_lake', 'key_id');
 ----
-VARCHAR ALICE-SHARED
+VARCHAR NODE-SHARED
 
-# writes under a session go as the user through the grant: here the actor policy refuses them
+# writes under a session go through the grant: management passes only for an admin, if the actor policy lets it
+# (specs/009) - here it does not
 statement error
 CREATE PERSISTENT SECRET team_a_x IN corp (TYPE http, SCOPE 'https://team-a.example', BEARER_TOKEN 't');
 ----
@@ -115,7 +112,7 @@ actor_not_allowed
 statement error
 CALL corp.grant_secret('shared_lake', 'role:interns', ['use']);
 ----
-you may not list the grants of the secret shared_lake
+actor_not_allowed
 
 # acl's connection state stamped with another contract: nobody can tell whose statement this is - refused
 query I
@@ -187,7 +184,7 @@ SET acl_stub_session = 's1';
 query I
 SELECT DISTINCT tresor_secret_param('shared_lake', 'key_id');
 ----
-VARCHAR ALICE-SHARED
+VARCHAR NODE-SHARED
 
 statement ok
 SET acl_stub_session = '';

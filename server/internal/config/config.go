@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"path"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -60,28 +59,26 @@ type ServiceRule struct {
 	ClientClaim string `yaml:"client_claim"`
 }
 
-// Policy is the service-level part of the permissions: admins and who may create what.
+// Policy is the service-level part of the permissions (specs/009): the admins, who alone manage secrets
+// and grant their use, and the servers allowed to act for users.
 type Policy struct {
-	Admins []string     `yaml:"admins"`
-	Create []CreateRule `yaml:"create"`
-	// Actors are the servers allowed to act for users (delegation, specs/007), and for which verbs;
-	// management verbs are denied unless listed. "create" is the service-level verb.
+	Admins []string `yaml:"admins"`
+	// Actors are the servers allowed to act for users (delegation grants). Under a grant `use` is the actor's
+	// own (what an admin granted the server); a management verb listed here passes through the server only for
+	// a user who is an admin themselves - administration through a duckdb-acl node (specs/009).
 	Actors []ActorRule `yaml:"actors"`
+	// Create is gone (specs/009): kept only to refuse a config that still has it, with a word on why
+	Create any `yaml:"create"`
 }
 
-// ActorRule lets a service (a client: principal) act for users with the verbs listed - none listed, none
-// allowed. Issuer, when set, pins the actor to the issuer its token must come from: a client: name is not
-// issuer-qualified, and a same-named client of another configured issuer must not pass for it.
+// ActorRule lets a service (a client: principal) act for users with the verbs listed: `use` (its own grants),
+// and the management verbs and `create` it may pass on for admins. Issuer, when set, pins the actor to the
+// issuer its token must come from: a client: name is not issuer-qualified, and a same-named client of another
+// configured issuer must not pass for it.
 type ActorRule struct {
 	Principal string   `yaml:"principal"`
 	Issuer    string   `yaml:"issuer"`
 	Verbs     []string `yaml:"verbs"`
-}
-
-// CreateRule lets a principal create secrets whose names match one of the patterns (path.Match).
-type CreateRule struct {
-	Principal string   `yaml:"principal"`
-	Names     []string `yaml:"names"`
 }
 
 // Load reads and validates a YAML file.
@@ -113,9 +110,9 @@ var allowedAlgorithms = map[string]bool{
 	"ES256": true, "ES384": true, "ES512": true, "EdDSA": true,
 }
 
-// the per-secret verbs this server grants
+// the per-secret verbs (specs/009): `use`, granted to roles and groups; the rest are the admins'
 var knownVerbs = map[string]bool{
-	"use": true, "update": true, "delete": true, "annotate": true, "grant": true, "delegate": true,
+	"use": true, "update": true, "delete": true, "annotate": true, "grant": true,
 }
 
 // KnownVerb says whether v is one of the protocol's per-secret verbs.
@@ -189,6 +186,10 @@ func (c *Config) validate() error {
 			}
 		}
 	}
+	if c.Policy.Create != nil {
+		return errors.New("policy.create is gone (tresor specs/009): only admins create secrets - list them in " +
+			"policy.admins")
+	}
 	for _, p := range c.Policy.Admins {
 		if err := checkPrincipal(p); err != nil {
 			return fmt.Errorf("policy.admins: %w", err)
@@ -204,19 +205,6 @@ func (c *Config) validate() error {
 		for _, v := range a.Verbs {
 			if !KnownVerb(v) && v != "create" {
 				return fmt.Errorf("policy.actors: unknown verb %q", v)
-			}
-		}
-	}
-	for _, r := range c.Policy.Create {
-		if err := checkPrincipal(r.Principal); err != nil {
-			return fmt.Errorf("policy.create: %w", err)
-		}
-		if len(r.Names) == 0 {
-			return fmt.Errorf("policy.create: %s has no names", r.Principal)
-		}
-		for _, n := range r.Names {
-			if _, err := path.Match(n, ""); err != nil {
-				return fmt.Errorf("policy.create: bad pattern %q", n)
 			}
 		}
 	}

@@ -10,16 +10,16 @@ require-env TRESOR_KC_ISSUER
 statement ok
 LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
 
-# alice: Keycloak realm role analysts -> role:analysts, which may create team_a_*
+# alice: Keycloak realm role analysts -> role:analysts; only admins create (specs/009)
 statement ok
 ATTACH 'tresor:{TRESOR_KC_HOST}' AS alice (INSECURE_HTTP true, LOGIN 'browser', LOGIN_TIMEOUT 60);
 
 query III
 SELECT list_contains(roles, 'role:analysts'), list_contains(roles, 'client:etl'), can_create FROM alice.whoami();
 ----
-true	false	[team_a_*]
+true	false	[]
 
-# the etl service account: client:etl, which may create anything
+# the etl service account: client:etl, an admin, which may create anything
 statement ok
 CREATE SECRET etl (TYPE tresor, SCOPE 'tresor:{TRESOR_KC_HOST}', FLOW 'client_credentials', CLIENT_ID 'etl',
     CLIENT_SECRET 'etl-secret', ISSUER '{TRESOR_KC_ISSUER}');

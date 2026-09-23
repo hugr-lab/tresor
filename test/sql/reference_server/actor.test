@@ -1,5 +1,5 @@
 # name: test/sql/reference_server/actor.test
-# description: A node acting for an acl session end to end: Keycloak's token exchange, the reference server's grant (specs/008)
+# description: A node acting for an acl session end to end: Keycloak's token exchange, the reference server's grant (specs/008, 009)
 # group: [reference_server]
 
 # set by scripts/ci/test_keycloak.sh: alice's token as a duckdb-acl node receives it (meant for acl-node only)
@@ -9,12 +9,14 @@ require-env TRESOR_KC_ISSUER
 
 require-env TRESOR_KC_DOOR_TOKEN
 
+require-env TRESOR_KC_DOOR_TOKEN_ADMIN
+
 require acl_stub
 
 statement ok
 LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
 
-# the owner: the etl service stores a secret and delegates it to the node, for the analysts
+# an admin (the etl service) stores what the node serves, and grants it to the node's role
 statement ok
 CREATE SECRET etl (TYPE tresor, SCOPE 'tresor:{TRESOR_KC_HOST}', FLOW 'client_credentials', CLIENT_ID 'etl',
     CLIENT_SECRET 'etl-secret', ISSUER '{TRESOR_KC_ISSUER}');
@@ -23,11 +25,17 @@ statement ok
 ATTACH 'tresor:{TRESOR_KC_HOST}' AS owner (INSECURE_HTTP true, SECRET etl);
 
 statement ok
-CREATE OR REPLACE PERSISTENT SECRET kc_actor_lake IN owner (TYPE http, SCOPE 'https://kc-actor.example',
-    BEARER_TOKEN 'for-the-analysts', EXTRA_HTTP_HEADERS MAP {'X-Team': 'analysts'});
+CREATE OR REPLACE PERSISTENT SECRET kc_node_lake IN owner (TYPE http, SCOPE 'https://kc-node-lake.example',
+    BEARER_TOKEN 'for-the-node', EXTRA_HTTP_HEADERS MAP {'X-Served-By': 'node'});
 
+query II
+SELECT principal, verbs FROM owner.grant_secret('kc_node_lake', 'role:nodes', ['use']);
+----
+role:nodes	[use]
+
+# the owner's attachment goes: two attachments covering one path are duckdb's tie to break
 statement ok
-CALL owner.add_delegation('kc_actor_lake', ['client:acl-node'], ['role:analysts']);
+DETACH owner;
 
 # the node: its own login, acting for acl sessions
 statement ok
@@ -37,16 +45,16 @@ CREATE SECRET node (TYPE tresor, SCOPE 'tresor:elsewhere', FLOW 'client_credenti
 statement ok
 ATTACH 'tresor:{TRESOR_KC_HOST}' AS node (INSECURE_HTTP true, SECRET node, ACT_FOR_SESSIONS true);
 
-# as itself, the node holds nothing on the secret
-query II
-SELECT list_contains(roles, 'client:acl-node'), actor IS NULL FROM node.whoami();
+# as itself, the node uses what its role was granted
+query III
+SELECT list_contains(roles, 'client:acl-node'), list_contains(roles, 'role:nodes'), actor IS NULL FROM node.whoami();
 ----
-true	true
+true	true	true
 
-query I
-SELECT count(*) FROM which_secret('https://kc-actor.example/x', 'http') WHERE storage = 'node';
+query II
+SELECT name, storage FROM which_secret('https://kc-node-lake.example/x', 'http');
 ----
-0
+kc_node_lake	node
 
 # alice's session opens: her token is exchanged at Keycloak, the exchanged one traded for a grant
 query I
@@ -62,17 +70,23 @@ SELECT list_contains(roles, 'role:analysts'), list_contains(roles, 'client:acl-n
 ----
 true	false	client:acl-node
 
+# under her grant the node's own rights apply (specs/009): its secret, served for her statement
 query II
-SELECT name, storage FROM which_secret('https://kc-actor.example/x', 'http') WHERE storage = 'node';
+SELECT name, storage FROM which_secret('https://kc-node-lake.example/x', 'http');
 ----
-kc_actor_lake	node
+kc_node_lake	node
 
 query I
-SELECT tresor_secret_param('kc_actor_lake', 'extra_http_headers');
+SELECT tresor_secret_param('kc_node_lake', 'extra_http_headers');
 ----
-MAP(VARCHAR, VARCHAR) {X-Team=analysts}
+MAP(VARCHAR, VARCHAR) {X-Served-By=node}
 
-# the session ends: the grant is revoked at the service
+# she is no admin: nothing is managed through the node for her
+statement error
+CREATE PERSISTENT SECRET kc_by_alice IN node (TYPE http, SCOPE 'https://x.example', BEARER_TOKEN 'x');
+----
+you may not create the secret kc_by_alice
+
 statement ok
 SET acl_stub_session = '';
 
@@ -81,6 +95,35 @@ SELECT acl_stub_close('kc-1', 'client');
 ----
 1
 
+# bob, an admin, administers through the node (specs/009): the node's policy passes management on for admins
+query I
+SELECT acl_stub_open('kc-2', '{TRESOR_KC_DOOR_TOKEN_ADMIN}', '{TRESOR_KC_ISSUER}', 300);
+----
+1
+
+statement ok
+SET acl_stub_session = 'kc-2';
+
+statement ok
+CREATE PERSISTENT SECRET kc_by_bob IN node (TYPE http, SCOPE 'https://kc-by-bob.example', BEARER_TOKEN 'b');
+
+query II
+SELECT principal, verbs FROM node.grant_secret('kc_by_bob', 'role:analysts', ['use']);
+----
+role:analysts	[use]
+
+statement ok
+DROP PERSISTENT SECRET kc_by_bob FROM node;
+
+statement ok
+SET acl_stub_session = '';
+
+query I
+SELECT acl_stub_close('kc-2', 'client');
+----
+1
+
+# the session is over: its grant is revoked, and the session gets nothing more
 statement ok
 SET acl_stub_session = 'kc-1';
 
@@ -96,4 +139,7 @@ statement ok
 DETACH node;
 
 statement ok
-DROP PERSISTENT SECRET kc_actor_lake FROM owner;
+ATTACH 'tresor:{TRESOR_KC_HOST}' AS owner (INSECURE_HTTP true, SECRET etl);
+
+statement ok
+DROP PERSISTENT SECRET kc_node_lake FROM owner;

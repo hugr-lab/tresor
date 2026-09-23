@@ -22,9 +22,9 @@ type fixture struct {
 	server   *httptest.Server
 	base     string
 	logs     *bytes.Buffer
-	alice    string // role:analysts: may create team_a_*
-	admin    string // role:secrets_admin
-	etl      string // client:etl: may create anything
+	alice    string // role:analysts: uses what is granted to analysts, manages nothing
+	admin    string // role:secrets_admin: manages everything, uses only what its roles are granted
+	etl      string // client:etl, an admin too (policy.admins)
 	carol    string // no roles at all
 	stranger string // a valid token for another audience
 	srv      *Server
@@ -48,14 +48,11 @@ issuers:
     roles_claim: realm_access.roles
     service: {claim: client_id}
 policy:
-  admins: [role:secrets_admin]
-  create:
-    - {principal: role:analysts, names: ["team_a_*"]}
-    - {principal: client:etl, names: ["*"]}
+  admins: [role:secrets_admin, client:etl]
   actors:
     - {principal: client:node, verbs: [use]}
-    - {principal: client:admin-node, verbs: [use, annotate]}
-    - {principal: client:mgr-node, verbs: [use, grant, delegate]}
+    - {principal: client:admin-node, verbs: [use, create, update, delete, annotate, grant]}
+    - {principal: client:other-node, verbs: [use]}
     - {principal: client:pinned, issuer: https://elsewhere.example, verbs: [use]}
 `))
 	if err != nil {
@@ -147,14 +144,16 @@ func TestDiscoveryAndWhoami(t *testing.T) {
 		if roles := w["roles"].([]any); len(roles) != 1 || roles[0] != "role:analysts" {
 			t.Fatalf("roles: %v", roles)
 		}
-		if create := w["permissions"].(map[string]any)["create"].([]any); create[0] != "team_a_*" {
-			t.Fatalf("create: %v", create)
+		// only admins create (specs/009)
+		for name, token := range map[string]string{"alice": f.alice, "carol": f.carol} {
+			if w := f.do("GET", "/v1/whoami", token, "").json(t); w["permissions"].(map[string]any)["create"] != false {
+				t.Fatalf("%s create: %v", name, w)
+			}
 		}
-		if w := f.do("GET", "/v1/whoami", f.etl, "").json(t); w["permissions"].(map[string]any)["create"] != true {
-			t.Fatalf("etl create: %v", w)
-		}
-		if w := f.do("GET", "/v1/whoami", f.carol, "").json(t); w["permissions"].(map[string]any)["create"] != false {
-			t.Fatalf("carol create: %v", w)
+		for name, token := range map[string]string{"admin": f.admin, "etl": f.etl} {
+			if w := f.do("GET", "/v1/whoami", token, "").json(t); w["permissions"].(map[string]any)["create"] != true {
+				t.Fatalf("%s create: %v", name, w)
+			}
 		}
 	}
 }
@@ -175,26 +174,60 @@ func TestUnauthenticated(t *testing.T) {
 func TestSecretsLifecycle(t *testing.T) {
 	f := newFixture(t, "")
 
-	// alice may create team_a_* only
+	// users do not create secrets (specs/009): they keep their own locally
 	if r := f.do("PUT", "/v1/secrets/lake", f.alice, s3Secret); r.status != 403 || r.problemType(t) != "no_verb" {
-		t.Fatalf("outside the pattern: %d %s", r.status, r.body)
+		t.Fatalf("a user creating: %d %s", r.status, r.body)
 	}
-	r := f.do("PUT", "/v1/secrets/team_a_lake", f.alice, s3Secret, "If-None-Match", "*")
+	r := f.do("PUT", "/v1/secrets/lake", f.admin, s3Secret, "If-None-Match", "*")
 	if r.status != 201 || r.header.Get("ETag") != `"1"` {
 		t.Fatalf("create: %d %s", r.status, r.body)
 	}
 	d := r.json(t)
-	if d["owner"] != "subject:"+f.idp.URL+"|alice-id" || d["version"] != "1" || d["params"] != nil {
+	if d["owner"] != "subject:"+f.idp.URL+"|bob-id" || d["version"] != "1" || d["params"] != nil {
 		t.Fatalf("the descriptor (and never material): %v", d)
 	}
-	// CREATE (not IF NOT EXISTS / OR REPLACE) of an existing name: 412
-	if r := f.do("PUT", "/v1/secrets/team_a_lake", f.alice, s3Secret, "If-None-Match", "*"); r.status != 412 ||
+	if _, ok := d["delegation"]; ok {
+		t.Fatal("no delegation rules any more")
+	}
+	if r := f.do("PUT", "/v1/secrets/lake", f.admin, s3Secret, "If-None-Match", "*"); r.status != 412 ||
 		r.problemType(t) != "precondition_failed" {
 		t.Fatalf("create twice: %d", r.status)
 	}
 
-	// material to the owner, with the typed params verbatim
-	m := f.do("GET", "/v1/secrets/team_a_lake", f.alice, "")
+	// an admin manages, but an admin role implies no use: the material only through a grant to its roles
+	if r := f.do("GET", "/v1/secrets/lake", f.admin, ""); r.status != 403 || r.problemType(t) != "no_verb" {
+		t.Fatalf("the admin's material without a grant: %d", r.status)
+	}
+	perms := f.do("GET", "/v1/secrets/lake", f.alice, "")
+	if perms.status != 404 {
+		t.Fatalf("alice before the grant: %d", perms.status)
+	}
+
+	// grants: roles and groups only, use only
+	for name, body := range map[string]string{
+		"a subject":         `{"principal":"subject:` + f.idp.URL + `|carol-id","verbs":["use"]}`,
+		"a client":          `{"principal":"client:etl","verbs":["use"]}`,
+		"a management verb": `{"principal":"role:analysts","verbs":["update"]}`,
+		"use and more":      `{"principal":"role:analysts","verbs":["use","grant"]}`,
+		"an unknown verb":   `{"principal":"role:analysts","verbs":["fly"]}`,
+		"a bare prefix":     `{"principal":"role:","verbs":["use"]}`,
+	} {
+		if r := f.do("PUT", "/v1/secrets/lake/grants/g", f.admin, body); r.status != 422 {
+			t.Errorf("%s: %d %s", name, r.status, r.body)
+		}
+	}
+	if r := f.do("PUT", "/v1/secrets/lake/grants/analysts", f.admin, `{"principal":"role:analysts","verbs":["use"]}`); r.status != 200 {
+		t.Fatalf("grant: %d %s", r.status, r.body)
+	}
+	if r := f.do("PUT", "/v1/secrets/lake/grants/ops", f.admin, `{"principal":"group:ops","verbs":["use"]}`); r.status != 200 {
+		t.Fatalf("grant to a group: %d %s", r.status, r.body)
+	}
+	var list []map[string]any
+	_ = json.Unmarshal(f.do("GET", "/v1/secrets?type=S3", f.alice, "").body, &list)
+	if len(list) != 1 || len(list[0]["permissions"].([]any)) != 1 || list[0]["permissions"].([]any)[0] != "use" {
+		t.Fatalf("alice's list after the grant: %v", list)
+	}
+	m := f.do("GET", "/v1/secrets/lake", f.alice, "")
 	if m.status != 200 || m.header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("material: %d", m.status)
 	}
@@ -203,69 +236,52 @@ func TestSecretsLifecycle(t *testing.T) {
 		t.Fatalf("params: %v", params)
 	}
 
-	// carol sees nothing: an invisible secret is the same 404 as a missing one
-	for _, path := range []string{"/v1/secrets/team_a_lake", "/v1/secrets/nope"} {
+	// carol, in no granted role, sees nothing: an invisible secret is the same 404 as a missing one
+	for _, path := range []string{"/v1/secrets/lake", "/v1/secrets/nope"} {
 		if r := f.do("GET", path, f.carol, ""); r.status != 404 || r.problemType(t) != "not_found" {
 			t.Fatalf("%s for carol: %d", path, r.status)
 		}
 	}
-	var list []map[string]any
 	_ = json.Unmarshal(f.do("GET", "/v1/secrets", f.carol, "").body, &list)
 	if len(list) != 0 {
 		t.Fatalf("carol's list: %v", list)
 	}
-	// and may not take the name either (nor learn it exists)
-	if r := f.do("PUT", "/v1/secrets/team_a_lake", f.carol, s3Secret); r.status != 403 {
-		t.Fatalf("carol replace: %d", r.status)
+
+	// alice uses, and manages nothing
+	for _, probe := range [][3]string{
+		{"PATCH", "/v1/secrets/lake", `{"comment":"mine"}`},
+		{"GET", "/v1/secrets/lake/grants", ""},
+		{"PUT", "/v1/secrets/lake/grants/x", `{"principal":"role:analysts","verbs":["use"]}`},
+		{"PUT", "/v1/secrets/lake", s3Secret},
+		{"DELETE", "/v1/secrets/lake", ""},
+	} {
+		if r := f.do(probe[0], probe[1], f.alice, probe[2]); r.status != 403 || r.problemType(t) != "no_verb" {
+			t.Errorf("alice %s %s: %d %s", probe[0], probe[1], r.status, r.body)
+		}
 	}
 
-	// grants: the owner gives carol use; carol sees it, may read it, may not annotate
-	if r := f.do("PUT", "/v1/secrets/team_a_lake/grants/g1", f.alice,
-		`{"principal":"subject:`+f.idp.URL+`|carol-id","verbs":["use"]}`); r.status != 200 {
-		t.Fatalf("grant: %d %s", r.status, r.body)
-	}
-	_ = json.Unmarshal(f.do("GET", "/v1/secrets?type=S3", f.carol, "").body, &list)
-	if len(list) != 1 || list[0]["permissions"].([]any)[0] != "use" || len(list[0]["permissions"].([]any)) != 1 {
-		t.Fatalf("carol's list after the grant: %v", list)
-	}
-	if r := f.do("GET", "/v1/secrets/team_a_lake", f.carol, ""); r.status != 200 {
-		t.Fatalf("carol use: %d", r.status)
-	}
-	if r := f.do("PATCH", "/v1/secrets/team_a_lake", f.carol, `{"comment":"mine"}`); r.status != 403 {
-		t.Fatalf("carol annotate: %d", r.status)
-	}
-	if r := f.do("GET", "/v1/secrets/team_a_lake/grants", f.carol, ""); r.status != 403 {
-		t.Fatalf("carol grants: %d", r.status)
-	}
-	if r := f.do("PUT", "/v1/secrets/team_a_lake/grants/g2", f.alice, `{"principal":"role:x","verbs":["fly"]}`); r.status != 422 {
-		t.Fatalf("unknown verb: %d", r.status)
-	}
-	if r := f.do("PUT", "/v1/secrets/team_a_lake/grants/g2", f.alice, `{"principal":"x","verbs":["use"]}`); r.status != 422 {
-		t.Fatalf("bad principal: %d", r.status)
-	}
-
-	// annotate, replace with preconditions
-	if r := f.do("PATCH", "/v1/secrets/team_a_lake", f.alice, `{"comment":"the lake"}`); r.status != 200 ||
+	// the admin annotates and replaces, with preconditions
+	if r := f.do("PATCH", "/v1/secrets/lake", f.admin, `{"comment":"the lake"}`); r.status != 200 ||
 		r.json(t)["comment"] != "the lake" {
 		t.Fatalf("annotate: %d %s", r.status, r.body)
 	}
-	version := f.do("GET", "/v1/secrets/team_a_lake", f.alice, "").header.Get("ETag")
-	if r := f.do("PUT", "/v1/secrets/team_a_lake", f.alice, s3Secret, "If-Match", `"1"`); r.status != 412 {
+	if r := f.do("PUT", "/v1/secrets/lake", f.admin, s3Secret, "If-Match", `"1"`); r.status != 412 {
 		t.Fatalf("stale If-Match: %d", r.status)
 	}
-	r = f.do("PUT", "/v1/secrets/team_a_lake", f.alice, s3Secret, "If-Match", version)
+	r = f.do("PUT", "/v1/secrets/lake", f.admin, s3Secret, "If-Match", `"4"`)
 	if r.status != 200 || r.json(t)["comment"] != "the lake" {
 		t.Fatalf("replace keeps the comment it was not given: %d %s", r.status, r.body)
 	}
-
-	// the admin sees and may delete everything; carol's grant is gone with the secret
-	if r := f.do("DELETE", "/v1/secrets/team_a_lake", f.carol, ""); r.status != 403 {
-		t.Fatalf("carol delete: %d", r.status)
+	if r := f.do("DELETE", "/v1/secrets/lake/grants/ops", f.admin, ""); r.status != 204 {
+		t.Fatalf("delete grant: %d", r.status)
 	}
-	if r := f.do("DELETE", "/v1/secrets/team_a_lake", f.admin, ""); r.status != 204 {
+	if r := f.do("DELETE", "/v1/secrets/lake/grants/ops", f.admin, ""); r.status != 404 {
+		t.Fatalf("delete a missing grant: %d", r.status)
+	}
+	if r := f.do("DELETE", "/v1/secrets/lake", f.admin, ""); r.status != 204 {
 		t.Fatalf("admin delete: %d", r.status)
 	}
-	if r := f.do("DELETE", "/v1/secrets/team_a_lake", f.admin, ""); r.status != 404 {
+	if r := f.do("DELETE", "/v1/secrets/lake", f.admin, ""); r.status != 404 {
 		t.Fatalf("delete twice: %d", r.status)
 	}
 	if strings.Contains(f.logs.String(), "hunter2") {
@@ -280,79 +296,41 @@ func TestServiceOwnsWhatItCreates(t *testing.T) {
 		t.Fatalf("etl create: %d %s", r.status, r.body)
 	}
 	if r := f.do("PUT", "/v1/secrets/anything", f.etl, `{"type":"http","params":{}}`); r.status != 200 {
-		t.Fatalf("etl replace (OR REPLACE, as owner): %d", r.status)
+		t.Fatalf("etl replace (OR REPLACE, as an admin): %d", r.status)
 	}
-	if owner := f.do("GET", "/v1/secrets/anything", f.etl, "").json(t)["owner"]; owner != "subject:"+f.idp.URL+"|sa-etl" {
-		t.Fatalf("a service owns by its subject: %v", owner)
-	}
-}
-
-// the review's findings, pinned
-
-// two people whose tokens both carry the public client's client_id (RFC 9068) are two owners
-func TestPeopleNeverShareOwnership(t *testing.T) {
-	f := newFixture(t, "")
-	dave := f.idp.Token(t, testidp.Claims{"sub": "dave", "aud": "duckdb-secrets", "azp": "duckdb",
-		"realm_access": map[string]any{"roles": []any{"analysts"}}})
-	erin := f.idp.Token(t, testidp.Claims{"sub": "erin", "aud": "duckdb-secrets", "azp": "duckdb"})
-	if r := f.do("PUT", "/v1/secrets/team_a_dave", dave, s3Secret); r.status != 201 {
-		t.Fatalf("dave create: %d %s", r.status, r.body)
-	}
-	if r := f.do("GET", "/v1/secrets/team_a_dave", erin, ""); r.status != 404 {
-		t.Fatalf("erin must not see dave's secret: %d", r.status)
+	// creating is not using: the service's roles hold no grant on it yet
+	if r := f.do("GET", "/v1/secrets/anything", f.etl, ""); r.status != 403 {
+		t.Fatalf("an admin's own creation, without a grant: %d", r.status)
 	}
 }
 
-// `grant` alone never becomes `use`: a grant passes on at most what its grantor holds
-func TestGrantCannotEscalate(t *testing.T) {
+// an admin uses a secret exactly when one of its roles is granted it
+func TestAdminImpliesNoUse(t *testing.T) {
 	f := newFixture(t, "")
-	carol := "subject:" + f.idp.URL + "|carol-id"
-	f.do("PUT", "/v1/secrets/team_a_x", f.alice, s3Secret)
-	if r := f.do("PUT", "/v1/secrets/team_a_x/grants/c", f.alice, `{"principal":"`+carol+`","verbs":["grant"]}`); r.status != 200 {
-		t.Fatalf("grant: %d", r.status)
+	f.do("PUT", "/v1/secrets/s", f.admin, s3Secret)
+	if r := f.do("GET", "/v1/secrets/s", f.admin, ""); r.status != 403 {
+		t.Fatalf("before the grant: %d", r.status)
 	}
-	r := f.do("PUT", "/v1/secrets/team_a_x/grants/self", f.carol, `{"principal":"`+carol+`","verbs":["use"]}`)
-	if r.status != 403 || r.problemType(t) != "no_verb" {
-		t.Fatalf("carol granting herself use: %d %s", r.status, r.body)
-	}
-	if r := f.do("GET", "/v1/secrets/team_a_x", f.carol, ""); r.status != 403 {
-		t.Fatalf("carol still may not use: %d", r.status)
-	}
-	// what she holds she may pass on
-	if r := f.do("PUT", "/v1/secrets/team_a_x/grants/d", f.carol, `{"principal":"role:x","verbs":["grant"]}`); r.status != 200 {
-		t.Fatalf("passing on grant: %d", r.status)
-	}
-	// delete a grant; a missing one is not found
-	if r := f.do("DELETE", "/v1/secrets/team_a_x/grants/d", f.alice, ""); r.status != 204 {
-		t.Fatalf("delete grant: %d", r.status)
-	}
-	if r := f.do("DELETE", "/v1/secrets/team_a_x/grants/d", f.alice, ""); r.status != 404 {
-		t.Fatalf("delete a missing grant: %d", r.status)
-	}
-	if r := f.do("PUT", "/v1/secrets/team_a_x/grants/e", f.alice, `{"principal":"role:x","verbs":["delegate"]}`); r.status != 200 {
-		t.Fatalf("delegate is grantable: %d", r.status)
+	f.do("PUT", "/v1/secrets/s/grants/a", f.admin, `{"principal":"role:secrets_admin","verbs":["use"]}`)
+	if r := f.do("GET", "/v1/secrets/s", f.admin, ""); r.status != 200 {
+		t.Fatalf("after the grant to its role: %d", r.status)
 	}
 }
 
 func TestPreconditionsAndBodies(t *testing.T) {
 	f := newFixture(t, "")
-	if r := f.do("PUT", "/v1/secrets/team_a_p", f.alice, s3Secret, "If-Match", `"1"`); r.status != 412 {
+	if r := f.do("PUT", "/v1/secrets/p", f.admin, s3Secret, "If-Match", `"1"`); r.status != 412 {
 		t.Fatalf("If-Match on a missing secret: %d", r.status)
 	}
-	f.do("PUT", "/v1/secrets/team_a_p", f.alice, s3Secret)
-	if r := f.do("PUT", "/v1/secrets/team_a_p", f.alice, s3Secret, "If-None-Match", `"1"`); r.status != 412 {
+	f.do("PUT", "/v1/secrets/p", f.admin, s3Secret)
+	if r := f.do("PUT", "/v1/secrets/p", f.admin, s3Secret, "If-None-Match", `"1"`); r.status != 412 {
 		t.Fatalf("If-None-Match with the current ETag: %d", r.status)
 	}
-	if r := f.do("PUT", "/v1/secrets/team_a_p", f.alice, s3Secret, "If-None-Match", `"7"`); r.status != 200 {
+	if r := f.do("PUT", "/v1/secrets/p", f.admin, s3Secret, "If-None-Match", `"7"`); r.status != 200 {
 		t.Fatalf("If-None-Match with another ETag: %d", r.status)
 	}
-	if r := f.do("PUT", "/v1/secrets/team_a_p", f.alice, s3Secret, "If-Match", "*"); r.status != 200 {
+	if r := f.do("PUT", "/v1/secrets/p", f.admin, s3Secret, "If-Match", "*"); r.status != 200 {
 		t.Fatalf("If-Match: * on an existing secret: %d", r.status)
-	}
-	// a non-owner holding update may replace
-	f.do("PUT", "/v1/secrets/team_a_p/grants/u", f.alice, `{"principal":"subject:`+f.idp.URL+`|carol-id","verbs":["update"]}`)
-	if r := f.do("PUT", "/v1/secrets/team_a_p", f.carol, s3Secret); r.status != 200 {
-		t.Fatalf("carol with update: %d %s", r.status, r.body)
 	}
 	for name, body := range map[string]string{
 		"a null param":       `{"type":"s3","params":{"a":null}}`,
@@ -360,7 +338,7 @@ func TestPreconditionsAndBodies(t *testing.T) {
 		"trailing data":      `{"type":"s3"} garbage`,
 		"a second document":  `{"type":"s3"}{"type":"s3"}`,
 	} {
-		if r := f.do("PUT", "/v1/secrets/team_a_q", f.alice, body); r.status != 422 {
+		if r := f.do("PUT", "/v1/secrets/q", f.admin, body); r.status != 422 {
 			t.Errorf("%s: %d", name, r.status)
 		}
 	}
@@ -376,8 +354,9 @@ func TestProtocolEdges(t *testing.T) {
 		t.Fatalf("lower-case bearer: %v %v", res, err)
 	}
 	res.Body.Close()
-	// unknown routes and methods answer problem documents
-	for _, probe := range [][2]string{{"GET", "/v1/nothing"}, {"POST", "/v1/secrets/x"}} {
+	// unknown routes and methods answer problem documents - the delegation rules' routes are gone too
+	for _, probe := range [][2]string{{"GET", "/v1/nothing"}, {"POST", "/v1/secrets/x"},
+		{"GET", "/v1/secrets/x/delegations"}} {
 		if r := f.do(probe[0], probe[1], f.alice, "{}"); r.status != 404 || r.problemType(t) != "not_found" {
 			t.Errorf("%s %s: %d %s", probe[0], probe[1], r.status, r.body)
 		}
@@ -397,5 +376,50 @@ func TestInvalidSecrets(t *testing.T) {
 		if r := f.do("PUT", "/v1/secrets/x", f.admin, body); r.status != 422 || r.problemType(t) != "invalid_secret" {
 			t.Errorf("%s: %d %s", name, r.status, r.body)
 		}
+	}
+}
+
+// grants from before specs/009 (to a subject: or a client:, or of management verbs) give nothing, and are
+// reported at start
+func TestLegacyGrantsIgnored(t *testing.T) {
+	f := newFixture(t, "")
+	node := f.idp.Service(t, "duckdb-secrets", "node")
+	f.do("PUT", "/v1/secrets/old", f.admin, s3Secret)
+	_, _ = f.srv.store.Update("old", func(cur *store.Secret) (*store.Secret, error) {
+		cur.Grants = append(cur.Grants,
+			store.Grant{ID: "s", Principal: "subject:" + f.idp.URL + "|carol-id", Verbs: []string{"use"}},
+			store.Grant{ID: "c", Principal: "client:node", Verbs: []string{"use", "update"}},
+			store.Grant{ID: "r", Principal: "role:analysts", Verbs: []string{"update", "grant"}})
+		return cur, nil
+	})
+	for name, token := range map[string]string{"carol": f.carol, "the node": node, "alice": f.alice} {
+		if r := f.do("GET", "/v1/secrets/old", token, ""); r.status != 404 {
+			t.Errorf("%s through a legacy grant: %d", name, r.status)
+		}
+	}
+	if r := f.do("PUT", "/v1/secrets/old", f.alice, s3Secret); r.status != 403 {
+		t.Errorf("alice's legacy update: %d", r.status)
+	}
+	New(f.srv.cfg, f.srv.verifier, f.srv.store, f.srv.log)
+	if !strings.Contains(f.logs.String(), "a grant from before specs/009 is ignored") {
+		t.Fatal("legacy grants are reported at start")
+	}
+}
+
+// a name's existence does not leak: through a grant, or through a precondition
+func TestNoExistenceOracle(t *testing.T) {
+	f := newFixture(t, "")
+	node := f.idp.Service(t, "duckdb-secrets", "node")
+	f.do("PUT", "/v1/secrets/hidden", f.admin, s3Secret)
+	g, _ := f.grantFor(node, f.alice)
+	missing := f.do("PUT", "/v1/secrets/nope", node, s3Secret, "Delegation", g)
+	existing := f.do("PUT", "/v1/secrets/hidden", node, s3Secret, "Delegation", g)
+	if missing.status != existing.status || missing.problemType(t) != existing.problemType(t) {
+		t.Fatalf("under a grant: %d %s vs %d %s", missing.status, missing.body, existing.status, existing.body)
+	}
+	missing = f.do("PUT", "/v1/secrets/nope", f.alice, s3Secret, "If-Match", `"1"`)
+	existing = f.do("PUT", "/v1/secrets/hidden", f.alice, s3Secret, "If-Match", `"1"`)
+	if missing.status != existing.status || missing.problemType(t) != existing.problemType(t) {
+		t.Fatalf("If-Match: %d vs %d", missing.status, existing.status)
 	}
 }

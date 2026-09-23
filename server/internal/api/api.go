@@ -1,6 +1,6 @@
 // Package api is the duckdb-secrets/1 HTTP surface of the reference server (specs/003,
-// website/docs/protocol.md). Every decision uses the caller's own principals; nothing here logs a token
-// or a secret's material.
+// website/docs/protocol.md). Every decision uses the caller's own principals - under a delegation grant, the
+// actor's for `use` (specs/009); nothing here logs a token or a secret's material.
 package api
 
 import (
@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,8 +25,12 @@ import (
 // Protocol is the discovery document's protocol string.
 const Protocol = "duckdb-secrets/1"
 
-// the per-secret verbs, in the protocol's order
-var allVerbs = []string{"use", "update", "delete", "annotate", "grant", "delegate"}
+// the per-secret verbs, in the protocol's order (specs/009): `use` from a grant to a role or group; the
+// management verbs are the admins'
+var (
+	allVerbs    = []string{"use", "update", "delete", "annotate", "grant"}
+	manageVerbs = []string{"update", "delete", "annotate", "grant"}
+)
 
 // Server serves the protocol.
 type Server struct {
@@ -41,7 +44,17 @@ type Server struct {
 
 // New wires a server; the verifier and the store are the caller's.
 func New(cfg *config.Config, verifier *auth.Verifier, st *store.Store, log *slog.Logger) *Server {
-	return &Server{cfg: cfg, verifier: verifier, store: st, log: log, now: time.Now}
+	s := &Server{cfg: cfg, verifier: verifier, store: st, log: log, now: time.Now}
+	// a store from before specs/009 may hold grants the model no longer honours: say so, once, by name
+	for _, sec := range st.List() {
+		for _, g := range sec.Grants {
+			if !roleOrGroup(g.Principal) || !slices.Equal(g.Verbs, []string{"use"}) {
+				log.Warn("a grant from before specs/009 is ignored: grants give use to roles and groups only",
+					"secret", sec.Name, "grant", g.ID)
+			}
+		}
+	}
+	return s
 }
 
 // Handler returns the routes, under the path of public_url (a service may live below a base path: the
@@ -58,9 +71,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/secrets/{name}/grants", s.authed(s.listGrants))
 	mux.HandleFunc("PUT /v1/secrets/{name}/grants/{id}", s.authed(s.putGrant))
 	mux.HandleFunc("DELETE /v1/secrets/{name}/grants/{id}", s.authed(s.deleteGrant))
-	mux.HandleFunc("GET /v1/secrets/{name}/delegations", s.authed(s.listRules))
-	mux.HandleFunc("POST /v1/secrets/{name}/delegations", s.authed(s.addRule))
-	mux.HandleFunc("DELETE /v1/secrets/{name}/delegations/{id}", s.authed(s.removeRule))
 	mux.HandleFunc("POST /v1/delegations", s.authed(s.exchange))
 	mux.HandleFunc("DELETE /v1/delegations/{id}", s.authed(s.revokeGrant))
 	mux.HandleFunc("DELETE /v1/delegations", s.authed(s.revokeGrants))
@@ -193,87 +203,69 @@ func (s *Server) isAdmin(c *auth.Caller) bool {
 	return slices.ContainsFunc(s.cfg.Policy.Admins, c.Has)
 }
 
-// verbs is what the caller may do with sec. Without a grant: every verb for an admin or the owner, else
-// its grants'. Under a grant: the user's verbs the actor may exercise - but `use` only through a rule
-// (a secret without a rule is not delegated), and then even if the user does not hold `use` (shared).
+// verbs is what the caller may do with sec (specs/009): `use` when a grant names one of its roles or groups,
+// and the management verbs for an admin (an admin role implies no `use`). Under a delegation grant `use` is
+// the ACTOR's (a user gets nothing beyond what the server was granted), and a management verb passes only
+// for a user who is an admin, when the actor policy lists it - administration through a duckdb-acl node.
 func (s *Server) verbs(c *auth.Caller, sec *store.Secret) []string {
-	user := s.userVerbs(c, sec)
-	if c.Actor == "" {
-		return user
-	}
-	allowed := s.actorVerbs(c.Actor, c.ActorIssuer)
-	out := []string{} // a list, never null: a secret the user sees but the actor may not act on is []
-	for _, v := range allVerbs {
-		switch {
-		case v == "use":
-			if slices.Contains(allowed, "use") && ruleMatches(sec, c) {
-				out = append(out, v)
+	out := []string{} // a list, never null
+	if c.Actor != "" {
+		allowed := s.actorVerbs(c.Actor, c.ActorIssuer)
+		if slices.Contains(allowed, "use") && usable(sec, c.ActorPrincipals) {
+			out = append(out, "use")
+		}
+		// administration through a server: the user's own admin role, and the verbs the policy lets it pass on
+		if s.isAdmin(c) {
+			for _, v := range manageVerbs {
+				if slices.Contains(allowed, v) {
+					out = append(out, v)
+				}
 			}
-		case slices.Contains(user, v) && slices.Contains(allowed, v):
-			out = append(out, v)
 		}
+		return out
 	}
-	return out
-}
-
-// userVerbs is what the user alone may do: every verb for an admin or the owner, else its grants'.
-func (s *Server) userVerbs(c *auth.Caller, sec *store.Secret) []string {
-	if s.isAdmin(c) || c.Owner() == sec.Owner {
-		return slices.Clone(allVerbs)
+	if usable(sec, c.Principals) {
+		out = append(out, "use")
 	}
-	var out []string
-	for _, v := range allVerbs { // in the protocol's order
-		if slices.Contains(store.VerbsOf(sec, c.Principals), v) {
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
-// createPatterns is `permissions.create`: true (anything), false, or the name patterns.
-func (s *Server) createPatterns(c *auth.Caller) (all bool, patterns []string) {
 	if s.isAdmin(c) {
-		return true, nil
+		out = append(out, manageVerbs...)
 	}
-	for _, rule := range s.cfg.Policy.Create {
-		if !c.Has(rule.Principal) {
-			continue
-		}
-		for _, n := range rule.Names {
-			if n == "*" {
-				return true, nil
-			}
-			if !slices.Contains(patterns, n) {
-				patterns = append(patterns, n)
-			}
-		}
-	}
-	return false, patterns
+	return out
 }
 
-func (s *Server) mayCreate(c *auth.Caller, name string) bool {
-	if c.Actor != "" && !slices.Contains(s.actorVerbs(c.Actor, c.ActorIssuer), "create") {
-		return false // creating for users is a management verb: denied unless the actor policy lists it
-	}
-	all, patterns := s.createPatterns(c)
-	if all {
-		return true
-	}
-	for _, p := range patterns {
-		if ok, _ := path.Match(p, name); ok {
+// usable: a grant gives `use` to one of these principals - a role: or group: grant only. A grant a store kept
+// from before specs/009 (to a subject: or a client:, or of other verbs) gives nothing: it is reported at
+// start and ignored.
+func usable(sec *store.Secret, principals []string) bool {
+	for _, g := range sec.Grants {
+		if roleOrGroup(g.Principal) && slices.Contains(g.Verbs, "use") && slices.Contains(principals, g.Principal) {
 			return true
 		}
 	}
 	return false
 }
 
-// visible fetches a secret the caller holds any verb on (under a grant: the user sees it, or a rule
-// delegates it); an invisible one is the same 404 as a missing one, so a name's existence does not leak.
+func roleOrGroup(p string) bool {
+	role, isRole := strings.CutPrefix(p, "role:")
+	group, isGroup := strings.CutPrefix(p, "group:")
+	return (isRole && role != "") || (isGroup && group != "")
+}
+
+// mayCreate: only admins create - through a server too, when the actor policy lists `create`.
+func (s *Server) mayCreate(c *auth.Caller, name string) bool {
+	if !s.isAdmin(c) {
+		return false
+	}
+	return c.Actor == "" || slices.Contains(s.actorVerbs(c.Actor, c.ActorIssuer), "create")
+}
+
+// visible fetches a secret the caller holds any verb on (under a grant: the actor's use, an admin's management
+// through it); an invisible one is the same 404 as a missing one, so a name's existence does not leak.
 func (s *Server) visible(w http.ResponseWriter, c *auth.Caller, name string) (*store.Secret, []string, bool) {
 	sec, err := s.store.Get(name)
 	if err == nil {
 		verbs := s.verbs(c, sec)
-		if len(verbs) > 0 || (c.Actor != "" && len(s.userVerbs(c, sec)) > 0) {
+		if len(verbs) > 0 {
 			return sec, verbs, true
 		}
 	}
@@ -313,14 +305,8 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 	c := callerOf(r)
-	var create any = false
-	if c.Actor != "" && !slices.Contains(s.actorVerbs(c.Actor, c.ActorIssuer), "create") {
-		// under a grant: what the user may create through this server - nothing, unless the policy says so
-	} else if all, patterns := s.createPatterns(c); all {
-		create = true
-	} else if len(patterns) > 0 {
-		create = patterns
-	}
+	// only admins create (specs/009) - through a server only if its actor policy lists create
+	create := s.mayCreate(c, "")
 	roles := []string{}
 	for _, p := range c.Principals {
 		if !strings.HasPrefix(p, "subject:") {
@@ -350,11 +336,6 @@ func descriptor(sec *store.Secret, verbs []string) map[string]any {
 	if verbs == nil {
 		verbs = []string{}
 	}
-	// the rules are summarised to callers who may manage them
-	var delegation any
-	if slices.Contains(verbs, "delegate") {
-		delegation = map[string]any{"rules": len(sec.Rules)}
-	}
 	scope := sec.Scope
 	if scope == nil {
 		scope = []string{}
@@ -371,7 +352,6 @@ func descriptor(sec *store.Secret, verbs []string) map[string]any {
 		"version":     strconv.FormatInt(sec.Version, 10),
 		"dynamic":     false,
 		"permissions": verbs,
-		"delegation":  delegation,
 	}
 }
 
@@ -383,8 +363,7 @@ func (s *Server) listSecrets(w http.ResponseWriter, r *http.Request) {
 		if typ != "" && !strings.EqualFold(sec.Type, typ) {
 			continue
 		}
-		verbs := s.verbs(c, sec)
-		if len(verbs) > 0 || (c.Actor != "" && len(s.userVerbs(c, sec)) > 0) {
+		if verbs := s.verbs(c, sec); len(verbs) > 0 {
 			out = append(out, descriptor(sec, verbs))
 		}
 	}
@@ -398,14 +377,7 @@ func (s *Server) getSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !slices.Contains(verbs, "use") {
-		switch {
-		case c.Actor != "" && !slices.Contains(s.actorVerbs(c.Actor, c.ActorIssuer), "use"):
-			problem(w, http.StatusForbidden, "actor_not_allowed", "this server may not use secrets for users")
-		case c.Actor != "":
-			problem(w, http.StatusForbidden, "not_delegable", "no delegation rule lets this server use it for this user")
-		default:
-			problem(w, http.StatusForbidden, "no_verb", "the caller's roles do not hold use")
-		}
+		s.refuse(w, c, "use")
 		return
 	}
 	body := descriptor(sec, verbs)
@@ -420,19 +392,6 @@ func (s *Server) getSecret(w http.ResponseWriter, r *http.Request) {
 	body["params"] = params
 	body["redact_keys"] = redact
 	body["expires_at"] = nil
-	if c.Actor != "" {
-		// through a grant: the matching rule's ttl bounds how long the server may hold the material
-		var ttl int64
-		for _, rule := range sec.Rules {
-			if rule.Mode == "shared" && rule.TTL > 0 && slices.Contains(rule.Actors, c.Actor) &&
-				slices.ContainsFunc(rule.Subjects, c.Has) && (ttl == 0 || rule.TTL < ttl) {
-				ttl = rule.TTL
-			}
-		}
-		if ttl > 0 {
-			body["expires_at"] = s.now().Add(time.Duration(ttl) * time.Second).UTC().Format(time.RFC3339)
-		}
-	}
 	w.Header().Set("ETag", strconv.Quote(strconv.FormatInt(sec.Version, 10)))
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, body)
@@ -506,12 +465,16 @@ func (s *Server) putSecret(w http.ResponseWriter, r *http.Request) {
 	created := false
 	saved, err := s.store.Update(name, func(current *store.Secret) (*store.Secret, error) {
 		if current == nil {
-			if ifMatch != "" {
-				return nil, store.ErrPrecondition
-			}
 			if !s.mayCreate(c, name) {
-				refused = &refusal{http.StatusForbidden, "no_verb", "the caller may not create " + strconv.Quote(name)}
+				kind := "no_verb"
+				if c.Actor != "" {
+					kind = "actor_not_allowed"
+				}
+				refused = &refusal{http.StatusForbidden, kind, "the caller may not create " + strconv.Quote(name)}
 				return nil, errors.New("refused")
+			}
+			if ifMatch != "" { // after the permission: a precondition must not tell a name exists
+				return nil, store.ErrPrecondition
 			}
 			created = true
 			return &store.Secret{
@@ -521,9 +484,14 @@ func (s *Server) putSecret(w http.ResponseWriter, r *http.Request) {
 			}, nil
 		}
 		verbs := s.verbs(c, current)
-		if len(verbs) == 0 {
-			// invisible: creating it would collide with a name the caller must not learn exists
-			refused = &refusal{http.StatusForbidden, "no_verb", "the caller may not create " + strconv.Quote(name)}
+		if len(verbs) == 0 || (!slices.Contains(verbs, "update") && !s.mayCreate(c, name)) {
+			// invisible, or not ours to create: the same answer as for a missing name the caller may not
+			// create - neither tells that the name exists
+			kind := "no_verb"
+			if c.Actor != "" {
+				kind = "actor_not_allowed"
+			}
+			refused = &refusal{http.StatusForbidden, kind, "the caller may not create " + strconv.Quote(name)}
 			return nil, errors.New("refused")
 		}
 		currentTag := strconv.Quote(strconv.FormatInt(current.Version, 10))
@@ -534,7 +502,11 @@ func (s *Server) putSecret(w http.ResponseWriter, r *http.Request) {
 			return nil, store.ErrPrecondition
 		}
 		if !slices.Contains(verbs, "update") {
-			refused = &refusal{http.StatusForbidden, "no_verb", "the caller's roles do not hold update"}
+			kind := "no_verb"
+			if c.Actor != "" {
+				kind = "actor_not_allowed" // through a server only for admins, as its policy lists (specs/009)
+			}
+			refused = &refusal{http.StatusForbidden, kind, "the caller's roles do not hold update"}
 			return nil, errors.New("refused")
 		}
 		next := *current
@@ -578,20 +550,18 @@ func (s *Server) mutate(w http.ResponseWriter, r *http.Request, verb string,
 	c := callerOf(r)
 	name := r.PathValue("name")
 	var missing, forbidden bool
-	var refusedOn *store.Secret
 	saved, err := s.store.Update(name, func(current *store.Secret) (*store.Secret, error) {
 		if current == nil {
 			missing = true
 			return nil, store.ErrNotFound
 		}
 		verbs := s.verbs(c, current)
-		if len(verbs) == 0 && !(c.Actor != "" && len(s.userVerbs(c, current)) > 0) {
+		if len(verbs) == 0 {
 			missing = true
 			return nil, store.ErrNotFound
 		}
 		if !slices.Contains(verbs, verb) {
 			forbidden = true
-			refusedOn = current
 			return nil, errors.New("refused")
 		}
 		return fn(current)
@@ -600,7 +570,7 @@ func (s *Server) mutate(w http.ResponseWriter, r *http.Request, verb string,
 	case missing:
 		problem(w, http.StatusNotFound, "not_found", fmt.Sprintf("no secret %q", name))
 	case forbidden:
-		s.refuse(w, c, refusedOn, verb)
+		s.refuse(w, c, verb)
 	case errors.Is(err, errNotHeld):
 		problem(w, http.StatusForbidden, "no_verb", strings.TrimPrefix(err.Error(), errNotHeld.Error()+": "))
 	case errors.Is(err, errInvalid):
@@ -662,7 +632,7 @@ func (s *Server) listGrants(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !slices.Contains(verbs, "grant") {
-		s.refuse(w, callerOf(r), sec, "grant")
+		s.refuse(w, callerOf(r), "grant")
 		return
 	}
 	writeJSON(w, http.StatusOK, grantList(sec))
@@ -678,20 +648,15 @@ func (s *Server) putGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	c := callerOf(r)
 	saved, ok := s.mutate(w, r, "grant", func(current *store.Secret) (*store.Secret, error) {
-		if !validPrincipal(body.Principal) || len(body.Verbs) == 0 {
-			return nil, fmt.Errorf("%w: a grant is {principal, verbs[]} with a role:, group:, subject: or client: principal", errInvalid)
+		// a grant gives `use` to a role or a group (specs/009): never one user, never a management verb
+		role, isRole := strings.CutPrefix(body.Principal, "role:")
+		group, isGroup := strings.CutPrefix(body.Principal, "group:")
+		if !(isRole && role != "") && !(isGroup && group != "") {
+			return nil, fmt.Errorf("%w: a grant names a role: or a group: principal", errInvalid)
 		}
-		held := s.grantable(c, current)
-		for _, v := range body.Verbs {
-			if !config.KnownVerb(v) {
-				return nil, fmt.Errorf("%w: unknown verb %q", errInvalid, v)
-			}
-			// a grant never passes on more than its grantor holds: `grant` alone must not become `use`
-			if !slices.Contains(held, v) {
-				return nil, fmt.Errorf("%w: the caller does not hold %q, so it cannot grant it", errNotHeld, v)
-			}
+		if len(body.Verbs) != 1 || body.Verbs[0] != "use" {
+			return nil, fmt.Errorf("%w: a grant gives use, and only use", errInvalid)
 		}
 		grant := store.Grant{ID: id, Principal: body.Principal, Verbs: body.Verbs}
 		replaced := false

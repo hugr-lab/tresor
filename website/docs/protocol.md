@@ -100,7 +100,7 @@ create.
 | Method | Path | Meaning |
 | --- | --- | --- |
 | `GET` | `/v1/secrets[?type=<type>]` | descriptors the caller may see — **without material** |
-| `GET` | `/v1/secrets/{name}` | one secret **with material** — requires `use` (or a delegation rule) |
+| `GET` | `/v1/secrets/{name}` | one secret **with material** — requires `use` |
 | `PUT` | `/v1/secrets/{name}` | create or replace (see [Conditional writes](#conditional-writes)) |
 | `DELETE` | `/v1/secrets/{name}` | delete — requires `delete` |
 | `PATCH` | `/v1/secrets/{name}` | `{"comment": "…"}` — requires `annotate` |
@@ -114,13 +114,12 @@ create.
   "provider": "config",
   "scope": ["mssql://crm.corp.example"],
   "comment": "Read-only access to the CRM database",
-  "owner": "role:sales_admins",
+  "owner": "subject:https://idp.example/realms/corp|8f1c2d3e-…",
   "created_at": "2026-09-01T10:00:00Z",
   "updated_at": "2026-09-10T08:30:00Z",
   "version": "7",
   "dynamic": false,
-  "permissions": ["use", "annotate"],
-  "delegation": null
+  "permissions": ["use"]
 }
 ```
 
@@ -128,8 +127,7 @@ A client lists descriptors (no material) and fetches material only for the secre
 picks. It may cache material; a dynamic secret's no longer than its `expires_at`.
 
 `permissions` lists the verbs **the caller** holds on this secret, and is always a list (possibly
-empty). `delegation` summarises the secret's delegation rules for callers who hold `delegate` (the
-reference server: `{"rules": n}`), and is `null` otherwise.
+empty): `["use"]` for a user whose roles are granted it, the management verbs for an administrator.
 
 ### Material
 
@@ -181,81 +179,58 @@ A client caches the material until shortly before that time.
 
 ## Permissions
 
-The verbs a service decides:
+**Administrators** manage secrets; everyone else only uses what their roles are granted. Which
+principals are administrators is the service's configuration.
 
-| Verb | Level | Meaning |
+| Verb | Level | Held by |
 | --- | --- | --- |
-| `create` | service | create new secrets (in `whoami`, optionally by name pattern) |
-| `use` | secret | receive the material |
-| `update` | secret | replace params / material |
-| `delete` | secret | delete |
-| `annotate` | secret | set the comment |
-| `grant` | secret | give and take verbs from principals |
-| `delegate` | secret | manage delegation rules |
+| `create` | service | administrators (in `whoami`: `permissions.create` is `true` or `false`) |
+| `use` | secret | the principals a grant names: roles and groups |
+| `update` | secret | administrators: replace params / material |
+| `delete` | secret | administrators |
+| `annotate` | secret | administrators: set the comment |
+| `grant` | secret | administrators: give and take `use` |
+
+- **`use` comes only from a grant.** A grant gives `use` to a `role:` or a `group:` principal. An
+  administrative role does not imply `use`: an administrator uses a secret only when one of their
+  roles is granted it, as anyone else. Creating a secret does not imply it either.
+- **Users do not create or share secrets.** A user keeps their own credentials in their own client
+  (tresor: DuckDB's `CREATE SECRET`). So only an administrator can put a secret where others'
+  lookups find it, or let anyone use it: a user cannot plant a secret on another's paths.
+- Every other caller gets `403 no_verb` for the management verbs.
 
 ### Grants
 
 | Method | Path | Meaning |
 | --- | --- | --- |
 | `GET` | `/v1/secrets/{name}/grants` | `[{id, principal, verbs[]}]` — requires `grant` |
-| `PUT` | `/v1/secrets/{name}/grants/{id}` | create or replace a grant `{principal, verbs[]}` → `200` with the secret's grants |
+| `PUT` | `/v1/secrets/{name}/grants/{id}` | create or replace a grant `{principal, verbs: ["use"]}` → `200` with the secret's grants |
 | `DELETE` | `/v1/secrets/{name}/grants/{id}` | revoke → `204`, or `404` |
 
 Writes are immediate: a client has no transaction to join them to, and tresor documents that a
 `ROLLBACK` does not undo them.
 
-A grant passes on at most the verbs its grantor holds: holding `grant` alone does not let a caller
-give itself `use`. The id is the client's choice. A malformed grant (an unknown verb, a principal
-without a known prefix) is `422 invalid_secret`. A verb the grantor lacks is `403 no_verb`.
+A grant names a `role:` or a `group:` principal and the verbs `["use"]`, nothing else. Any other
+principal or verb is `422 invalid_secret`. The id is the client's choice.
 
 ## Delegation
 
-Optional (`capabilities.delegation`). A secret with no rules is **not delegated**.
-
-### Rules
-
-| Method | Path | Meaning |
-| --- | --- | --- |
-| `GET` | `/v1/secrets/{name}/delegations` | the secret's rules — requires `delegate` |
-| `POST` | `/v1/secrets/{name}/delegations` | add a rule → `201` with the rule, its `id` assigned by the service |
-| `DELETE` | `/v1/secrets/{name}/delegations/{id}` | remove a rule → `204`, or `404` |
-
-```json
-{
-  "id": "d1",
-  "actors": ["client:acl-node-prod"],
-  "subjects": ["role:analysts"],
-  "mode": "shared",
-  "operations": ["read"],
-  "scope": ["s3://lake/team-a/"],
-  "ttl": 3600
-}
-```
-
-- `actors` are `client:` principals, and `subjects` are any principals.
-- A rule passes on `use`, so its author must hold `use` besides `delegate`. `delegate` alone is not
-  more than `use`.
-- `mode: "user"` — the service issues a credential of the user's own; the resource sees the person.
-  A service that cannot issue personal credentials refuses the rule with `422 invalid_secret`.
-- `mode: "shared"` — the actor receives the shared secret, only to act for that user; the user needs
-  no `use` verb.
-- `operations` / `scope` narrow the credential the service issues; enforcement is the credential's.
-  `ttl` bounds the delegated material's lifetime (seconds).
+Optional (`capabilities.delegation`). A **server** that serves users (a duckdb-acl node, a data
+platform) acts for them through a **delegation grant**. A grant proves "this request is for user X's
+session". It does not add the user's rights to the server's:
+- **`use` is the server's own.** The user gets exactly what an administrator granted the server, for
+  the statements the server runs for them, and nothing more.
+- **Management passes through a server only for an administrator.** The user must hold an
+  administrative role themselves, and the service's policy must let this server pass that verb on.
+  This is how an administrator manages secrets through a node.
+- A token-for-the-caller secret (the reference server's `token_exchange`) is minted for the grant's
+  **user**, never for the server.
 
 ### Actors
 
-A service decides which servers may act for users at all, and for which verbs. It denies management
-verbs (`update`, `delete`, `annotate`, `grant`, `delegate`, and creating) unless configured: a
-compromised server must not manage secrets for everyone who ever connected to it.
-- A server that may not act for users, or not for the verb at hand, gets `403 actor_not_allowed`.
-- **Material** through a grant also needs a rule that names the actor and one of the user's
-  principals. Otherwise the answer is `403 not_delegable`, even when the user holds `use`.
-  - With a rule `ttl`, the material's `expires_at` tells the server how long it may keep it.
-- **Grants under a grant.** A server can pass on only the user's own verbs that the actor policy
-  allows. A `use` that comes only from a rule is never grantable, neither to the user nor to the
-  server itself.
-- **`whoami` under a grant.** `permissions.create` is what the user may create *through this
-  server*. That is nothing unless the policy lets the server create.
+A service decides which servers may act for users at all (`client:` principals), and which
+management verbs each may pass on for administrators. Everything else is `403 actor_not_allowed`:
+a server that may not act, or not for the verb at hand.
 
 ### Acting for a user
 
@@ -282,11 +257,11 @@ in the body:
 - **Lifetime.** A grant may outlive the user's token, because a session outlives an access token.
   The service caps `ttl`. A server asks for the session's remaining lifetime and revokes the grant
   when the session ends (non-normative).
-- **Using it.** From then on the server calls any resource with its own token **and**
-  `Delegation: <id>`. The service evaluates the **user's** permissions, applies the actor rules
-  above, and audits both. `whoami` answers the user, with `actor` set to the server's `client:`
-  principal. `GET /v1/secrets` lists what the user sees, plus the secrets delegated to this server
-  for this user.
+- **Using it.** From then on the server calls with its own token **and** `Delegation: <id>`. The
+  service applies the rules above and audits both identities. `whoami` answers the user, with
+  `actor` set to the server's `client:` principal, and `permissions.create` is what the user may
+  create *through this server*. `GET /v1/secrets` lists what the server may use, plus, for an
+  administrator, what they may manage through it.
 - **Binding.** A grant is bound to its actor. Presented with another caller's token it is refused
   with `401 unauthenticated`: a stolen grant alone is useless.
 - **Revocation:**
@@ -305,7 +280,6 @@ in the body:
 | `unauthenticated` | 401 | token missing, invalid or expired — refresh and retry once |
 | `no_verb` | 403 | the caller's roles do not hold the verb |
 | `actor_not_allowed` | 403 | the server may not act for users for this verb |
-| `not_delegable` | 403 | no delegation rule matches |
 | `not_found` | 404 | no such secret (or not visible) |
 | `precondition_failed` | 412 | `If-None-Match` / `If-Match` not met |
 | `invalid_secret` | 422 | the secret does not validate |
