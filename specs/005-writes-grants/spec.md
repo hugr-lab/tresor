@@ -1,6 +1,6 @@
 # Spec 005: writes — `CREATE / DROP PERSISTENT SECRET … IN corp`, annotations, grants
 
-- **Status**: draft
+- **Status**: implemented
 - **Date**: 2026-09-23
 - **Author**: VGSML (with Claude)
 
