@@ -37,6 +37,19 @@ this per statement:
 - **Explicit calls** (whoami, listings, writes, management) are never the node's under a session.
 - **A person's attachment** serves nothing under a session.
 
+**Ownership is not integrity.** The node's secrets are as safe as the set of principals who may
+change them. Anyone holding `update` on one (a service admin role, or whoever the node's admin
+granted it to) can change its `ENDPOINT` and params in place, and the node will follow. Grant
+`update` and `grant` on the node's secrets to nobody but its admins.
+
+**What counts as a session is what acl publishes.** A lookup made without a connection (a
+background refresh), or on an internal connection some extension opens, is the node's own work.
+So is a **write**: a `CREATE PERSISTENT SECRET … IN corp` on such a connection is owned by the node,
+and enters its lookups. Keep user-influenced SQL off unsessioned connections. A service attachment
+*without* `ACT_FOR_SESSIONS` follows the ordinary rule outside sessions, and considers every secret
+it may use, including ones users granted it. On an acl node, give the node's own work an acting
+attachment.
+
 The node's secrets are kept from users by **acl's function gate, not by the credentials**. A user
 who could name the lake's bucket directly (`read_parquet`, `COPY`, `ATTACH`, a replacement scan, any
 extension's URL-fetching function) would read it with the node's key. Keep acl's `readers` category

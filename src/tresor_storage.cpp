@@ -627,9 +627,10 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &calle
 		}
 		return nullptr; // the service refused the session's grant (marked by the call): a lookup finds nothing
 	}
-	if (response.status == 403 && !caller.IsNode()) {
-		// listed under the grant but not delegated to this node (the user's own secret, no rule): skipped until
-		// its version changes - neither the list nor the next lookup pays for it again
+	if (response.status == 403) {
+		// listed as usable, but its material refused (a personal secret for a user who may not have it, a
+		// secret whose use was taken away): skipped until its version changes - neither the list nor the next
+		// lookup pays for it again
 		lock_guard<mutex> guard(lock);
 		view.refused[d.name] = d.version;
 		return nullptr;
@@ -745,10 +746,11 @@ SecretMatch TresorSecretStorage::MatchIn(const Caller &caller, const string &pat
 	}
 	// score the usable descriptors by duckdb's own rule, on placeholders without material; best first
 	vector<std::pair<SecretMatch, idx_t>> candidates;
+	auto node_mode = NodeMode();
 	for (idx_t i = 0; i < list.size(); i++) {
 		auto &d = list[i];
 		if (!Lookupable(d) || !StringUtil::CIEquals(d.type, type) || !d.May("use") || Refused(*view, d) ||
-		    !Serves(caller, d)) {
+		    !Serves(caller, d, node_mode)) {
 			continue; // a secret the caller may not use never matches: its material would be refused
 		}
 		auto entry =
@@ -759,16 +761,26 @@ SecretMatch TresorSecretStorage::MatchIn(const Caller &caller, const string &pat
 			candidates.emplace_back(std::move(match), i);
 		}
 	}
+	// best first; on a tie a personal secret first - the admin marked the path as the user's
 	std::stable_sort(candidates.begin(), candidates.end(),
-	                 [](const std::pair<SecretMatch, idx_t> &a, const std::pair<SecretMatch, idx_t> &b) {
-		                 return a.first.score > b.first.score;
+	                 [&](const std::pair<SecretMatch, idx_t> &a, const std::pair<SecretMatch, idx_t> &b) {
+		                 if (a.first.score != b.first.score) {
+			                 return a.first.score > b.first.score;
+		                 }
+		                 return list[a.second].personal && !list[b.second].personal;
 	                 });
-	// the best whose material comes back: one the service refuses is skipped for the next
+	// the best whose material comes back: a secret of the node's the service refuses is skipped for the next -
+	// but a personal one that cannot be had (no usable grant, the user refused) ends the search: its path is
+	// the user's, and must never fall to the node's own credential
 	for (auto &candidate : candidates) {
-		auto material = MaterialFor(caller, *view, list[candidate.second], transaction);
+		auto &d = list[candidate.second];
+		auto material = MaterialFor(caller, *view, d, transaction);
 		if (material) {
 			auto entry = EntryOf(std::move(material));
 			return SecretMatch(entry, candidate.first.score);
+		}
+		if (d.personal) {
+			return SecretMatch();
 		}
 	}
 	return SecretMatch();
@@ -791,7 +803,7 @@ unique_ptr<SecretEntry> TresorSecretStorage::ByNameIn(const Caller &caller, cons
 		// a secret the caller may see but not use is not one it can have by name: not found here, so a
 		// local secret of that name is not shadowed by an error
 		if (StringUtil::CIEquals(d.name, name) && Lookupable(d) && d.May("use") && !Refused(*view, d) &&
-		    Serves(caller, d)) {
+		    Serves(caller, d, NodeMode())) {
 			auto material = MaterialFor(caller, *view, d, transaction);
 			return material ? make_uniq<SecretEntry>(EntryOf(std::move(material))) : nullptr;
 		}
@@ -809,12 +821,12 @@ bool TresorSecretStorage::ServesNodeUnderSessions(const Caller &caller) {
 	return caller.session && caller.session->Flow() == LoginFlow::CLIENT_CREDENTIALS;
 }
 
-bool TresorSecretStorage::Serves(const Caller &who, const Descriptor &d) {
-	bool node_mode;
-	{
-		lock_guard<mutex> guard(lock);
-		node_mode = actor != nullptr;
-	}
+bool TresorSecretStorage::NodeMode() {
+	lock_guard<mutex> guard(lock);
+	return actor != nullptr;
+}
+
+bool TresorSecretStorage::Serves(const Caller &who, const Descriptor &d, bool node_mode) {
 	if (who.IsNode() && !node_mode) {
 		return !d.personal || who.session->Flow() != LoginFlow::CLIENT_CREDENTIALS; // the ordinary rule
 	}
@@ -837,7 +849,10 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialFor(const Caller &who,
 		return nullptr;
 	}
 	auto session_view = ViewOf(caller);
-	return session_view ? MaterialOf(caller, *session_view, d, transaction) : nullptr;
+	if (!session_view || Refused(*session_view, d)) {
+		return nullptr; // refused for this user before (by version): not asked again
+	}
+	return MaterialOf(caller, *session_view, d, transaction);
 }
 
 SecretMatch TresorSecretStorage::LookupSecret(const string &path, const string &type,
@@ -867,8 +882,9 @@ vector<SecretEntry> TresorSecretStorage::AllSecrets(optional_ptr<CatalogTransact
 	shared_ptr<View> view;
 	// descriptors only: listing never fetches material; never throws (duckdb_secrets() must work while a
 	// service is down). What lookups would consider, and nothing else
+	auto node_mode = NodeMode();
 	for (auto &d : Snapshot(NodeOf(who), view)) {
-		if (Lookupable(d) && Serves(who, d)) {
+		if (Lookupable(d) && d.May("use") && Serves(who, d, node_mode)) {
 			out.push_back(EntryOf(
 			    make_uniq<KeyValueSecret>(d.scope, Identifier(d.type), Identifier(ProviderOf(d)), Identifier(d.name))));
 		}
@@ -907,7 +923,7 @@ unique_ptr<const BaseSecret> TresorSecretStorage::RefreshMaterial(const string &
 	shared_ptr<View> view;
 	auto served = who.IsNode() || ServesNodeUnderSessions(who);
 	for (auto &d : served ? Snapshot(NodeOf(who), view) : vector<Descriptor>()) {
-		if (!StringUtil::CIEquals(d.name, name) || !Lookupable(d) || !d.May("use") || !Serves(who, d)) {
+		if (!StringUtil::CIEquals(d.name, name) || !Lookupable(d) || !d.May("use") || !Serves(who, d, NodeMode())) {
 			continue;
 		}
 		// only a dynamic secret is refreshed: a static one's credential is fixed in the service, and

@@ -28,7 +28,9 @@ fixes only what a client sees.
   claims map to principals is the service's business. Only `subject:` identifies a caller. The other
   prefixes name something a caller holds: a `client:` name is shared by every token of that client,
   and, across issuers, by same-named clients. Ownership and identity are therefore always
-  `subject:`.
+  `subject:`. A secret's `owner` is exactly `subject:` + the `issuer` + `|` + the `subject` that
+  its creator's `whoami` answers, byte for byte, with no normalisation (a trailing `/` included). A
+  client compares owners with its own whoami that way; tresor's nodes do (specs/009).
 - Names of secrets are compared exactly. A client sends them in one canonical form (tresor: lower
   case, as DuckDB compares secret names case-insensitively).
 - Bodies: a client sends only the fields listed here. A service may refuse unknown fields with
@@ -114,11 +116,12 @@ create.
   "provider": "config",
   "scope": ["mssql://crm.corp.example"],
   "comment": "Read-only access to the CRM database",
-  "owner": "role:sales_admins",
+  "owner": "subject:https://idp.example/realms/corp|8f1c2d3e-…",
   "created_at": "2026-09-01T10:00:00Z",
   "updated_at": "2026-09-10T08:30:00Z",
   "version": "7",
   "dynamic": false,
+  "personal": false,
   "permissions": ["use", "annotate"],
   "delegation": null
 }
@@ -160,12 +163,18 @@ type>", "value": <JSON>}`; a bare string is shorthand for `VARCHAR`. Nested valu
 A client caches the material until shortly before that time.
 
 `"personal": true` means the material is **minted for a user**, for example a token of theirs for a
-downstream server. A service gives it:
-- to a user's own login, minted for them;
-- to an actor under a delegation grant, minted for the grant's user.
+downstream server. A personal secret MUST be `dynamic: true`, and its material MUST carry an
+`expires_at`. The material is given:
+- **to a user's own login** holding `use`: minted for them;
+- **to an actor under a delegation grant,** when the actor may use the secret itself (it owns it,
+  or holds `use`) and the actor policy lets it use secrets for users: minted for the grant's user.
+  This is how a server's own personal secret (tresor: a node's) reaches a user's token.
+- **To any other caller** (a service's own identity, with no user): `403`.
 
-To any other caller (a service's own identity) it answers `403`. A personal secret is dynamic. A
-client asks for it only on a user's behalf, and never uses one minted for a user for anyone else.
+A client asks for a personal secret only on a user's behalf. It never uses the material for anyone
+else, and never falls back to another credential for the same path when it cannot have it.
+`personal` is not a delegation `mode`. A `mode: "user"` rule lets an actor have a *user's* secret
+minted for its user, while `personal` marks the secret itself as per-user, whoever holds it.
 
 ### Conditional writes
 

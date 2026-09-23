@@ -42,6 +42,9 @@ unique_ptr<FunctionData> WhoamiBind(ClientContext &context, TableFunctionBindInp
 	add("expires_at", LogicalType::TIMESTAMP_TZ);
 	add("can_create", LogicalType::LIST(LogicalType::VARCHAR));
 	add("login", LogicalType::VARCHAR);
+	// what this caller owns things as (`subject:<issuer>|<sub>`): a node's lookups use only secrets whose owner
+	// is exactly this (specs/009) - compare with the owner column of secrets()
+	add("principal", LogicalType::VARCHAR);
 	return make_uniq<WhoamiBindData>(info.session, *info.storage);
 }
 
@@ -117,6 +120,10 @@ void WhoamiScan(ClientContext &context, TableFunctionInput &data, DataChunk &out
 	output.data[5].Append(expires_at);
 	output.data[6].Append(can_create);
 	output.data[7].Append(Value(LoginFlowName(session.Flow())));
+	auto issuer = StringOrNull(root, "issuer"), subject = StringOrNull(root, "subject");
+	output.data[8].Append(issuer.IsNull() || subject.IsNull()
+	                          ? Value(LogicalType::VARCHAR)
+	                          : Value("subject:" + issuer.ToString() + "|" + subject.ToString()));
 }
 
 } // namespace

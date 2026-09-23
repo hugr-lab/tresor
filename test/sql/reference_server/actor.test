@@ -29,8 +29,8 @@ CREATE OR REPLACE PERSISTENT SECRET kc_actor_lake IN owner (TYPE http, SCOPE 'ht
 statement ok
 CALL owner.add_delegation('kc_actor_lake', ['client:acl-node'], ['role:analysts']);
 
-# the owner's attachment goes: under a session every service-login attachment serves its own secrets where no
-# delegated one covers a path (specs/009), and two attachments covering one path are duckdb's tie to break
+# the owner's attachment goes: under a session a service-login attachment serves the secrets it owns (specs/009),
+# and two attachments covering one path are duckdb's tie to break
 statement ok
 DETACH owner;
 

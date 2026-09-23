@@ -57,6 +57,12 @@ SELECT subject, actor FROM corp.whoami();
 ----
 client:etl	NULL
 
+# what the node owns things as: its lookups use only secrets with exactly this owner
+query I
+SELECT principal = 'subject:http://127.0.0.1:{TRESOR_TEST_PORT}/idp|client:etl' FROM corp.whoami();
+----
+true
+
 query I
 SELECT DISTINCT name FROM which_secret('s3://acting/x.parquet', 's3');
 ----
@@ -68,11 +74,16 @@ SELECT DISTINCT name FROM which_secret('s3://acting/deep/x.parquet', 's3');
 ----
 node_lake
 
-# and a personal secret has no user here
+# a personal secret has no user here: the node's own secret on that path serves the node's own work
 query I
-SELECT count(*) FROM which_secret('s3://user/x.parquet', 's3');
+SELECT name FROM which_secret('s3://user/x.parquet', 's3');
 ----
-0
+user_same
+
+statement error
+SELECT tresor_secret_param('user_lake', 'key_id');
+----
+user_lake
 
 # --- a session: its user's secrets, through the grant -----------------------------------------------------
 
@@ -131,7 +142,8 @@ SELECT count(*) FROM which_secret('s3://alice/x.parquet', 's3');
 ----
 0
 
-# the node's personal secret: minted for the session's user, through the grant
+# the node's personal secret: minted for the session's user, through the grant - preferred over the node's own
+# on the same path, which a user's statement never gets
 query II
 SELECT name, storage FROM which_secret('s3://user/x.parquet', 's3');
 ----
@@ -146,7 +158,7 @@ VARCHAR USER-alice
 query I
 SELECT list(name ORDER BY name) FROM duckdb_secrets() WHERE storage = 'corp';
 ----
-[infra_lake, node_lake, shared_lake, stats, user_lake]
+[infra_lake, node_lake, shared_lake, user_lake, user_same]
 
 # writes under a session go as the user through the grant: here the actor policy refuses them
 statement error
@@ -181,9 +193,9 @@ SELECT acl_stub_stamp(1);
 ----
 99
 
-# the same service, attached without acting: under an acl session its explicit calls are refused (its
-# lookups serve the node's secrets, as any attachment's do - attached only for this: by name, two storages
-# holding one secret are ambiguous)
+# the same service, attached without acting: under an acl session its explicit calls are refused (its lookups
+# serve the secrets its login owns, no personal ones - attached only for this: by name, two storages holding
+# one secret are ambiguous)
 statement ok
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS plain (INSECURE_HTTP true);
 
@@ -200,7 +212,8 @@ does not act for duckdb-acl sessions
 statement ok
 DETACH plain;
 
-# a person's attachment serves nothing under an acl session: neither their secrets nor anyone's (specs/009)
+# a person's attachment serves nothing under an acl session: neither their secrets nor anyone's (specs/009) -
+# outside one, the ordinary rule: a personal secret is minted for the person (below)
 statement ok
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS me (INSECURE_HTTP true, LOGIN 'browser');
 
@@ -208,6 +221,17 @@ query I
 SELECT count(*) FROM duckdb_secrets() WHERE storage = 'me';
 ----
 0
+
+statement ok
+SET acl_stub_session = '';
+
+query I
+SELECT tresor_secret_param('user_lake', 'key_id');
+----
+VARCHAR USER-alice
+
+statement ok
+SET acl_stub_session = 's1';
 
 statement ok
 DETACH me;
@@ -264,6 +288,12 @@ statement error
 SELECT * FROM corp.whoami();
 ----
 no delegation grant here
+
+# a personal path with no usable grant: nothing - never the node's own secret on it
+query I
+SELECT count(*) FROM which_secret('s3://user/x.parquet', 's3');
+----
+0
 
 # no grant to use: the node's own secret serves the path, never a delegated one
 query I

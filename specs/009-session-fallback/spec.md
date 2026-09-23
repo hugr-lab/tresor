@@ -48,8 +48,12 @@ session's user, through the session's grant. **The node never gets a user's secr
   None of them enters the node's lookups, so users cannot plant or redirect the node's paths. The
   node's grants and admin role remain for management: in ACL NATIVE, its admin creates secrets,
   grants them, and lists what is registered.
-- **Candidates.** Candidates are tried best-scoped first. One whose material the service refuses is
-  skipped for the next, and remembered by name and version.
+- **Candidates.** Candidates are tried best-scoped first; on a tie, a personal one comes first.
+  - A secret of the node's whose material the service refuses is skipped for the next, and
+    remembered by name and version.
+  - A **personal** candidate that cannot be had **ends the search**: no usable grant, or the user
+    refused. Its path is the user's, and a user's statement must never fall through to the node's
+    own credential for it.
 
 ### Personal secrets
 
@@ -61,7 +65,12 @@ session's user, through the session's grant. **The node never gets a user's secr
     `SESSION_GRANT_WAIT`, and only here) and cached in the session's own view, never the node's.
     With no usable grant, it is not served;
   - **outside a session** it has no user, and is not served.
-- **Minting** these secrets in the reference server is spec 010.
+- **Minting** these secrets in the reference server is spec 010. The protocol requires a personal
+  secret to be dynamic, says to whom it is given, and forbids a client to fall back to another
+  credential for its path.
+- **Diagnosis.** `corp.whoami()` gains a `principal` column: what the login owns things as. A node
+  whose secrets are not owned by exactly that principal has none. Compare it with the `owner`
+  column of `corp.secrets()`.
 
 ### Explicit calls
 
@@ -89,6 +98,10 @@ service on a node.
 - **A contract mismatch** (acl built from another `acl_connection` version) is served like a session
   without a grant: the node's own non-personal secrets, and explicit calls refused.
 - **The node's paths do not wait** for a new session's grant. Only personal secrets do.
+- **Ownership is not integrity.** Whoever holds `update` on a node's secret can change it in place.
+  Grant `update` and `grant` on the node's secrets to its admins only (spec 011 takes this further).
+- **Unsessioned connections are the node's work.** That includes writes: a secret created on one is
+  the node's. Keep user-influenced SQL off them.
 
 ## Testing
 
@@ -124,7 +137,16 @@ independent review and the discussion that followed found:
 - **A person's attachment served that person's secrets to every session.**
 
 Hence: a node looks up only what it owns, personal secrets are minted through the grant, and a
-person's attachment serves nothing under a session. Smaller fixes:
+person's attachment serves nothing under a session. A second review found:
+- **A personal secret that could not be had** fell through to the node's own secret on the same
+  path, giving a user's statement the node's credential. A personal candidate now ends the search,
+  and wins ties.
+- **The "remembered" refusals** were written to a view that was never read; now they are read.
+- **The protocol's `personal` text and the owner format** are now precise.
+- **The security page** again says unsessioned connections are the node's work, writes included,
+  and that ownership is not integrity.
+
+Smaller fixes:
 - a refused candidate is skipped and remembered;
 - the refresh follows the lookup;
 - the node's paths do not wait for a grant;

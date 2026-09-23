@@ -123,7 +123,9 @@ private:
 	static bool ServesNodeUnderSessions(const Caller &caller);
 	//! Does this attachment's lookup consider `d` for `who`'s statement: a node's own secrets only, personal
 	//! ones only for a session (specs/009); the ordinary rule for anyone else outside a session.
-	bool Serves(const Caller &who, const Descriptor &d);
+	bool Serves(const Caller &who, const Descriptor &d, bool node_mode);
+	//! Is this attachment a node (acting for acl sessions)?
+	bool NodeMode();
 	//! The material of `d` for `who`: the attachment's own, or - a personal secret under a session - minted for
 	//! the session's user through its grant, in the session's view.
 	unique_ptr<const BaseSecret> MaterialFor(const Caller &who, View &view, const Descriptor &d,

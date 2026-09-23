@@ -460,6 +460,9 @@ class Handler(BaseHTTPRequestHandler):
                 "planted_lake": {"type": "s3", "scope": ["s3://acting/deep"], "permissions": ["use"],
                                  "owner": "subject:%s/idp|mallory" % self.base(),
                                  "params": {"key_id": "PLANTED"}, "redact_keys": []},
+                # the node's own, on the very path of its personal one: never served for a user's statement
+                "user_same": {"type": "s3", "scope": ["s3://user"], "permissions": ["use"], "owner": node,
+                              "params": {"key_id": "NODE-SAME"}, "redact_keys": []},
                 # the node's personal secret: minted per user, only through a grant
                 "user_lake": {"type": "s3", "scope": ["s3://user"], "permissions": ["use"], "owner": node,
                               "personal": True, "dynamic": True, "params": {}, "redact_keys": []},
@@ -477,7 +480,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         name = urllib.parse.unquote(rest[len("/v1/secrets/"):]) if rest.startswith("/v1/secrets/") else None
         if not actor and name in listing and listing[name].get("personal"):
-            self.problem(403, "no_verb", "a personal secret is minted for a user: through a grant")
+            if identity["subject"].startswith("client:"):
+                self.problem(403, "no_verb", "a personal secret is minted for a user: through a grant")
+                return
+            # a person's own login: minted for them
+            sec = listing[name]
+            self.send(200, dict(descriptor(name, sec), params={"key_id": "USER-" + identity["subject"]},
+                                redact_keys=[], expires_at=time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                                         time.gmtime(time.time() + 600))))
             return
         if name not in listing or "use" not in listing[name]["permissions"] or listing[name].get("not_delegable"):
             self.problem(403, "not_delegable", "no rule delegates this secret") if actor else \
