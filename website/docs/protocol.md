@@ -274,8 +274,14 @@ in the body:
   actor's own), verified like any bearer token. The user's principals are taken at the exchange; a
   new exchange picks up changed roles. The user hands the token to the server for exactly this
   exchange. The server forwards it to its audience, the service, and must keep it no longer.
+- **Getting the subject token** (non-normative). The token a user presented to the server was issued
+  *for the server*: its audience is not this service. The server exchanges it at the identity
+  provider that issued it — RFC 8693 token exchange, or Entra's On-Behalf-Of — for a token whose
+  audience is this service, and sends only that one here. The tresor client does this for
+  duckdb-acl's sessions (`ACT_FOR_SESSIONS`).
 - **Lifetime.** A grant may outlive the user's token, because a session outlives an access token.
-  The service caps `ttl`.
+  The service caps `ttl`. A server asks for the session's remaining lifetime and revokes the grant
+  when the session ends (non-normative).
 - **Using it.** From then on the server calls any resource with its own token **and**
   `Delegation: <id>`. The service evaluates the **user's** permissions, applies the actor rules
   above, and audits both. `whoami` answers the user, with `actor` set to the server's `client:`

@@ -76,6 +76,71 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "duckdb-secrets",
+      "name": "The secrets service, as an audience a token exchange can target (specs/008)",
+      "publicClient": false,
+      "secret": "not-a-login",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "implicitFlowEnabled": false
+    },
+    {
+      "clientId": "acl-node",
+      "name": "A duckdb-acl node acting for its users (specs/008)",
+      "publicClient": false,
+      "secret": "node-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "attributes": {
+        "standard.token.exchange.enabled": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience duckdb-secrets",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "duckdb-secrets",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "client_id (as the service_account scope adds it)",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usersessionmodel-note-mapper",
+          "config": {
+            "user.session.note": "client_id",
+            "claim.name": "client_id",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "acl-door",
+      "name": "The client people connect to the acl node with (specs/008; password grant for the tests)",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "audience acl-node",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "acl-node",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
     }
   ],
   "users": [
@@ -126,6 +191,14 @@
       "realmRoles": [
         "default-roles-tresor",
         "etl"
+      ]
+    },
+    {
+      "username": "service-account-acl-node",
+      "enabled": true,
+      "serviceAccountClientId": "acl-node",
+      "realmRoles": [
+        "default-roles-tresor"
       ]
     }
   ]

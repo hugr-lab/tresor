@@ -23,3 +23,12 @@ if(DEFINED ENV{TRESOR_TEST_HTTPFS} AND "$ENV{TRESOR_TEST_HTTPFS}" STREQUAL "1")
         GIT_TAG 0507d4ae4914ef30be5952bda0a547aa2b7ca981
     )
 endif()
+
+# acl_stub, for the tests only (specs/008): duckdb-acl's side of the acl_connection contract - sessions opened
+# and closed for tresor's observer, a session published on a connection's statements - so the actor path is
+# tested without building duckdb-acl (arrow and all). Same opt-in as httpfs; never in a distribution build.
+if(DEFINED ENV{TRESOR_TEST_HTTPFS} AND "$ENV{TRESOR_TEST_HTTPFS}" STREQUAL "1")
+    duckdb_extension_load(acl_stub
+        SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/test/extension/acl_stub
+    )
+endif()

@@ -25,3 +25,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | [005](005-writes-grants/spec.md) | writes — `CREATE / DROP PERSISTENT SECRET … IN corp`, annotations, grants | implemented |
 | [006](006-dynamic-refresh/spec.md) | dynamic secrets — the `tresor` provider behind httpfs's `REFRESH auto` | implemented |
 | [007](007-delegation-rules/spec.md) | delegation — rules, grants, acting for a user (the service side and the rules' SQL) | implemented |
+| [008](008-delegation-actor/spec.md) | tresor as the actor — a duckdb-acl session's secrets are its user's (exchange, grant, revoke) | implemented |

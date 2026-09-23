@@ -16,9 +16,11 @@ using namespace duckdb_yyjson; // NOLINT
 namespace {
 
 struct WhoamiBindData : public TableFunctionData {
-	explicit WhoamiBindData(shared_ptr<TresorSession> session_p) : session(std::move(session_p)) {
+	WhoamiBindData(shared_ptr<TresorSession> session_p, TresorSecretStorage &storage_p)
+	    : session(std::move(session_p)), storage(storage_p) {
 	}
 	shared_ptr<TresorSession> session;
+	TresorSecretStorage &storage;
 };
 
 struct WhoamiState : public GlobalTableFunctionState {
@@ -40,7 +42,7 @@ unique_ptr<FunctionData> WhoamiBind(ClientContext &context, TableFunctionBindInp
 	add("expires_at", LogicalType::TIMESTAMP_TZ);
 	add("can_create", LogicalType::LIST(LogicalType::VARCHAR));
 	add("login", LogicalType::VARCHAR);
-	return make_uniq<WhoamiBindData>(info.session);
+	return make_uniq<WhoamiBindData>(info.session, *info.storage);
 }
 
 unique_ptr<GlobalTableFunctionState> WhoamiInit(ClientContext &context, TableFunctionInitInput &input) {
@@ -72,8 +74,12 @@ void WhoamiScan(ClientContext &context, TableFunctionInput &data, DataChunk &out
 		return;
 	}
 	state.done = true;
-	auto &session = *data.bind_data->Cast<WhoamiBindData>().session;
-	auto response = session.Call("GET", "/v1/whoami");
+	auto &bind = data.bind_data->Cast<WhoamiBindData>();
+	auto &session = *bind.session;
+	// under a duckdb-acl session: the session's user, through its grant - or the reason there is none
+	auto caller = bind.storage.CallerFor(&context);
+	auto response = caller.Call("GET", "/v1/whoami"); // a refused grant throws, marked
+
 	if (response.status != 200) {
 		throw InvalidInputException("tresor: whoami at %s: %s", session.Info().host,
 		                            DescribeProblem(response.status, response.body));
@@ -115,9 +121,9 @@ void WhoamiScan(ClientContext &context, TableFunctionInput &data, DataChunk &out
 
 } // namespace
 
-TableFunction WhoamiFunction(shared_ptr<TresorSession> session) {
+TableFunction WhoamiFunction(shared_ptr<TresorSession> session, TresorSecretStorage &storage) {
 	TableFunction function(Identifier("whoami"), {}, WhoamiScan, WhoamiBind, WhoamiInit);
-	function.function_info = make_shared_ptr<TresorFunctionInfo>(std::move(session));
+	function.function_info = make_shared_ptr<TresorFunctionInfo>(std::move(session), &storage);
 	return function;
 }
 

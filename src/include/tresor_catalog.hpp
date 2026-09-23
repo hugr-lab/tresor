@@ -30,7 +30,7 @@ struct TresorFunctionInfo : public TableFunctionInfo {
 class TresorCatalog : public DuckCatalog {
 public:
 	TresorCatalog(AttachedDatabase &db, shared_ptr<TresorSession> session, TresorSecretStorage &storage,
-	              vector<Descriptor> initial);
+	              vector<Descriptor> initial, shared_ptr<TresorActor> actor);
 	//! A catalog that goes without a DETACH (a rolled-back ATTACH, a failure after the storage callback)
 	//! takes its secrets out of the lookup too.
 	~TresorCatalog() override;
@@ -48,12 +48,16 @@ public:
 
 private:
 	shared_ptr<TresorSession> session;
-	TresorSecretStorage &storage; // owned by the SecretManager, for the instance's lifetime
-	vector<Descriptor> initial;   // the list the ATTACH fetched: the storage starts from it
+	TresorSecretStorage &storage;  // owned by the SecretManager, for the instance's lifetime
+	vector<Descriptor> initial;    // the list the ATTACH fetched: the storage starts from it
+	shared_ptr<TresorActor> actor; // ACT_FOR_SESSIONS (specs/008), else null
+
+	//! The end of the catalog, by DETACH or otherwise: out of the lookup, the grants revoked, the login gone.
+	void Shutdown();
 };
 
 //! The catalog's table functions (tresor_whoami.cpp, tresor_secrets.cpp).
-TableFunction WhoamiFunction(shared_ptr<TresorSession> session);
+TableFunction WhoamiFunction(shared_ptr<TresorSession> session, TresorSecretStorage &storage);
 TableFunction SecretsFunction(shared_ptr<TresorSession> session, TresorSecretStorage &storage);
 //! annotate_secret, grants, grant_secret, revoke_secret (tresor_manage.cpp, specs/005).
 vector<TableFunction> ManagementFunctions(shared_ptr<TresorSession> session, TresorSecretStorage &storage);

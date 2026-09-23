@@ -76,7 +76,9 @@ Value TimestampOrNull(const string &text) {
 void SecretsScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto &state = data.global_state->Cast<SecretsState>();
 	if (!state.fetched) {
-		state.rows = data.bind_data->Cast<SecretsBindData>().storage.Refresh(); // always the service's current state
+		auto &storage = data.bind_data->Cast<SecretsBindData>().storage;
+		// always the service's current state, as the caller sees it (a duckdb-acl session: its user)
+		state.rows = storage.Refresh(storage.CallerFor(&context));
 		state.fetched = true;
 	}
 	idx_t count = 0;

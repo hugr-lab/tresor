@@ -22,7 +22,7 @@ ATTACH prefix works).
   | --- | --- | --- |
   | duckdb | submodule `duckdb/` | branch `v2.0-cyanoptera`, commit = duckdb-acl's |
   | extension-ci-tools | submodule `extension-ci-tools/` | `main`, commit = duckdb-acl's |
-  | duckdb-ext-common | submodule `duckdb-ext-common/` | tag `v0.2.0`, = duckdb-acl's |
+  | duckdb-ext-common | submodule `duckdb-ext-common/` | tag `v0.4.0`, = duckdb-acl's |
   | distribution | `.github/workflows/distribution.yml` | `@main`, `duckdb_version: v2.0-cyanoptera` |
 
 - **Dependencies**: OpenSSL from vcpkg (`vcpkg.json`, static, as in duckdb-acl), for the OIDC core
@@ -33,13 +33,15 @@ ATTACH prefix works).
 ## Project structure
 
 ```text
-src/                        # the extension: the tresor ATTACH type, tresor_version()
+src/                        # the extension: the tresor ATTACH type, tresor_version(); tresor_actor = acting for acl sessions
 duckdb-ext-common/          # submodule: shared contracts + hook bases; tresor OWNS hooks/ (it is the
                             #   first consumer) and contracts/tresor_*.hpp there (charter R6)
 server/                     # the reference duckdb-secrets/1 server (Go module) + the Keycloak test realm
 website/                    # docs (docusaurus); docs/protocol.md is the specification
 test/sql/                   # sqllogictests; attach/ needs the fake service
 test/fake/                  # fake duckdb-secrets service + IdP (Python stdlib) and the fake browser
+test/extension/acl_stub/    # test-only extension: duckdb-acl's side of acl_connection.hpp (specs/008)
+test/acl/actor.sql          # the actor against real duckdb-acl (test_keycloak.sh, TRESOR_ACL_EXTENSION)
 test/keycloak/browser.py    # fills Keycloak's login form: the person's browser in the Keycloak tests
 scripts/ci/                 # smoke_load.sh, test_attach.sh, assert_ran.sh, check_docs_links.py
 specs/                      # one lightweight spec per feature (see specs/README.md)
@@ -70,7 +72,10 @@ With `TRESOR_TEST_HTTPFS=1` (as CI builds) the test build also links **httpfs** 
 at the commit duckdb's 2.0 tree pins in `duckdb/.github/config/extensions/httpfs.cmake`; move both with
 the duckdb pin): the s3/gcs/r2/aws types and the real `REFRESH auto` path (specs/006). Opt-in, so the
 distribution build never compiles it; tresor itself does not depend on it. Without it `refresh.test`
-skips (`require httpfs`), which CI forbids. Tests that need a service
+skips (`require httpfs`), which CI forbids. The same flag links **acl_stub**
+(`test/extension/acl_stub`, specs/008): duckdb-acl's side of `acl_connection.hpp` (`acl_stub_open`,
+`acl_stub_close`, `SET acl_stub_session`) for the actor tests; with `TRESOR_ACL_EXTENSION=<acl.duckdb_extension>`
+`test_keycloak.sh` also runs `test/acl/actor.sql` against real duckdb-acl. Tests that need a service
 `require-env TRESOR_TEST_PORT` and run through `scripts/ci/test_attach.sh` (the fake speaks http on
 loopback, so they ATTACH with `INSECURE_HTTP true`; `BROWSER` is the fake browser).
 

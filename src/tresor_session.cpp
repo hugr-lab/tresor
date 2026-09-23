@@ -2,6 +2,7 @@
 
 #include "duckdb/common/exception.hpp"
 
+#include <algorithm>
 #include <chrono>
 
 namespace duckdb {
@@ -89,21 +90,40 @@ string TresorSession::AccessToken(bool force) {
 }
 
 ServiceResponse TresorSession::Call(const string &method, const string &path, const string &body,
-                                    const std::map<std::string, std::string> &extra_headers) {
-	lock_guard<mutex> guard(lock);
+                                    const std::map<std::string, std::string> &extra_headers, int timeout_seconds) {
+	string used;
 	for (int attempt = 0; attempt < 2; attempt++) {
-		auto token = AccessToken(attempt > 0);
+		string token;
+		{
+			// the lock covers the token and its renewal only, never the request: a node serves many users'
+			// sessions through one login, and one slow call must not hold up the others
+			lock_guard<mutex> guard(lock);
+			// after a 401, renew - unless another call already did while this one was on the wire
+			token = AccessToken(attempt > 0 && tokens.access_token == used);
+		}
+		used = token;
 		std::map<std::string, std::string> headers {{"Authorization", "Bearer " + token},
 		                                            {"Accept", "application/json"}};
 		for (auto &header : extra_headers) {
 			headers[header.first] = header.second;
 		}
-		auto result = oidc::HttpSend(method, info.api + path, headers, body, body.empty() ? "" : "application/json");
+		auto result = oidc::HttpSend(method, info.api + path, headers, body, body.empty() ? "" : "application/json",
+		                             timeout_seconds);
 		if (!result.error.empty()) {
 			throw IOException("tresor: %s %s failed: %s", method, info.api + path, result.error);
 		}
 		if (result.status == 401 && attempt == 0) {
 			continue; // the protocol's rule: refresh and retry once
+		}
+		if (result.status == 401 && extra_headers.count("Delegation")) {
+			// the login was just renewed: the grant is what the service refuses - the caller's to handle
+			ServiceResponse refused;
+			refused.status = result.status;
+			refused.body = std::move(result.body);
+			return refused;
+		}
+		if (result.status == 401) {
+			break;
 		}
 		ServiceResponse out;
 		out.status = result.status;
@@ -112,6 +132,24 @@ ServiceResponse TresorSession::Call(const string &method, const string &path, co
 	}
 	throw InvalidInputException("tresor: %s refused the renewed login (401) - log in again: DETACH and ATTACH",
 	                            info.host);
+}
+
+oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bool on_behalf_of, const string &scope) {
+	string secret;
+	{
+		lock_guard<mutex> guard(lock);
+		if (closed || flow != LoginFlow::CLIENT_CREDENTIALS) {
+			oidc::TokenSet refused;
+			refused.error = closed ? "the session is closed" : "only a client_credentials login exchanges tokens";
+			return refused;
+		}
+		secret = client_secret;
+	}
+	auto out = on_behalf_of
+	               ? oidc::OnBehalfOf(info.endpoints, info.client_id, secret, subject_token, scope)
+	               : oidc::TokenExchange(info.endpoints, info.client_id, secret, subject_token, info.audience, scope);
+	std::fill(secret.begin(), secret.end(), '\0');
+	return out;
 }
 
 void TresorSession::Close() {

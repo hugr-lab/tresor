@@ -28,7 +28,13 @@ A server acting for users **never adds its own authority** to a user's request. 
 on a user's behalf carries the user's delegation grant; the service checks the user's rights, the
 delegation rule, and that this server may act for users at all. A delegated secret is never resolved
 with the server's own identity when the user's is missing — that would make every user a confused
-deputy of the server.
+deputy of the server. On a duckdb-acl node, tresor holds to this per statement. A statement that acl
+publishes as running under a user's session is served through that session's grant, or gets nothing
+from the service. It never falls back to the node's own identity, whether the grant is pending,
+failed or revoked, or the attachment does not act for sessions at all. The session is what acl
+publishes on the statement's connection. A lookup made without a connection (a background
+refresh), or on an internal connection some extension opens, runs as the node. Keep such work out of
+users' reach with acl's function gate.
 
 On a server, lock the configuration so users cannot widen what the process reveals:
 `allow_unredacted_secrets = false`, `lock_configuration = true`, and no `CREATE SECRET` for
@@ -39,7 +45,11 @@ principals (the policy layer's job).
 - write secret material to disk — the storage is persistent **in the service**, not locally;
 - log or emit secret material, tokens, session handles or delegation grant ids — audit events carry
   names, verbs and outcomes only;
-- send a user's identity-provider token anywhere but to the service it was issued for (`aud`).
+- send a user's identity-provider token anywhere but to the service it was issued for (`aud`) — a
+  session's token acting for a user goes only to the identity provider that issued it, to be
+  exchanged. The exchanged token goes to the service only if its `aud` names the audience the node
+  pinned. tresor overwrites its copies once the grant arrives. That is best effort: transport
+  buffers are not in its hands.
 
 ## Logins
 

@@ -45,9 +45,22 @@ unique_ptr<Catalog> TresorAttach(optional_ptr<StorageExtensionInfo> storage_info
 	auto &storage = tresor::StorageFor(context, name);
 	auto session = tresor::Login(context, request);
 	// the list the storage starts from: a service that cannot list its secrets is not attached
-	auto initial = tresor::FetchDescriptors(*session);
+	tresor::Caller node;
+	node.session = session;
+	auto initial = tresor::FetchDescriptors(node);
+	shared_ptr<tresor::TresorActor> actor;
+	if (request.act_for_sessions) {
+		// acting for duckdb-acl's sessions (specs/008): refused now if acl speaks another contract
+		tresor::TresorActor::CheckHooks(db.GetDatabase());
+		tresor::ActorOptions actor_options;
+		actor_options.on_behalf_of = request.on_behalf_of;
+		actor_options.scope = request.exchange_scope;
+		actor_options.audience = session->Info().audience; // pinned at the login (never the service's alone)
+		actor_options.grant_wait_seconds = request.grant_wait_seconds;
+		actor = make_shared_ptr<tresor::TresorActor>(session, std::move(actor_options));
+	}
 	info.path = IN_MEMORY_PATH;
-	return make_uniq<tresor::TresorCatalog>(db, std::move(session), storage, std::move(initial));
+	return make_uniq<tresor::TresorCatalog>(db, std::move(session), storage, std::move(initial), std::move(actor));
 }
 
 unique_ptr<TransactionManager> TresorCreateTransactionManager(optional_ptr<StorageExtensionInfo> storage_info,

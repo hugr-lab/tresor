@@ -27,6 +27,12 @@ struct AttachRequest {
 	string secret_name;
 	bool insecure_http = false;
 	int64_t timeout_seconds = 300;
+	// acting for duckdb-acl's sessions (specs/008)
+	bool act_for_sessions = false;
+	bool on_behalf_of = false; // EXCHANGE 'on_behalf_of' (Entra); else RFC 8693 token exchange
+	string exchange_scope;
+	string exchange_audience; // EXCHANGE_AUDIENCE: pinned on the node, not taken from the service
+	int64_t grant_wait_seconds = 10;
 };
 
 AttachRequest ParseAttach(const string &path, const unordered_map<string, Value> &options);
@@ -41,6 +47,10 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 //! The browser for the login URL (tresor_browser.cpp).
 bool CanOpenBrowser();
 bool OpenBrowser(const std::string &url);
+
+//! The `aud` of a JWT (payload only - no signature check; for checking where a token is meant to go);
+//! `is_jwt` false for an opaque token.
+vector<string> JwtAudiences(const string &token, bool &is_jwt);
 
 //! The service's error body (RFC 9457) in a line fit for a message: `type: detail`.
 string DescribeProblem(int status, const string &body);
