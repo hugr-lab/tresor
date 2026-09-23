@@ -10,6 +10,17 @@ ACL_COMMIT=3a5fdb30cda0cbb5b7d6a35fcddb12e0c11ecada # duckdb-acl main, spec 078 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 dest="${1:?usage: acl_checkout.sh <dir>}"
 
+# a directory of its own: never the working tree, its parent or /
+case "$(cd "$(dirname "$dest")" 2>/dev/null && pwd)/$(basename "$dest")" in
+"$root" | "$root/." | "$(dirname "$root")" | / | //)
+	echo "acl_checkout: refusing to replace $dest" >&2
+	exit 1
+	;;
+esac
+[ -e "$root/duckdb/.git" ] || {
+	echo "acl_checkout: tresor's duckdb submodule is not checked out (git submodule update --init --recursive)" >&2
+	exit 1
+}
 rm -rf "$dest"
 git init -q "$dest"
 git -C "$dest" remote add origin https://github.com/hugr-lab/duckdb-acl
@@ -17,7 +28,7 @@ git -C "$dest" fetch -q --depth 1 origin "$ACL_COMMIT"
 git -C "$dest" checkout -q FETCH_HEAD
 
 theirs="$(git -C "$dest" ls-tree HEAD duckdb | awk '{print $3}')"
-ours="$(git -C "$root/duckdb" rev-parse HEAD)"
+ours="$(git -C "$root" ls-tree HEAD duckdb | awk '{print $3}')" # the pin, not whatever is checked out
 if [ "$theirs" != "$ours" ]; then
 	echo "acl_checkout: duckdb-acl $ACL_COMMIT pins duckdb $theirs, tresor $ours - move ACL_COMMIT with the pins" >&2
 	exit 1

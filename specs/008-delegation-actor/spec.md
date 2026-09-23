@@ -174,8 +174,9 @@ non-normative note: an actor revokes a grant when the session it was made for en
   - a real exchange at Keycloak (the realm gains the `acl-node` client, standard token exchange and
     the audience mappers);
   - a real grant from the reference server, used through the stub.
-- **With duckdb-acl itself:** `scripts/ci/test_keycloak.sh` runs `test/acl/actor.sql` when
-  `TRESOR_ACL_EXTENSION` names an `acl.duckdb_extension` built at this repository's duckdb commit. It
+- **With duckdb-acl itself:** `scripts/ci/test_keycloak.sh` runs `test/acl/actor.sql` when the test
+  build carries acl (`TRESOR_TEST_ACL_DIR`, found on its own) or `TRESOR_ACL_EXTENSION` names an
+  `acl.duckdb_extension` built at this repository's duckdb commit. It
   is a CLI script, because the statements under the session need the handle `acl_session_open`
   returns. It uses acl's real `acl_session_open`, a virtual table function over `node.whoami()` and
   `which_secret`, and `acl_session_close`. It checks that:
