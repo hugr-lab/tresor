@@ -66,7 +66,8 @@ ATTACH 'tresor:secrets.corp' AS corp (SECRET node, ACT_FOR_SESSIONS true);
 ### The session's life
 
 tresor registers a `SessionObserver` in acl's `AclSessionHooks` when the catalog activates, and
-removes it on DETACH. acl reads the list at every call; since ACLC 2, acl must be loaded before the ATTACH (the addendum).
+removes it on DETACH. acl reads the list at every call; since ACLC 2, acl must be loaded before the
+ATTACH (the addendum).
 
 1. **`OnSessionOpen(info, token)`** returns at once. It copies the token into a job for tresor's
    own worker threads (2 per attached catalog) and marks the session *pending*.
@@ -264,8 +265,7 @@ node's grant, list or material, and no deadlock. It found these:
 
 ## Follow-ups
 
-- acl stamps its presence in the contract (a publisher flag on `AclSessionHooks`, set when acl loads),
-  so `ACT_FOR_SESSIONS` can refuse an acl that never publishes (asked of duckdb-acl).
+- ~~acl stamps its presence in the contract~~: done, ACLC 2 (the addendum).
 
 - tresor's audit hook (`tresor_audit.hpp`): grant created, used, revoked, and refused.
 
@@ -276,4 +276,8 @@ ATTACH is refused when nothing has marked them ("LOAD acl before this ATTACH"). 
 acl that does not publish sessions could not be told from "no session", and every statement would
 look like the node's own work. The contract's layout changed, so tresor and duckdb-acl move to
 duckdb-ext-common `v0.6.0` together: a build of either side on `v0.4.0`/`v0.5.0` is refused by
-`Reach`. The test stub marks the hooks as acl does, and `ACL_COMMIT` moves to duckdb-acl `b922605`.
+`Reach`. The check runs before any login. The test stub marks the hooks as acl does
+(`acl_stub_publisher('')` clears the mark for the negative test). The real-acl run sets
+`ACL_STUB_NO_MARK=1`, so there the mark must come from duckdb-acl itself, which `ACL_COMMIT`
+(`b922605`) pins; that run also checks the refusal while tresor is loaded before acl.
+`acl_checkout.sh` refuses an acl commit whose duckdb-ext-common pin differs from tresor's.

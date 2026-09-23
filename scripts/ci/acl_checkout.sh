@@ -33,6 +33,13 @@ if [ "$theirs" != "$ours" ]; then
 	echo "acl_checkout: duckdb-acl $ACL_COMMIT pins duckdb $theirs, tresor $ours - move ACL_COMMIT with the pins" >&2
 	exit 1
 fi
+theirs_common="$(git -C "$dest" ls-tree HEAD duckdb-ext-common | awk '{print $3}')"
+ours_common="$(git -C "$root" ls-tree HEAD duckdb-ext-common | awk '{print $3}')"
+if [ "$theirs_common" != "$ours_common" ]; then
+	echo "acl_checkout: duckdb-acl $ACL_COMMIT pins duckdb-ext-common $theirs_common, tresor $ours_common - the" \
+		"acl_connection contract would not match; move the pins together" >&2
+	exit 1
+fi
 # the shared repository at acl's own pin; duckdb is ours (the same commit), linked rather than cloned again
 git -C "$dest" submodule update -q --init --depth 1 duckdb-ext-common
 rmdir "$dest/duckdb" 2>/dev/null || rm -rf "$dest/duckdb"

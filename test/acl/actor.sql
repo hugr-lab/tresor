@@ -5,8 +5,14 @@
 -- @...@ are filled in by the script; the checks read the lines marked "check:".
 .mode list
 .headers off
-LOAD '@ACL_EXTENSION@';
+-- tresor first: acting for sessions is refused until a duckdb-acl that publishes them is loaded (ACLC 2)
 LOAD '@TRESOR_EXTENSION@';
+CREATE SECRET node_early (TYPE tresor, SCOPE 'tresor:early', FLOW 'client_credentials', CLIENT_ID 'acl-node',
+    CLIENT_SECRET 'node-secret', ISSUER '@ISSUER@');
+SELECT 'check:before-acl ' || count(*) FROM duckdb_databases() WHERE database_name = 'early';
+ATTACH 'tresor:@HOST@' AS early (INSECURE_HTTP true, SECRET node_early, ACT_FOR_SESSIONS true);
+SELECT 'check:refused-before-acl ' || count(*) FROM duckdb_databases() WHERE database_name = 'early';
+LOAD '@ACL_EXTENSION@';
 
 -- an admin (the etl service) stores what the node serves, and grants it to the node's role (specs/009)
 CREATE SECRET etl (TYPE tresor, SCOPE 'tresor:@HOST@', FLOW 'client_credentials', CLIENT_ID 'etl',

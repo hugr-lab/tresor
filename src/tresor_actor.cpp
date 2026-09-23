@@ -112,7 +112,8 @@ void TresorActor::CheckHooks(DatabaseInstance &db) {
 	string publisher;
 	if (!hooks->Publisher(publisher)) {
 		throw InvalidInputException("tresor: ACT_FOR_SESSIONS needs duckdb-acl, and nothing publishes acl sessions "
-		                            "in this instance - LOAD acl before this ATTACH");
+		                            "in this instance (duckdb-acl not loaded, or one older than ACLC 2) - LOAD a "
+		                            "current duckdb-acl before this ATTACH");
 	}
 }
 

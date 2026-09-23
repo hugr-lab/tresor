@@ -6,6 +6,7 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 
 #include <chrono>
+#include <cstdlib>
 
 // What duckdb-acl does for the acl_connection contract, reduced to what tresor's tests steer (specs/008):
 //
@@ -114,13 +115,26 @@ void StampFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	}
 }
 
+//! acl_stub_publisher(who): mark the hooks as published by `who` ('' clears it: nothing publishes); the old mark.
+void PublisherFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto hooks = Hooks(state);
+	for (idx_t row = 0; row < args.size(); row++) {
+		string previous;
+		hooks->Publisher(previous);
+		hooks->MarkPublisher(args.data[0].GetValue(row).ToString());
+		result.SetValue(row, Value(previous));
+	}
+}
+
 } // namespace
 
 void AclStubExtension::Load(ExtensionLoader &loader) {
 	// the publisher's mark (ACLC 2), as duckdb-acl sets it at load: sessions are published in this instance
+	// ACL_STUB_NO_MARK=1 leaves the mark to a real duckdb-acl loaded beside the stub (test_keycloak.sh's run)
 	string why;
 	auto hooks = acl::AclSessionHooks::Reach(loader.GetDatabaseInstance().GetObjectCache(), why);
-	if (hooks) {
+	auto no_mark = std::getenv("ACL_STUB_NO_MARK");
+	if (hooks && !(no_mark && string(no_mark) == "1")) {
 		hooks->MarkPublisher("acl_stub (ACLC 2)");
 	}
 	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
@@ -134,6 +148,9 @@ void AclStubExtension::Load(ExtensionLoader &loader) {
 	ScalarFunction close(Identifier("acl_stub_close"), {text, text}, LogicalType::BIGINT, CloseFun);
 	close.SetStability(FunctionStability::VOLATILE);
 	loader.RegisterFunction(close);
+	ScalarFunction publisher(Identifier("acl_stub_publisher"), {text}, text, PublisherFun);
+	publisher.SetStability(FunctionStability::VOLATILE);
+	loader.RegisterFunction(publisher);
 	ScalarFunction stamp(Identifier("acl_stub_stamp"), {LogicalType::BIGINT}, LogicalType::BIGINT, StampFun);
 	stamp.SetStability(FunctionStability::VOLATILE);
 	loader.RegisterFunction(stamp);
