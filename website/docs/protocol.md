@@ -16,7 +16,9 @@ fixes only what a client sees.
 
 ## Conventions
 
-- Transport: HTTPS, JSON bodies (`application/json`).
+- Transport: HTTPS, JSON bodies (`application/json`). A client may speak plain http to a service
+  on the **loopback** interface when its user explicitly asks for it (development, tests), and never
+  otherwise.
 - Authentication: `Authorization: Bearer <access token>`, issued by an OIDC provider the service
   declares in its discovery document. The service verifies the token itself — signature against the
   issuer's JWKS, `iss`, **`aud`** (the token must be issued *for this service*), expiry.
@@ -32,7 +34,7 @@ fixes only what a client sees.
 ```json
 {
   "protocol": "duckdb-secrets/1",
-  "api": "https://secrets.corp.example/v1",
+  "api": "https://secrets.corp.example",
   "issuers": [
     {
       "issuer": "https://idp.corp.example/realms/main",
@@ -47,8 +49,20 @@ fixes only what a client sees.
 }
 ```
 
+- `api` — the absolute base URL the resource paths below are appended to (they carry the version:
+  `{api}/v1/whoami`). It is at least as secure as the discovery request (https, unless both are
+  loopback http).
 - `issuers` — every identity provider the service accepts. A client continues with the issuer's own
-  `/.well-known/openid-configuration`.
+  `/.well-known/openid-configuration` (RFC 8414: the document's `issuer` must match). With several
+  issuers, the **user names one**. A client does not pick one by list order, since that would choose
+  an identity for them.
+- `human_flows` / `service_flows` — the login flows the service expects clients to use with this
+  issuer. When present, a client attempts no others.
+- `scopes` — what a person's login requests. A service's client-credentials login requests them
+  without `openid` and `offline_access`, unless it is configured with its own.
+- `audience` — the `aud` the service requires. Making the issuer put it into tokens requested with
+  `scopes` is identity-provider configuration (a client scope, an application ID URI). Clients do not
+  send it.
 - `client_id` — a **public** client for people (authorization code with PKCE, loopback redirect).
 - `capabilities.delegation` — whether the optional [delegation](#delegation) resources exist.
   Grants are not optional in version 1.

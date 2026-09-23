@@ -19,3 +19,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | Spec | Title | Status |
 | --- | --- | --- |
 | [001](001-architecture/spec.md) | attach a secrets service, one OIDC login, role-based secrets | accepted |
+| [002](002-attach-login/spec.md) | attach — discovery, one OIDC login (people and services), `corp.whoami()` | implemented |

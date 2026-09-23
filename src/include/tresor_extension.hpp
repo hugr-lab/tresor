@@ -11,4 +11,7 @@ public:
 	std::string Version() const override;
 };
 
+//! The `tresor` secret type: a service's login (tresor_secret.cpp).
+void RegisterTresorSecret(ExtensionLoader &loader);
+
 } // namespace duckdb

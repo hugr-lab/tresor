@@ -1,0 +1,92 @@
+# name: test/sql/attach/person_login.test
+# description: A person logs in - browser (code + PKCE, loopback redirect) and device - against the fake service (specs/002)
+# group: [attach]
+
+require-env TRESOR_TEST_PORT
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+# the browser flow: scripts/ci/test_attach.sh sets BROWSER to a script that follows the fake IdP's
+# auto-approval back to the loopback receiver
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true, LOGIN 'browser');
+
+query IIIIIII
+SELECT service, issuer, subject, roles, actor, can_create, login FROM corp.whoami();
+----
+http://127.0.0.1:{TRESOR_TEST_PORT}	http://127.0.0.1:{TRESOR_TEST_PORT}/idp	alice	['role:analysts', 'group:sales']	NULL	[team_a_*]	browser
+
+query I
+SELECT expires_at = TIMESTAMPTZ '2030-01-01 00:00:00+00' FROM corp.whoami();
+----
+true
+
+# the catalog is read-only: tables, views and writes are refused by duckdb's own check
+statement error
+CREATE TABLE corp.t (i INTEGER);
+----
+read-only mode
+
+statement ok
+DETACH corp;
+
+# DETACH is the logout: the catalog is gone
+statement error
+FROM corp.whoami();
+----
+Table Function with name "whoami" is not in the catalog
+
+# the device flow: the code is printed to stderr, the fake IdP approves after one pending poll
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp2 (INSECURE_HTTP true, LOGIN 'device');
+
+query II
+SELECT subject, login FROM corp2.whoami();
+----
+alice	device
+
+statement ok
+DETACH corp2;
+
+# renewal: the 'expiring' realm accepts a token as first issued twice (the ATTACH's whoami, the first
+# query), then answers 401; the client renews with the refresh token and retries once - the queries
+# never see it
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/expiring' AS exp (INSECURE_HTTP true, LOGIN 'browser');
+
+query I
+SELECT subject FROM exp.whoami();
+----
+alice
+
+query I
+SELECT subject FROM exp.whoami();
+----
+alice
+
+query I
+SELECT subject FROM exp.whoami();
+----
+alice
+
+statement ok
+DETACH exp;
+
+# a refresh the IdP refuses (invalid_grant) ends the login: the next call says to log in again, and
+# never opens a browser in the middle of a query
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/revoking' AS rev (INSECURE_HTTP true, LOGIN 'browser');
+
+query I
+SELECT subject FROM rev.whoami();
+----
+alice
+
+statement error
+SELECT subject FROM rev.whoami();
+----
+log in again: DETACH and ATTACH
+
+statement ok
+DETACH rev;

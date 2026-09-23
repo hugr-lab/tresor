@@ -30,15 +30,15 @@ SELECT 'version=' || coalesce(tresor_version(), '<null>');
 " 2>&1)" || { echo "smoke_load: the artifact did not load:" >&2; echo "$out" >&2; exit 1; }
 grep -q '^version=' <<<"$out" || { echo "smoke_load: no version answer:" >&2; echo "$out" >&2; exit 1; }
 
-# 2. the ATTACH alone loads the installed extension (its attach is a stub until specs/002, so the
-#    stub's own message is the proof that tresor's code ran)
+# 2. the ATTACH alone loads the installed extension (the discovery of a name that cannot resolve
+#    fails with tresor's own message - the proof that tresor's code ran)
 att="$("$duckdb_abs" -unsigned -csv -noheader -c "
 SET extension_directories = ['$tmp/extensions'];
 SET autoload_known_extensions = false;
 INSTALL tresor FROM '$repo_abs';
 ATTACH 'tresor:secrets.example.invalid' AS corp;
-" 2>&1)" && { echo "smoke_load: the stub ATTACH succeeded - expected its not-implemented error" >&2; exit 1; }
-grep -q "tresor: attaching a secrets service is not implemented yet" <<<"$att" || {
+" 2>&1)" && { echo "smoke_load: an ATTACH of an unresolvable service succeeded - expected tresor's discovery error" >&2; exit 1; }
+grep -q "tresor: discovery of secrets.example.invalid failed" <<<"$att" || {
 	echo "smoke_load: ATTACH 'tresor:...' did not reach tresor's attach (was the extension loaded by prefix?):" >&2
 	echo "$att" >&2
 	exit 1

@@ -1,0 +1,84 @@
+# name: test/sql/attach/service_login.test
+# description: A service logs in with a tresor secret - found by scope, or named - against the fake service (specs/002)
+# group: [attach]
+
+require-env TRESOR_TEST_PORT
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+# found by the ATTACH path through the secret's SCOPE
+statement ok
+CREATE SECRET etl_login (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}',
+                         FLOW 'client_credentials', CLIENT_ID 'etl', CLIENT_SECRET 's3cr3t');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+
+query IIII
+SELECT subject, roles, can_create, login FROM corp.whoami();
+----
+client:etl	['role:etl']	[*]	client_credentials
+
+statement ok
+DETACH corp;
+
+# the TYPE spelling finds the same secret: the lookup path is 'tresor:<host>' either way
+statement ok
+ATTACH '127.0.0.1:{TRESOR_TEST_PORT}' AS corp (TYPE tresor, INSECURE_HTTP true);
+
+query I
+SELECT login FROM corp.whoami();
+----
+client_credentials
+
+statement ok
+DETACH corp;
+
+statement ok
+DROP SECRET etl_login;
+
+# named explicitly, the scope does not matter; the token flow carries a token already held
+statement ok
+CREATE SECRET held (TYPE tresor, SCOPE 'tresor:elsewhere', FLOW 'token', TOKEN 'static-token');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true, SECRET held);
+
+query II
+SELECT subject, login FROM corp.whoami();
+----
+client:static	token
+
+statement ok
+DETACH corp;
+
+# a wrong client secret is the IdP's own refusal, and nothing is attached
+statement ok
+CREATE SECRET bad (TYPE tresor, SCOPE 'tresor:elsewhere', FLOW 'client_credentials', CLIENT_ID 'etl', CLIENT_SECRET 'nope');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true, SECRET bad);
+----
+invalid_client
+
+statement error
+FROM corp.whoami();
+----
+Table Function with name "whoami" is not in the catalog
+
+# a token the service does not accept fails the ATTACH, closed - and a held token is never renewed, so
+# the message says what to do
+statement ok
+CREATE SECRET unknown (TYPE tresor, SCOPE 'tresor:elsewhere', FLOW 'token', TOKEN 'not-a-token');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true, SECRET unknown);
+----
+the token of the tresor secret for 127.0.0.1:{TRESOR_TEST_PORT} has expired or was refused
+
+# a named secret that does not exist
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true, SECRET nosuch);
+----
+no secret named 'nosuch'

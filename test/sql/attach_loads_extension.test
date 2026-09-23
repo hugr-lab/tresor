@@ -25,7 +25,7 @@ false
 statement error
 ATTACH 'tresor:secrets.example.invalid' AS corp;
 ----
-<REGEX>:.*tresor: attaching a secrets service is not implemented yet.*
+<REGEX>:.*tresor: discovery of secrets.example.invalid failed.*
 
 query I
 SELECT loaded FROM duckdb_extensions() WHERE extension_name = 'tresor';
