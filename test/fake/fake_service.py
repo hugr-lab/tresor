@@ -444,6 +444,9 @@ class Handler(BaseHTTPRequestHandler):
                               "params": {"key_id": "NODE"}, "redact_keys": []},
                 "shared_lake": {"type": "s3", "scope": ["s3://shared"], "permissions": ["use"],
                                 "params": {"key_id": "NODE-SHARED"}, "redact_keys": []},
+                # the node's own, delegated to nobody: what its catalogs read, under a session too (specs/009)
+                "infra_lake": {"type": "s3", "scope": ["s3://infra"], "permissions": ["use"],
+                               "params": {"key_id": "INFRA"}, "redact_keys": []},
                 "stats": {"type": "http", "scope": ["https://stats.invalid"], "permissions": [], "comment": stats,
                           "params": {}, "redact_keys": []},
             }

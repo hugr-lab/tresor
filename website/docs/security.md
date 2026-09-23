@@ -28,13 +28,19 @@ A server acting for users **never adds its own authority** to a user's request. 
 on a user's behalf carries the user's delegation grant; the service checks the user's rights, the
 delegation rule, and that this server may act for users at all. A delegated secret is never resolved
 with the server's own identity when the user's is missing — that would make every user a confused
-deputy of the server. On a duckdb-acl node, tresor holds to this per statement. A statement that acl
-publishes as running under a user's session is served through that session's grant, or gets nothing
-from the service. It never falls back to the node's own identity, whether the grant is pending,
-failed or revoked, or the attachment does not act for sessions at all. The session is what acl
-publishes on the statement's connection. A lookup made without a connection (a background
-refresh), or on an internal connection some extension opens, runs as the node. Keep such work out of
-users' reach with acl's function gate.
+deputy of the server. On a duckdb-acl node, tresor holds to this per statement:
+- A statement that acl publishes as running under a user's session is served the user's
+  **delegated** secrets through the session's grant. The service checks the user's rights and the
+  owner's rule.
+- Paths no delegated secret covers are served the **node's own** secrets. These are what the
+  node's catalogs read (ducklake, iceberg, attached databases).
+- Explicit calls (whoami, listings, writes, management) are never the node's under a session.
+
+The node's secrets are kept from users by **acl's function gate, not by the credentials**. A user
+who could name the lake's bucket directly (`read_parquet`, `COPY`, `ATTACH`, a replacement scan, any
+extension's URL-fetching function) would read it with the node's key. Keep acl's `readers` category
+closed to users; it is closed by default. Do not give the node its own secret on the scopes you
+delegate: without a usable grant, the node's would serve them.
 
 On a server, lock the configuration so users cannot widen what the process reveals:
 `allow_unredacted_secrets = false`, `lock_configuration = true`, and no `CREATE SECRET` for

@@ -76,9 +76,17 @@ When a user's acl session opens, tresor:
    `corp.whoami()` (which answers the user, with `actor` = the node);
 4. revokes the grant when the session ends.
 
-A statement under a session sees **its user's** secrets or none, never the node's. If the grant is
-still pending, lookups wait up to `SESSION_GRANT_WAIT` seconds (10 by default). If the exchange or
-the grant failed, lookups in `corp` find nothing and explicit calls fail with the reason.
+Under a session, a secret lookup is served **the user's delegated secret** wherever one covers the
+path. That is whatever a rule lets this node use for them: an http API, another acl node through
+quack. Every other path is served **the node's own secret**, which is what its catalogs (ducklake,
+iceberg, attached databases) read. A path that both cover gets the delegated one. If the grant is
+still pending, lookups wait up to `SESSION_GRANT_WAIT` seconds (10 by default). Without a usable
+grant, only the node's secrets serve. Explicit calls (`corp.whoami()`, `corp.secrets()`, writes) are
+always the user's, through the grant, or fail with the reason.
+
+This applies only to statements duckdb-acl runs under a session, through a service-login attachment.
+Everywhere else the ordinary rule holds: a person's attachment serves that person's secrets, and a
+node's own work is served the node's.
 
 | Option | Default | |
 | --- | --- | --- |

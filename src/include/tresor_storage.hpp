@@ -115,6 +115,13 @@ private:
 	unique_ptr<const BaseSecret> MaterialOf(const Caller &caller, View &view, const Descriptor &descriptor,
 	                                        optional_ptr<CatalogTransaction> transaction);
 	SecretEntry EntryOf(unique_ptr<const BaseSecret> secret);
+	//! The node itself, for the same session: the view lookups fall back to under an acl session (specs/009).
+	static Caller NodeOf(const Caller &caller);
+	//! The best match of one view (a caller's), with its material; no match when the caller has none.
+	SecretMatch MatchIn(const Caller &caller, const string &path, const string &type,
+	                    optional_ptr<CatalogTransaction> transaction);
+	unique_ptr<SecretEntry> ByNameIn(const Caller &caller, const string &name,
+	                                 optional_ptr<CatalogTransaction> transaction);
 	Caller CallerOf(optional_ptr<CatalogTransaction> transaction);
 
 	mutex lock; // the state below, and every view's list and materials

@@ -14,6 +14,9 @@ CREATE SECRET etl (TYPE tresor, SCOPE 'tresor:@HOST@', FLOW 'client_credentials'
 ATTACH 'tresor:@HOST@' AS owner (INSECURE_HTTP true, SECRET etl);
 CREATE OR REPLACE PERSISTENT SECRET acl_lake IN owner (TYPE http, SCOPE 'https://acl-lake.example', BEARER_TOKEN 'x');
 CALL owner.add_delegation('acl_lake', ['client:acl-node'], ['role:analysts']);
+-- the owner's attachment goes: under a session it would serve its own secrets where no delegated one does
+-- (specs/009), and two attachments covering one path are duckdb's tie to break
+DETACH owner;
 
 -- the node: acl trusts Keycloak's tokens for acl-node; tresor acts for acl's sessions
 ATTACH ':memory:' AS store;
@@ -48,4 +51,5 @@ SELECT acl_session_sql(handle, 'SELECT ''check:session-lake '' || name FROM c.la
 SELECT 'check:closed ' || acl_session_close(handle) FROM h;
 
 DETACH node;
+ATTACH 'tresor:@HOST@' AS owner (INSECURE_HTTP true, SECRET etl);
 DROP PERSISTENT SECRET acl_lake FROM owner;

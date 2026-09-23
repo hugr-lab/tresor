@@ -94,11 +94,23 @@ SELECT tresor_secret_param('alice_lake', 'key_id');
 ----
 VARCHAR ALICE
 
-# the node's own secret is not the session's: not by path, not by name
-statement error
+# where no delegated secret covers a path, the node's own serves it (specs/009) - what its catalogs read;
+# users reach such paths only through what acl admits
+query II
+SELECT name, storage FROM which_secret('s3://infra/x.parquet', 's3');
+----
+infra_lake	corp
+
+query I
+SELECT tresor_secret_param('infra_lake', 'key_id');
+----
+VARCHAR INFRA
+
+# by name too; and where both hold a secret for a path (s3://acting), the delegated one wins (above)
+query I
 SELECT tresor_secret_param('node_lake', 'key_id');
 ----
-node_lake
+VARCHAR NODE
 
 # one name, two identities: the session's material, never the node's cached one (and back, below)
 query I
@@ -128,25 +140,22 @@ SELECT * FROM corp.whoami();
 ----
 another acl_connection contract
 
+# ... lookups are the node's then, as with no session: nobody's delegated secret is served
 query I
-SELECT count(*) FROM which_secret('s3://acting/x.parquet', 's3') WHERE storage = 'corp';
+SELECT name FROM which_secret('s3://acting/x.parquet', 's3') WHERE storage = 'corp';
 ----
-0
+node_lake
 
 query I
 SELECT acl_stub_stamp(1);
 ----
 99
 
-# the same service, attached without acting: under an acl session its explicit calls are refused and its
-# lookups find nothing (attached only for this: by name, two storages holding one secret are ambiguous)
+# the same service, attached without acting: under an acl session its explicit calls are refused (its
+# lookups serve the node's secrets, as any attachment's do - attached only for this: by name, two storages
+# holding one secret are ambiguous)
 statement ok
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS plain (INSECURE_HTTP true);
-
-query I
-SELECT count(*) FROM which_secret('s3://acting/x.parquet', 's3') WHERE storage = 'plain';
-----
-0
 
 statement error
 SELECT * FROM plain.whoami();
@@ -214,10 +223,11 @@ SELECT * FROM corp.whoami();
 ----
 no delegation grant here
 
+# no grant to use: the node's own secret serves the path, never a delegated one
 query I
-SELECT count(*) FROM which_secret('s3://acting/x.parquet', 's3');
+SELECT name FROM which_secret('s3://acting/x.parquet', 's3');
 ----
-0
+node_lake
 
 # a session opened before the ATTACH (or never announced): nothing either
 statement ok
@@ -245,10 +255,11 @@ SELECT * FROM corp.whoami();
 ----
 token is from another issuer
 
+# no grant to use: the node's own secret serves the path, never a delegated one
 query I
-SELECT count(*) FROM which_secret('s3://acting/x.parquet', 's3');
+SELECT name FROM which_secret('s3://acting/x.parquet', 's3');
 ----
-0
+node_lake
 
 statement ok
 SET acl_stub_session = '';
@@ -297,10 +308,11 @@ SELECT * FROM corp.whoami();
 ----
 no longer accepts this acl session's delegation grant
 
+# no grant to use: the node's own secret serves the path, never a delegated one
 query I
-SELECT count(*) FROM which_secret('s3://acting/x.parquet', 's3');
+SELECT name FROM which_secret('s3://acting/x.parquet', 's3');
 ----
-0
+node_lake
 
 statement ok
 SET acl_stub_session = '';

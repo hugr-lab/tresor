@@ -5,6 +5,7 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/unordered_set.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
@@ -716,10 +717,14 @@ SecretEntry TresorSecretStorage::EntryOf(unique_ptr<const BaseSecret> secret) {
 	return entry;
 }
 
-SecretMatch TresorSecretStorage::LookupSecret(const string &path, const string &type,
-                                              optional_ptr<CatalogTransaction> transaction) {
-	// a statement under an acl session sees its user's secrets or none - never the node's (specs/008)
-	auto caller = CallerOf(transaction);
+Caller TresorSecretStorage::NodeOf(const Caller &caller) {
+	Caller node_caller;
+	node_caller.session = caller.session;
+	return node_caller;
+}
+
+SecretMatch TresorSecretStorage::MatchIn(const Caller &caller, const string &path, const string &type,
+                                         optional_ptr<CatalogTransaction> transaction) {
 	shared_ptr<View> view;
 	auto list = Snapshot(caller, view);
 	if (!view) {
@@ -750,9 +755,8 @@ SecretMatch TresorSecretStorage::LookupSecret(const string &path, const string &
 	return SecretMatch(entry, best.score);
 }
 
-unique_ptr<SecretEntry> TresorSecretStorage::GetSecretByName(const string &name,
-                                                             optional_ptr<CatalogTransaction> transaction) {
-	auto caller = CallerOf(transaction);
+unique_ptr<SecretEntry> TresorSecretStorage::ByNameIn(const Caller &caller, const string &name,
+                                                      optional_ptr<CatalogTransaction> transaction) {
 	shared_ptr<View> view;
 	auto list = Snapshot(caller, view);
 	if (!view) {
@@ -769,21 +773,54 @@ unique_ptr<SecretEntry> TresorSecretStorage::GetSecretByName(const string &name,
 	return nullptr;
 }
 
-vector<SecretEntry> TresorSecretStorage::AllSecrets(optional_ptr<CatalogTransaction> transaction) {
+// Lookups under a duckdb-acl session (specs/009): the session's user's secret - what the service delegates
+// to this node for them, through the grant - wins wherever one covers the path, whatever the node holds
+// there; every other path is the node's own (the catalogs it serves: ducklake, iceberg). Users reach those
+// paths only through what acl admits - its gate is the boundary, not the credentials (security.md).
+// Outside a session: the node, as ever.
+SecretMatch TresorSecretStorage::LookupSecret(const string &path, const string &type,
+                                              optional_ptr<CatalogTransaction> transaction) {
 	auto caller = CallerOf(transaction);
-	shared_ptr<View> view;
-	auto list = Snapshot(caller, view); // never throws: duckdb_secrets() must work while a service is down
-	vector<SecretEntry> out;
-	if (!view) {
-		return out;
-	}
-	// descriptors only: listing never fetches material
-	for (auto &d : list) {
-		if (Lookupable(d)) {
-			out.push_back(EntryOf(
-			    make_uniq<KeyValueSecret>(d.scope, Identifier(d.type), Identifier(ProviderOf(d)), Identifier(d.name))));
+	if (!caller.IsNode()) {
+		auto delegated = MatchIn(caller, path, type, transaction);
+		if (delegated.HasMatch()) {
+			return delegated;
 		}
 	}
+	return MatchIn(NodeOf(caller), path, type, transaction);
+}
+
+unique_ptr<SecretEntry> TresorSecretStorage::GetSecretByName(const string &name,
+                                                             optional_ptr<CatalogTransaction> transaction) {
+	auto caller = CallerOf(transaction);
+	if (!caller.IsNode()) {
+		auto delegated = ByNameIn(caller, name, transaction);
+		if (delegated) {
+			return delegated;
+		}
+	}
+	return ByNameIn(NodeOf(caller), name, transaction);
+}
+
+vector<SecretEntry> TresorSecretStorage::AllSecrets(optional_ptr<CatalogTransaction> transaction) {
+	auto caller = CallerOf(transaction);
+	vector<SecretEntry> out;
+	unordered_set<string> seen;
+	// descriptors only: listing never fetches material; never throws (duckdb_secrets() must work while a
+	// service is down). Under a session: the user's delegated secrets, then the node's under other names
+	auto add = [&](const Caller &from) {
+		shared_ptr<View> view;
+		for (auto &d : Snapshot(from, view)) {
+			if (Lookupable(d) && seen.insert(StringUtil::Lower(d.name)).second) {
+				out.push_back(EntryOf(make_uniq<KeyValueSecret>(d.scope, Identifier(d.type), Identifier(ProviderOf(d)),
+				                                                Identifier(d.name))));
+			}
+		}
+	};
+	if (!caller.IsNode()) {
+		add(caller);
+	}
+	add(NodeOf(caller));
 	return out;
 }
 
@@ -810,7 +847,18 @@ void TresorSecretStorage::Invalidate(const string &name) {
 
 unique_ptr<const BaseSecret> TresorSecretStorage::RefreshMaterial(const string &name,
                                                                   optional_ptr<CatalogTransaction> transaction) {
+	// the secret the lookup served: the session's delegated one if it has it, else the node's (specs/009)
 	auto caller = CallerOf(transaction);
+	if (!caller.IsNode()) {
+		shared_ptr<View> view;
+		bool delegated = false;
+		for (auto &d : Snapshot(caller, view)) {
+			delegated = delegated || (StringUtil::CIEquals(d.name, name) && Lookupable(d) && d.May("use"));
+		}
+		if (!delegated) {
+			caller = NodeOf(caller);
+		}
+	}
 	shared_ptr<View> view;
 	for (auto &d : Snapshot(caller, view)) {
 		if (!StringUtil::CIEquals(d.name, name) || !Lookupable(d) || !d.May("use")) {
