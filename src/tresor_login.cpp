@@ -98,6 +98,7 @@ struct Discovered {
 	struct Issuer {
 		string issuer;
 		string client_id;
+		string audience;
 		vector<string> scopes;
 		vector<string> human_flows; // when present (even empty), a client attempts no others (protocol)
 		vector<string> service_flows;
@@ -156,6 +157,7 @@ Discovered Discover(const AttachRequest &request, string &discovery_url) {
 			Discovered::Issuer issuer;
 			issuer.issuer = StripSlashes(Str(item, "issuer"));
 			issuer.client_id = Str(item, "client_id");
+			issuer.audience = Str(item, "audience");
 			issuer.scopes = StrList(item, "scopes");
 			issuer.human_flows = StrList(item, "human_flows", &issuer.has_human_flows);
 			issuer.service_flows = StrList(item, "service_flows", &issuer.has_service_flows);
@@ -384,6 +386,7 @@ AttachRequest ParseAttach(const string &path, const unordered_map<string, Value>
 		}
 	}
 	request.host = host;
+	bool actor_option_given = false;
 	for (auto &option : options) {
 		auto key = StringUtil::Lower(option.first);
 		auto &value = option.second;
@@ -411,11 +414,43 @@ AttachRequest ParseAttach(const string &path, const unordered_map<string, Value>
 			if (request.timeout_seconds <= 0) {
 				throw InvalidInputException("tresor: LOGIN_TIMEOUT is a positive number of seconds");
 			}
+		} else if (key == "act_for_sessions") {
+			request.act_for_sessions = BooleanValue::Get(value.DefaultCastAs(LogicalType::BOOLEAN));
+		} else if (key == "exchange") {
+			actor_option_given = true;
+			auto kind = StringUtil::Lower(value.ToString());
+			if (kind != "token_exchange" && kind != "on_behalf_of") {
+				throw InvalidInputException("tresor: EXCHANGE is 'token_exchange' or 'on_behalf_of', not '%s'",
+				                            value.ToString());
+			}
+			request.on_behalf_of = kind == "on_behalf_of";
+		} else if (key == "exchange_scope") {
+			actor_option_given = true;
+			request.exchange_scope = value.ToString();
+		} else if (key == "session_grant_wait") {
+			actor_option_given = true;
+			request.grant_wait_seconds = BigIntValue::Get(value.DefaultCastAs(LogicalType::BIGINT));
+			if (request.grant_wait_seconds < 0 || request.grant_wait_seconds > 600) {
+				throw InvalidInputException("tresor: SESSION_GRANT_WAIT is 0 to 600 seconds");
+			}
 		} else {
 			throw InvalidInputException("tresor: unknown ATTACH option '%s' (known: LOGIN, ISSUER, SECRET, "
-			                            "INSECURE_HTTP, LOGIN_TIMEOUT)",
+			                            "INSECURE_HTTP, LOGIN_TIMEOUT, ACT_FOR_SESSIONS, EXCHANGE, EXCHANGE_SCOPE, "
+			                            "SESSION_GRANT_WAIT)",
 			                            option.first);
 		}
+	}
+	if (!request.act_for_sessions && actor_option_given) {
+		throw InvalidInputException("tresor: EXCHANGE, EXCHANGE_SCOPE and SESSION_GRANT_WAIT configure "
+		                            "ACT_FOR_SESSIONS - set it too");
+	}
+	if (request.act_for_sessions && request.mode_given) {
+		throw InvalidInputException("tresor: ACT_FOR_SESSIONS is for a node's service login (SECRET of flow "
+		                            "client_credentials), not a person's LOGIN");
+	}
+	if (request.on_behalf_of && request.exchange_scope.empty()) {
+		throw InvalidInputException("tresor: EXCHANGE 'on_behalf_of' needs EXCHANGE_SCOPE (the service's "
+		                            "api://.../.default)");
 	}
 	if (request.mode_given && !request.secret_name.empty()) {
 		throw InvalidInputException("tresor: LOGIN is how a person logs in and SECRET how a service does - not both");
@@ -480,6 +515,7 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 		auto &issuer = ChooseIssuer(request, discovered, asked_issuer);
 		CheckTransport(request, "issuer", issuer.issuer);
 		info.issuer = issuer.issuer;
+		info.audience = issuer.audience;
 		info.endpoints = oidc::Discover(issuer.issuer);
 		if (!info.endpoints.Ok()) {
 			throw IOException("tresor: the identity provider %s of %s: %s", issuer.issuer, request.host,
@@ -523,6 +559,18 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 		}
 	}
 
+	if (request.act_for_sessions) {
+		// the exchange is made as the node's own client: only a client_credentials login has one
+		if (flow != LoginFlow::CLIENT_CREDENTIALS) {
+			throw InvalidInputException("tresor: ACT_FOR_SESSIONS needs a service login - a SECRET of flow "
+			                            "client_credentials");
+		}
+		if (info.audience.empty() && request.exchange_scope.empty()) {
+			throw InvalidInputException("tresor: %s names no audience for its issuer, and no EXCHANGE_SCOPE was "
+			                            "given - nothing to exchange a session's token for",
+			                            request.host);
+		}
+	}
 	auto session = make_shared_ptr<TresorSession>(std::move(info), flow, std::move(tokens), std::move(client_secret));
 	// the login is proven only when the service accepts it: fail closed at ATTACH, not at first use
 	auto whoami = session->Call("GET", "/v1/whoami");

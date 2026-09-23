@@ -57,3 +57,40 @@ servers may act, for which users, how:
 
 A server acting for a user never adds its own authority: every call carries the user's identity,
 and the service checks the user's rights, the rule, and that the server may act for users at all.
+
+### On a duckdb-acl node
+
+A node running [duckdb-acl](https://github.com/hugr-lab/duckdb-acl) attaches the service **as
+itself** and acts for the users whose sessions it serves:
+
+```sql
+CREATE SECRET node (TYPE tresor, FLOW client_credentials, ISSUER 'https://idp.example/realms/corp',
+                    CLIENT_ID 'acl-node', CLIENT_SECRET '…');
+ATTACH 'tresor:secrets.example' AS corp (SECRET node, ACT_FOR_SESSIONS true);
+```
+
+When a user's acl session opens, tresor:
+1. exchanges the session's token at the identity provider for one meant for the service;
+2. trades that token for a delegation grant;
+3. uses the grant for every statement of the session: secret lookups, `corp.secrets()`,
+   `corp.whoami()` (which answers the user, with `actor` = the node);
+4. revokes the grant when the session ends.
+
+A statement under a session sees **its user's** secrets or none, never the node's. If the grant is
+still pending, lookups wait up to `SESSION_GRANT_WAIT` seconds (10 by default). If the exchange or
+the grant failed, lookups in `corp` find nothing and explicit calls fail with the reason.
+
+| Option | Default | |
+| --- | --- | --- |
+| `ACT_FOR_SESSIONS` | `false` | act for duckdb-acl's sessions |
+| `EXCHANGE` | `'token_exchange'` | `'token_exchange'` (RFC 8693: Keycloak, Okta, …) or `'on_behalf_of'` (Entra) |
+| `EXCHANGE_SCOPE` | — | the scope asked for; required for `on_behalf_of` (`api://…/.default`) |
+| `SESSION_GRANT_WAIT` | `10` | seconds a session's statement waits for its grant |
+
+The identity provider must allow the node's client to exchange tokens. In Keycloak (standard token
+exchange):
+- set `standard.token.exchange.enabled` on the node's client;
+- give the users' client an audience mapper that names the node's client;
+- give the node's client an audience mapper that names the service's client.
+
+The test realm in `server/testdata/keycloak` has all three.

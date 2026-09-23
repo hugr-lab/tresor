@@ -1,6 +1,8 @@
 #include "tresor_storage.hpp"
 #include "tresor_login.hpp"
 
+#include "acl_connection.hpp"
+
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/timestamp.hpp"
@@ -370,16 +372,19 @@ string EncodePathSegment(const string &segment) {
 	return Encode(segment);
 }
 
-vector<Descriptor> FetchDescriptors(TresorSession &session) {
-	auto response = session.Call("GET", "/v1/secrets");
+vector<Descriptor> FetchDescriptors(const Caller &caller) {
+	auto response = caller.Call("GET", "/v1/secrets");
+	if (response.status == 401 && !caller.IsNode()) {
+		throw PermissionException("tresor: the service no longer accepts this acl session's delegation grant");
+	}
 	if (response.status != 200) {
-		throw IOException("tresor: listing the secrets of %s: %s", session.Info().host,
+		throw IOException("tresor: listing the secrets of %s: %s", caller.session->Info().host,
 		                  DescribeProblem(response.status, response.body));
 	}
 	JsonDoc doc(response.body);
 	auto root = doc.Root();
 	if (!root || !yyjson_is_arr(root)) {
-		throw IOException("tresor: %s answered the secrets list with no JSON array", session.Info().host);
+		throw IOException("tresor: %s answered the secrets list with no JSON array", caller.session->Info().host);
 	}
 	vector<Descriptor> out;
 	size_t idx, max;
@@ -411,13 +416,16 @@ TresorSecretStorage::TresorSecretStorage(const string &name, int64_t offset) : S
 	persistent = true; // the secrets live in the service
 }
 
-void TresorSecretStorage::Activate(shared_ptr<TresorSession> session_p, vector<Descriptor> initial) {
+void TresorSecretStorage::Activate(shared_ptr<TresorSession> session_p, vector<Descriptor> initial,
+                                   shared_ptr<TresorActor> actor_p) {
 	lock_guard<mutex> guard(lock);
 	session = std::move(session_p);
-	descriptors = std::move(initial);
-	listed_at = NowSeconds();
-	failed_at = 0;
-	materials.clear();
+	actor = std::move(actor_p);
+	node = make_shared_ptr<View>();
+	node->descriptors = std::move(initial);
+	node->listed_at = NowSeconds();
+	node->listed = true;
+	acl_views.clear();
 }
 
 void TresorSecretStorage::Deactivate(const TresorSession &which) {
@@ -426,8 +434,9 @@ void TresorSecretStorage::Deactivate(const TresorSession &which) {
 		return; // another ATTACH of this name serves now
 	}
 	session.reset();
-	descriptors.clear();
-	materials.clear();
+	actor.reset();
+	node.reset();
+	acl_views.clear();
 }
 
 bool TresorSecretStorage::IncludeInLookups() {
@@ -435,83 +444,179 @@ bool TresorSecretStorage::IncludeInLookups() {
 	return session != nullptr;
 }
 
-vector<Descriptor> TresorSecretStorage::Snapshot(shared_ptr<TresorSession> &session_out) {
+Caller TresorSecretStorage::CallerFor(optional_ptr<ClientContext> context) {
+	Caller caller;
+	shared_ptr<TresorActor> acting;
 	{
 		lock_guard<mutex> guard(lock);
-		session_out = session;
+		caller.session = session;
+		acting = actor;
+	}
+	if (!caller.session || !context) {
+		return caller; // detached; or no connection to ask - the node's own work
+	}
+	// whose statement is this: duckdb-acl publishes the session a statement runs under on its connection
+	string why;
+	auto state = acl::AclConnection::Reach(*context, why);
+	if (!state) {
+		// another acl_connection contract: it cannot be told whose statement this is - nobody's
+		caller.acl_session = "?";
+		caller.refused = "cannot tell whose statement this is: " + why;
+		return caller;
+	}
+	acl::AclSessionView view;
+	if (!state->Current(view)) {
+		return caller; // not under an acl session: the node itself
+	}
+	caller.acl_session = view.session_id.empty() ? "?" : view.session_id;
+	if (!acting) {
+		caller.refused = storage_name + " does not act for duckdb-acl sessions (ATTACH it with ACT_FOR_SESSIONS)";
+		return caller;
+	}
+	caller.grant = acting->GrantFor(view.session_id, why);
+	if (caller.grant.empty()) {
+		caller.refused = why.empty() ? "this acl session has no delegation grant" : why;
+	}
+	return caller;
+}
+
+Caller TresorSecretStorage::CallerOf(optional_ptr<CatalogTransaction> transaction) {
+	return CallerFor(transaction ? transaction->context : nullptr);
+}
+
+void TresorSecretStorage::GrantRejected(const Caller &caller) {
+	shared_ptr<TresorActor> acting;
+	{
+		lock_guard<mutex> guard(lock);
+		acting = actor;
+		acl_views.erase(caller.acl_session);
+	}
+	if (acting && !caller.IsNode()) {
+		acting->Rejected(caller.acl_session);
+	}
+}
+
+void TresorSecretStorage::ForgetSession(const string &acl_session) {
+	lock_guard<mutex> guard(lock);
+	acl_views.erase(acl_session);
+}
+
+shared_ptr<TresorSecretStorage::View> TresorSecretStorage::ViewOf(const Caller &caller) {
+	lock_guard<mutex> guard(lock);
+	if (!caller.Usable() || session != caller.session) {
+		return nullptr;
+	}
+	if (caller.IsNode()) {
+		return node;
+	}
+	auto &view = acl_views[caller.acl_session];
+	if (!view) {
+		view = make_shared_ptr<View>();
+	}
+	return view;
+}
+
+vector<Descriptor> TresorSecretStorage::Snapshot(const Caller &caller, shared_ptr<View> &view_out) {
+	view_out = ViewOf(caller);
+	if (!view_out) {
+		return vector<Descriptor>();
+	}
+	auto &view = *view_out;
+	bool first;
+	{
+		lock_guard<mutex> guard(lock);
 		auto now = NowSeconds();
-		if (!session || now - listed_at < LIST_TTL_SECONDS || now - failed_at < RETRY_AFTER_SECONDS) {
-			return descriptors;
+		first = !view.listed;
+		if (now - view.failed_at < RETRY_AFTER_SECONDS || (!first && now - view.listed_at < LIST_TTL_SECONDS)) {
+			return view.descriptors;
 		}
 	}
 	// stale: one refresh at a time, outside the state lock; a lookup arriving meanwhile goes on with the
-	// list it has rather than queueing behind the network
-	unique_lock<mutex> fetching(fetch_lock, std::try_to_lock);
-	if (!fetching.owns_lock()) {
+	// list it has rather than queueing behind the network - unless the view has none yet (a new acl session)
+	unique_lock<mutex> fetching(view.fetch_lock, std::defer_lock);
+	if (first) {
+		fetching.lock();
+	} else if (!fetching.try_lock()) {
 		lock_guard<mutex> guard(lock);
-		return descriptors;
+		return view.descriptors;
 	}
 	uint64_t started;
 	{
 		lock_guard<mutex> guard(lock);
+		if (first && view.listed) {
+			return view.descriptors; // listed while this one waited
+		}
 		started = generation;
 	}
 	try {
-		auto fresh = FetchDescriptors(*session_out);
+		auto fresh = FetchDescriptors(caller);
 		lock_guard<mutex> guard(lock);
-		if (session == session_out && generation == started) { // a write meanwhile: this list is already old
-			descriptors = std::move(fresh);
-			listed_at = NowSeconds();
+		if (session == caller.session && generation == started) { // a write meanwhile: this list is already old
+			view.descriptors = std::move(fresh);
+			view.listed_at = NowSeconds();
+			view.listed = true;
 		}
-		return descriptors;
+		return view.descriptors;
+	} catch (PermissionException &) {
+		GrantRejected(caller); // the grant was refused: the session's view goes, and it gets nothing more
+		return vector<Descriptor>();
 	} catch (std::exception &) {
 		// the service is unreachable: the last list stays authoritative for matching (a secret it covers
 		// fails at its material fetch - closed; a path it does not cover is not this storage's business)
 		lock_guard<mutex> guard(lock);
-		failed_at = NowSeconds();
-		return descriptors;
+		view.failed_at = NowSeconds();
+		return view.descriptors;
 	}
 }
 
-vector<Descriptor> TresorSecretStorage::Refresh() {
-	shared_ptr<TresorSession> current;
-	{
-		lock_guard<mutex> guard(lock);
-		current = session;
-	}
-	if (!current) {
+vector<Descriptor> TresorSecretStorage::Refresh(const Caller &caller) {
+	if (!caller.session) {
 		throw InvalidInputException("tresor: %s is detached", storage_name);
 	}
-	auto fresh = FetchDescriptors(*current);
+	vector<Descriptor> fresh;
+	try {
+		fresh = FetchDescriptors(caller); // throws the refusal, for an acl session without a grant
+	} catch (PermissionException &) {
+		if (!caller.IsNode() && caller.refused.empty()) {
+			GrantRejected(caller); // the service refused the grant itself
+		}
+		throw;
+	}
+	auto view = ViewOf(caller);
 	lock_guard<mutex> guard(lock);
-	if (session == current) {
-		descriptors = fresh;
-		listed_at = NowSeconds();
-		failed_at = 0;
+	if (view && session == caller.session) {
+		view->descriptors = fresh;
+		view->listed_at = NowSeconds();
+		view->failed_at = 0;
+		view->listed = true;
 	}
 	return fresh;
 }
 
-unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const shared_ptr<TresorSession> &current,
-                                                             const Descriptor &d,
+unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &caller, View &view, const Descriptor &d,
                                                              optional_ptr<CatalogTransaction> transaction) {
 	auto now = NowSeconds();
 	{
 		lock_guard<mutex> guard(lock);
-		auto cached = materials.find(d.name);
-		if (cached != materials.end() && cached->second.version == d.version && cached->second.valid_until > now) {
+		auto cached = view.materials.find(d.name);
+		if (cached != view.materials.end() && cached->second.version == d.version && cached->second.valid_until > now) {
 			return cached->second.secret->Clone();
 		}
 	}
-	auto response = current->Call("GET", "/v1/secrets/" + Encode(d.name));
+	auto response = caller.Call("GET", "/v1/secrets/" + Encode(d.name));
+	if (response.status == 401 && !caller.IsNode()) {
+		// the node's login was renewed and retried by the session: a 401 now is the grant, refused
+		GrantRejected(caller);
+		return nullptr;
+	}
 	if (response.status == 404 || response.status == 403) {
 		// gone, or no longer ours to use, since the list was fetched: not a match - and the list is stale
 		lock_guard<mutex> guard(lock);
-		listed_at = 0;
+		view.listed_at = 0;
 		return nullptr;
 	}
 	if (response.status != 200) {
-		throw IOException("tresor: the secret %s of %s: %s", d.name, current->Info().host,
+		throw IOException("tresor: the secret %s of %s: %s", d.name, caller.session->Info().host,
 		                  DescribeProblem(response.status, response.body));
 	}
 	// numbers as raw text: a HUGEINT or DECIMAL keeps every digit
@@ -519,7 +624,7 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const shared_ptr<Tr
 	auto root = doc.Root();
 	auto params = root && yyjson_is_obj(root) ? yyjson_obj_get(root, "params") : nullptr;
 	if (!params || !yyjson_is_obj(params)) {
-		throw IOException("tresor: the secret %s of %s came without params", d.name, current->Info().host);
+		throw IOException("tresor: the secret %s of %s came without params", d.name, caller.session->Info().host);
 	}
 	optional_ptr<ClientContext> context = transaction ? transaction->context : nullptr;
 	// a dynamic S3-family secret is refreshed by tresor (httpfs's REFRESH auto calls the provider recorded
@@ -575,19 +680,19 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const shared_ptr<Tr
 		valid_until = now; // a dynamic secret without a readable expiry is never reused
 	}
 	lock_guard<mutex> guard(lock);
-	if (session != current) {
+	if (session != caller.session) {
 		return std::move(secret); // detached meanwhile: served once, never cached
 	}
 	// expired entries go now: material is kept for a bounded time, not until DETACH
-	for (auto it = materials.begin(); it != materials.end();) {
-		it = it->second.valid_until <= now ? materials.erase(it) : std::next(it);
+	for (auto it = view.materials.begin(); it != view.materials.end();) {
+		it = it->second.valid_until <= now ? view.materials.erase(it) : std::next(it);
 	}
 	if (valid_until > now) {
 		Material material;
 		material.version = d.version;
 		material.valid_until = valid_until;
 		material.secret = secret->Clone();
-		materials[d.name] = std::move(material);
+		view.materials[d.name] = std::move(material);
 	}
 	return std::move(secret);
 }
@@ -601,9 +706,11 @@ SecretEntry TresorSecretStorage::EntryOf(unique_ptr<const BaseSecret> secret) {
 
 SecretMatch TresorSecretStorage::LookupSecret(const string &path, const string &type,
                                               optional_ptr<CatalogTransaction> transaction) {
-	shared_ptr<TresorSession> current;
-	auto list = Snapshot(current);
-	if (!current) {
+	// a statement under an acl session sees its user's secrets or none - never the node's (specs/008)
+	auto caller = CallerOf(transaction);
+	shared_ptr<View> view;
+	auto list = Snapshot(caller, view);
+	if (!view) {
 		return SecretMatch();
 	}
 	// score the usable descriptors by duckdb's own rule, on placeholders without material
@@ -623,7 +730,7 @@ SecretMatch TresorSecretStorage::LookupSecret(const string &path, const string &
 	if (!best_descriptor) {
 		return SecretMatch();
 	}
-	auto material = MaterialOf(current, *best_descriptor, transaction);
+	auto material = MaterialOf(caller, *view, *best_descriptor, transaction);
 	if (!material) {
 		return SecretMatch();
 	}
@@ -633,16 +740,17 @@ SecretMatch TresorSecretStorage::LookupSecret(const string &path, const string &
 
 unique_ptr<SecretEntry> TresorSecretStorage::GetSecretByName(const string &name,
                                                              optional_ptr<CatalogTransaction> transaction) {
-	shared_ptr<TresorSession> current;
-	auto list = Snapshot(current);
-	if (!current) {
+	auto caller = CallerOf(transaction);
+	shared_ptr<View> view;
+	auto list = Snapshot(caller, view);
+	if (!view) {
 		return nullptr;
 	}
 	for (auto &d : list) {
 		// a secret the caller may see but not use is not one it can have by name: not found here, so a
 		// local secret of that name is not shadowed by an error
 		if (StringUtil::CIEquals(d.name, name) && Lookupable(d) && d.May("use")) {
-			auto material = MaterialOf(current, d, transaction);
+			auto material = MaterialOf(caller, *view, d, transaction);
 			return material ? make_uniq<SecretEntry>(EntryOf(std::move(material))) : nullptr;
 		}
 	}
@@ -650,10 +758,11 @@ unique_ptr<SecretEntry> TresorSecretStorage::GetSecretByName(const string &name,
 }
 
 vector<SecretEntry> TresorSecretStorage::AllSecrets(optional_ptr<CatalogTransaction> transaction) {
-	shared_ptr<TresorSession> current;
-	auto list = Snapshot(current); // never throws: duckdb_secrets() must work while a service is down
+	auto caller = CallerOf(transaction);
+	shared_ptr<View> view;
+	auto list = Snapshot(caller, view); // never throws: duckdb_secrets() must work while a service is down
 	vector<SecretEntry> out;
-	if (!current) {
+	if (!view) {
 		return out;
 	}
 	// descriptors only: listing never fetches material
@@ -673,16 +782,25 @@ shared_ptr<TresorSession> TresorSecretStorage::Current() {
 
 void TresorSecretStorage::Invalidate(const string &name) {
 	lock_guard<mutex> guard(lock);
-	listed_at = 0;
-	failed_at = 0;
 	generation++;
-	materials.erase(name);
+	auto stale = [&](View &view) {
+		view.listed_at = 0;
+		view.failed_at = 0;
+		view.materials.erase(name);
+	};
+	if (node) {
+		stale(*node);
+	}
+	for (auto &view : acl_views) {
+		stale(*view.second);
+	}
 }
 
 unique_ptr<const BaseSecret> TresorSecretStorage::RefreshMaterial(const string &name,
                                                                   optional_ptr<CatalogTransaction> transaction) {
-	shared_ptr<TresorSession> current;
-	for (auto &d : Snapshot(current)) {
+	auto caller = CallerOf(transaction);
+	shared_ptr<View> view;
+	for (auto &d : Snapshot(caller, view)) {
 		if (!StringUtil::CIEquals(d.name, name) || !Lookupable(d) || !d.May("use")) {
 			continue;
 		}
@@ -698,34 +816,38 @@ unique_ptr<const BaseSecret> TresorSecretStorage::RefreshMaterial(const string &
 			// moment ago is the answer to this one too (requests of one scan may refresh in parallel); a
 			// mint made by an ordinary lookup is not - it may be the very credential that was refused
 			lock_guard<mutex> guard(lock);
-			auto cached = materials.find(d.name);
+			auto cached = view->materials.find(d.name);
 			auto now = NowSeconds();
-			if (cached != materials.end() && cached->second.version == d.version && cached->second.refreshed_at != 0 &&
-			    now - cached->second.refreshed_at < FRESH_MINT_SECONDS && cached->second.valid_until > now) {
+			if (cached != view->materials.end() && cached->second.version == d.version &&
+			    cached->second.refreshed_at != 0 && now - cached->second.refreshed_at < FRESH_MINT_SECONDS &&
+			    cached->second.valid_until > now) {
 				return cached->second.secret->Clone();
 			}
-			materials.erase(d.name);
+			view->materials.erase(d.name);
 		}
-		auto material = MaterialOf(current, d, transaction);
+		auto material = MaterialOf(caller, *view, d, transaction);
 		if (!material) {
 			break;
 		}
 		lock_guard<mutex> guard(lock);
-		auto cached = materials.find(d.name);
-		if (cached != materials.end()) {
+		auto cached = view->materials.find(d.name);
+		if (cached != view->materials.end()) {
 			cached->second.refreshed_at = NowSeconds();
 		}
 		return material;
 	}
-	if (!current) {
+	if (!caller.session) {
 		throw InvalidInputException("tresor: %s is detached", storage_name);
+	}
+	if (!caller.refused.empty()) {
+		throw PermissionException("tresor: %s", caller.refused);
 	}
 	throw InvalidInputException("tresor: %s has no secret %s this caller may use", storage_name, name);
 }
 
-string TresorSecretStorage::ServiceName(const string &name) {
-	shared_ptr<TresorSession> current;
-	for (auto &d : Snapshot(current)) {
+string TresorSecretStorage::ServiceName(const Caller &caller, const string &name) {
+	shared_ptr<View> view;
+	for (auto &d : Snapshot(caller, view)) {
 		if (StringUtil::CIEquals(d.name, name)) {
 			return d.name;
 		}
@@ -736,8 +858,8 @@ string TresorSecretStorage::ServiceName(const string &name) {
 unique_ptr<SecretEntry> TresorSecretStorage::StoreSecret(unique_ptr<const BaseSecret> secret,
                                                          OnCreateConflict on_conflict,
                                                          optional_ptr<CatalogTransaction> transaction) {
-	auto current = Current();
-	if (!current) {
+	auto caller = CallerOf(transaction);
+	if (!caller.session) {
 		throw InvalidInputException("tresor: %s is detached", storage_name);
 	}
 	auto key_value = dynamic_cast<const KeyValueSecret *>(secret.get());
@@ -749,14 +871,14 @@ unique_ptr<SecretEntry> TresorSecretStorage::StoreSecret(unique_ptr<const BaseSe
 		// from the service (and cached it): a refresh, not a write - nothing goes back
 		return make_uniq<SecretEntry>(EntryOf(secret->Clone()));
 	}
-	auto name = ServiceName(secret->GetName().GetIdentifierName());
+	auto name = ServiceName(caller, secret->GetName().GetIdentifierName());
 	std::map<std::string, std::string> headers;
 	if (on_conflict == OnCreateConflict::ERROR_ON_CONFLICT || on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
 		headers["If-None-Match"] = "*"; // CREATE / IF NOT EXISTS: never overwrite
 	} else if (on_conflict != OnCreateConflict::REPLACE_ON_CONFLICT) {
 		throw InternalException("tresor: unexpected conflict mode for a secret");
 	}
-	auto response = current->Call("PUT", "/v1/secrets/" + Encode(name), SecretBody(*key_value), headers);
+	auto response = caller.Call("PUT", "/v1/secrets/" + Encode(name), SecretBody(*key_value), headers);
 	Invalidate(name);
 	if (response.status == 412) {
 		if (on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
@@ -780,12 +902,12 @@ unique_ptr<SecretEntry> TresorSecretStorage::StoreSecret(unique_ptr<const BaseSe
 
 void TresorSecretStorage::DropSecretByName(const Identifier &name_p, OnEntryNotFound on_entry_not_found,
                                            optional_ptr<CatalogTransaction> transaction) {
-	auto current = Current();
-	if (!current) {
+	auto caller = CallerOf(transaction);
+	if (!caller.session) {
 		throw InvalidInputException("tresor: %s is detached", storage_name);
 	}
-	auto name = ServiceName(name_p.GetIdentifierName());
-	auto response = current->Call("DELETE", "/v1/secrets/" + Encode(name));
+	auto name = ServiceName(caller, name_p.GetIdentifierName());
+	auto response = caller.Call("DELETE", "/v1/secrets/" + Encode(name));
 	Invalidate(name);
 	if (response.status == 404) {
 		if (on_entry_not_found == OnEntryNotFound::THROW_EXCEPTION) {

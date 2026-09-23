@@ -77,6 +77,18 @@ export TRESOR_CONFORMANCE_ISSUER="$issuer" TRESOR_CONFORMANCE_CLIENT_ID=etl TRES
 export TRESOR_CONFORMANCE_DELEGATION=1 TRESOR_CONFORMANCE_PERSON=1 TRESOR_KC_HOST=127.0.0.1:$server_port TRESOR_KC_ISSUER="$issuer"
 export BROWSER="$root/test/keycloak/browser.py" TRESOR_KC_USER=alice TRESOR_KC_PASS=alice-pass
 cd "$root"
+# a user's token as a duckdb-acl node receives it (specs/008): alice through the acl-door client, whose
+# tokens are meant for acl-node only - the actor test exchanges it at Keycloak for one meant for the service.
+# Fetched last, right before the tests: it lives Keycloak's default five minutes
+TRESOR_KC_DOOR_TOKEN="$(curl -sf -d grant_type=password -d client_id=acl-door -d username=alice \
+	-d password=alice-pass -d scope=openid "$issuer/protocol/openid-connect/token" |
+	python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' || true)"
+[ -n "$TRESOR_KC_DOOR_TOKEN" ] || {
+	echo "test_keycloak: no token for alice through acl-door - cannot run the actor test" >&2
+	exit 1
+}
+export TRESOR_KC_DOOR_TOKEN
+
 status=0
 # the reference server's own tests first, so the conformance run's summary is the last one printed
 # (scripts/ci/assert_ran.sh reads the last); both must pass
@@ -87,6 +99,40 @@ if ! grep -q "All tests passed" "$work/reference.log" || grep -q "skipped" "$wor
 else
 	# not in the runner's summary format: assert_ran must only ever read the conformance run's line
 	echo "test_keycloak: the reference server's tests passed"
+fi
+# with duckdb-acl itself (specs/008): TRESOR_ACL_EXTENSION names an acl.duckdb_extension built at this
+# repository's duckdb commit - a real acl session's statements run as its user, through the grant
+if [ -n "${TRESOR_ACL_EXTENSION:-}" ]; then
+	cli="${TRESOR_CLI:-$(dirname "$unittest")/../duckdb}"
+	door_token="$(curl -sf -d grant_type=password -d client_id=acl-door -d username=alice -d password=alice-pass \
+		-d scope=openid "$issuer/protocol/openid-connect/token" |
+		python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
+	jwks="$(curl -sf "$issuer/protocol/openid-connect/certs")"
+	sed -e "s|@ACL_EXTENSION@|$TRESOR_ACL_EXTENSION|" \
+		-e "s|@TRESOR_EXTENSION@|$(dirname "$unittest")/../extension/tresor/tresor.duckdb_extension|" \
+		-e "s|@HOST@|127.0.0.1:$server_port|g" -e "s|@ISSUER@|$issuer|g" -e "s|@WORK@|$work|g" \
+		-e "s|@TOKEN@|$door_token|" -e "s|@JWKS@|$jwks|" "$root/test/acl/actor.sql" >"$work/acl.sql"
+	"$cli" -unsigned <"$work/acl.sql" >"$work/acl.log" 2>&1 || true
+	checks=(
+		'^check:node [0-9a-f-]{36}\|NULL$'
+		'^check:node-lake 0$'
+		'^check:opened true$'
+		'^check:session [0-9a-f-]{36}\|client:acl-node$'
+		'^check:session-lake acl_lake$'
+		'^check:closed true$'
+	)
+	acl_ok=1
+	for check in "${checks[@]}"; do
+		grep -Eq "$check" "$work/acl.log" || { echo "test_keycloak: acl: no line matching $check" >&2; acl_ok=0; }
+	done
+	grep -q 'method=POST path=/v1/delegations status=201' "$work/server.log" || acl_ok=0
+	grep -q 'method=DELETE path=/v1/delegations/.* status=204' "$work/server.log" || acl_ok=0
+	if [ "$acl_ok" = 1 ]; then
+		echo "test_keycloak: with duckdb-acl, a session's statements ran as its user, and its grant was revoked"
+	else
+		cat "$work/acl.log" >&2
+		status=1
+	fi
 fi
 "$unittest" --skip-error-messages '' 'test/sql/conformance/*' || status=1
 if [ "$status" != 0 ]; then

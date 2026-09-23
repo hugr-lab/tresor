@@ -24,6 +24,7 @@ struct ManageBindData : public TableFunctionData {
 	Action action;
 	shared_ptr<TresorSession> session;
 	reference<TresorSecretStorage> storage; // owned by the SecretManager, for the instance's lifetime
+	Caller caller;                          // resolved per call: the node, or a duckdb-acl session's user
 	string name;                            // the secret, canonical
 	string argument;                        // the comment, the principal, or a delegation rule's id
 	vector<string> verbs;
@@ -76,7 +77,7 @@ string Arg(TableFunctionBindInput &input, idx_t index, const char *what) {
 }
 
 vector<Grant> ReadGrants(const ManageBindData &data) {
-	auto response = data.session->Call("GET", "/v1/secrets/" + EncodePathSegment(data.name) + "/grants");
+	auto response = data.caller.Call("GET", "/v1/secrets/" + EncodePathSegment(data.name) + "/grants");
 	if (response.status != 200) {
 		Refused(data, response, "list the grants of");
 	}
@@ -329,11 +330,12 @@ void ManageScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 	auto data = input.bind_data->Cast<ManageBindData>(); // a copy: the name is resolved per call
 	auto &storage = data.storage.get();
 	// the service's own spelling: DuckDB compares names case-insensitively, the service exactly
-	data.name = storage.ServiceName(data.name);
+	data.caller = storage.CallerFor(&context);
+	data.name = storage.ServiceName(data.caller, data.name);
 	auto path = "/v1/secrets/" + EncodePathSegment(data.name);
 	switch (data.action) {
 	case Action::DELEGATIONS: {
-		auto response = data.session->Call("GET", path + "/delegations");
+		auto response = data.caller.Call("GET", path + "/delegations");
 		if (response.status != 200) {
 			Refused(data, response, "list the delegation rules of");
 		}
@@ -359,7 +361,7 @@ void ManageScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 			body += ",\"ttl\":" + std::to_string(TtlSeconds(data.ttl));
 		}
 		body += "}";
-		auto response = data.session->Call("POST", path + "/delegations", body);
+		auto response = data.caller.Call("POST", path + "/delegations", body);
 		if (response.status != 201 && response.status != 200) {
 			Refused(data, response, "delegate");
 		}
@@ -368,7 +370,7 @@ void ManageScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 		return;
 	}
 	case Action::REMOVE_DELEGATION: {
-		auto response = data.session->Call("DELETE", path + "/delegations/" + EncodePathSegment(data.argument));
+		auto response = data.caller.Call("DELETE", path + "/delegations/" + EncodePathSegment(data.argument));
 		if (response.status == 404) {
 			throw InvalidInputException("tresor: the secret %s has no delegation rule %s", data.name, data.argument);
 		}
@@ -379,7 +381,7 @@ void ManageScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 		return;
 	}
 	case Action::ANNOTATE: {
-		auto response = data.session->Call("PATCH", path, "{\"comment\":" + JsonString(data.argument) + "}");
+		auto response = data.caller.Call("PATCH", path, "{\"comment\":" + JsonString(data.argument) + "}");
 		if (response.status != 200) {
 			Refused(data, response, "annotate");
 		}
@@ -414,15 +416,14 @@ void ManageScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 		for (auto &verb : data.verbs) {
 			verbs += (verbs.empty() ? "" : ",") + JsonString(verb);
 		}
-		auto response =
-		    data.session->Call("PUT", path + "/grants/" + EncodePathSegment(id),
-		                       "{\"principal\":" + JsonString(data.argument) + ",\"verbs\":[" + verbs + "]}");
+		auto response = data.caller.Call("PUT", path + "/grants/" + EncodePathSegment(id),
+		                                 "{\"principal\":" + JsonString(data.argument) + ",\"verbs\":[" + verbs + "]}");
 		if (response.status != 200 && response.status != 201) {
 			Refused(data, response, "grant on");
 		}
 		for (auto &grant : existing) {
 			if (grant.principal == data.argument && grant.id != id) {
-				auto removed = data.session->Call("DELETE", path + "/grants/" + EncodePathSegment(grant.id));
+				auto removed = data.caller.Call("DELETE", path + "/grants/" + EncodePathSegment(grant.id));
 				if (removed.status != 204 && removed.status != 200 && removed.status != 404) {
 					Refused(data, removed, "replace a grant on");
 				}
@@ -437,7 +438,7 @@ void ManageScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 			if (grant.principal != data.argument) {
 				continue;
 			}
-			auto response = data.session->Call("DELETE", path + "/grants/" + EncodePathSegment(grant.id));
+			auto response = data.caller.Call("DELETE", path + "/grants/" + EncodePathSegment(grant.id));
 			if (response.status != 204 && response.status != 200 && response.status != 404) {
 				Refused(data, response, "revoke on");
 			}

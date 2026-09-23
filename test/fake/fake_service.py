@@ -19,6 +19,9 @@ a sqllogictest can only steer the fake through what it attaches:
     broken     logs in and lists its secrets, but every material fetch answers 503: a lookup that picks
                one of them fails closed, and nothing else is disturbed
     nolist     logs in, but its secrets list answers 503: nothing to attach
+    acting     the actor's service (specs/008): its own secrets, and delegation grants - the node sees
+               node_lake and stats (whose comment counts exchanges, grants, revocations and live grants),
+               a session's user through a grant sees only what a rule delegates to the node for them
 
 Every realm serves the same secrets (SECRETS below) to every identity. A descriptor's comment counts
 how often its material was fetched ("fetched N") - the only window a sqllogictest has into caching.
@@ -46,7 +49,7 @@ PERSON = {"subject": "alice", "roles": ["role:analysts", "group:sales"], "create
 SERVICE = {"subject": "client:etl", "roles": ["role:etl"], "create": True}
 CLIENTS = {"etl": "s3cr3t"}
 STATIC_TOKENS = {"static-token": {"subject": "client:static", "roles": [], "create": False}}
-REALMS = {"", "multi", "wrong", "expiring", "revoking", "noflows", "broken", "nolist"}
+REALMS = {"", "multi", "wrong", "expiring", "revoking", "noflows", "broken", "nolist", "acting"}
 ISSUERS = {"idp", "idp2", "idp-revoking"}
 FIRST_USES = 2  # expiring/revoking: how many whoami calls a token as first issued survives
 
@@ -127,6 +130,20 @@ SECRETS = {
 FETCHED = {}  # secret name -> material fetches
 WRITES = {}  # secret name -> PUT / DELETE / PATCH the service received for it
 RULE_IDS = [0]  # delegation rule ids, never reused
+
+# --- acting for acl sessions (specs/008) ---------------------------------------------------------------
+# tokens an acl node received from its users: meant for the node (never accepted by the service), exchanged
+# at the IdP by the etl client for tokens meant for the service
+NODE_TOKENS = {
+    "node-token-alice": {"subject": "alice", "roles": ["role:analysts"], "create": []},
+    "node-token-carol": {"subject": "carol", "roles": ["role:interns"], "create": []},  # the grant is refused
+    "node-token-erin": {"subject": "erin", "roles": ["role:analysts"], "create": []},  # a grant living 1 s
+}
+REFUSED_NODE_TOKEN = "node-token-dave"  # the IdP refuses to exchange it
+GRANTS = {}  # grant id -> {"actor": subject, "user": identity, "expires": epoch}
+STATS = {"exchanges": 0, "grants": 0, "revoked": 0}
+# what a rule delegates to client:etl, per user: the secret's name -> its key id
+DELEGATED = {"alice": {"alice_lake": "ALICE"}, "erin": {"alice_lake": "ERIN"}}
 
 
 def descriptor(name, sec):
@@ -286,6 +303,9 @@ class Handler(BaseHTTPRequestHandler):
                                  "delegation": realm != "expiring"},
             })
             return
+        if realm == "acting" and rest.startswith("/v1/"):
+            self.acting_get(rest)
+            return
         if rest == "/v1/whoami":
             auth = self.headers.get("Authorization", "")
             token = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
@@ -366,6 +386,108 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send(404, {"type": "not_found"})
 
+    # --- acting (specs/008): grants, the Delegation header ---------------------------------------------
+    def bearer_identity(self):
+        auth = self.headers.get("Authorization", "")
+        token = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
+        with LOCK:
+            entry = TOKENS.get(token)
+        return entry["identity"] if entry else None
+
+    def effective(self):
+        """(identity the service answers as, actor subject or None); (None, None) after a 401 was sent."""
+        caller = self.bearer_identity()
+        if caller is None:
+            self.problem(401, "unauthenticated", "token missing, invalid or expired")
+            return None, None
+        grant_id = self.headers.get("Delegation")
+        if not grant_id:
+            return caller, None
+        with LOCK:
+            grant = GRANTS.get(grant_id)
+            alive = grant and grant["expires"] > time.time() and grant["actor"] == caller["subject"]
+        if not alive:
+            self.problem(401, "unauthenticated", "the delegation grant is not valid for this actor")
+            return None, None
+        return grant["user"], caller["subject"]
+
+    def acting_get(self, rest):
+        identity, actor = self.effective()
+        if identity is None:
+            return
+        if rest == "/v1/whoami":
+            self.send(200, {"issuer": self.base() + "/idp", "subject": identity["subject"], "roles": identity["roles"],
+                            "actor": actor, "expires_at": "2030-01-01T00:00:00Z",
+                            "permissions": {"create": identity["create"]}})
+            return
+        if actor:  # the user, through a grant: only what a rule delegates to this actor for them
+            names = DELEGATED.get(identity["subject"], {})
+            listing = {n: {"type": "s3", "scope": ["s3://acting"], "permissions": ["use"], "owner": "role:admins",
+                           "params": {"key_id": k}, "redact_keys": []} for n, k in names.items()}
+        else:
+            with LOCK:
+                stats = "exchanges %d grants %d revoked %d live %d" % (
+                    STATS["exchanges"], STATS["grants"], STATS["revoked"], len(GRANTS))
+            listing = {
+                "node_lake": {"type": "s3", "scope": ["s3://acting"], "permissions": ["use"],
+                              "params": {"key_id": "NODE"}, "redact_keys": []},
+                "stats": {"type": "http", "scope": ["https://stats.invalid"], "permissions": [], "comment": stats,
+                          "params": {}, "redact_keys": []},
+            }
+        if rest == "/v1/secrets":
+            self.send(200, [descriptor(n, sec) for n, sec in listing.items()])
+            return
+        name = urllib.parse.unquote(rest[len("/v1/secrets/"):]) if rest.startswith("/v1/secrets/") else None
+        if name not in listing or "use" not in listing[name]["permissions"]:
+            self.problem(403, "not_delegable", "no rule delegates this secret") if actor else \
+                self.problem(404, "not_found", "no secret")
+            return
+        sec = listing[name]
+        self.send(200, dict(descriptor(name, sec), params=sec["params"], redact_keys=[], expires_at=None))
+
+    def acting_post_grant(self):
+        caller = self.bearer_identity()
+        if caller is None:
+            self.problem(401, "unauthenticated", "token missing, invalid or expired")
+            return
+        if not caller["subject"].startswith("client:"):
+            self.problem(403, "actor_not_allowed", "only a service acts for users")
+            return
+        body = self.body()
+        with LOCK:
+            entry = TOKENS.get(body.get("subject_token", ""))
+        user = entry["identity"] if entry else None
+        if user is None or user["subject"].startswith("client:"):
+            self.problem(401, "unauthenticated", "the subject token is not a user's token for this service")
+            return
+        if user["subject"] == "carol":
+            self.problem(403, "actor_not_allowed", "this actor may not act for carol")
+            return
+        ttl = 1 if user["subject"] == "erin" else min(int(body.get("ttl") or 3600), 8 * 3600)
+        grant_id = "dg-" + secrets.token_urlsafe(12)
+        expires = time.time() + ttl
+        with LOCK:
+            GRANTS[grant_id] = {"actor": caller["subject"], "user": user, "expires": expires}
+            STATS["grants"] += 1
+        # erin's grant claims an hour but the service drops it after a second: the client learns it from a 401
+        shown = expires + 3600 if user["subject"] == "erin" else expires
+        self.send(201, {"id": grant_id, "subject": user["subject"], "actor": caller["subject"],
+                        "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(shown))})
+
+    def acting_delete_grant(self, grant_id):
+        caller = self.bearer_identity()
+        if caller is None:
+            self.problem(401, "unauthenticated", "token missing, invalid or expired")
+            return
+        with LOCK:
+            grant = GRANTS.get(grant_id)
+            if grant is None or grant["actor"] != caller["subject"]:
+                self.problem(404, "not_found", "no such grant")
+                return
+            del GRANTS[grant_id]
+            STATS["revoked"] += 1
+        self.send(204, b"", "text/plain")
+
     # --- writes (specs/005): any realm, any authenticated caller; names starting forbidden_ are refused ---
     def authorised(self):
         auth = self.headers.get("Authorization", "")
@@ -427,6 +549,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         realm, rest = self.split(urllib.parse.urlparse(self.path).path)
+        if realm == "acting" and rest.startswith("/v1/delegations/"):
+            self.acting_delete_grant(urllib.parse.unquote(rest[len("/v1/delegations/"):]))
+            return
         if not rest.startswith("/v1/secrets/"):
             self.send(404, {"type": "not_found"})
             return
@@ -477,6 +602,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         url = urllib.parse.urlparse(self.path)
         realm, rest = self.split(url.path)
+        if realm == "acting" and rest == "/v1/delegations":
+            self.acting_post_grant()
+            return
         if rest.startswith("/v1/secrets/") and rest.endswith("/delegations"):
             if not self.authorised():
                 return
@@ -540,6 +668,19 @@ class Handler(BaseHTTPRequestHandler):
                     self.send(401, {"error": "invalid_client", "error_description": "bad client secret"})
                 else:
                     self.send(200, issue(SERVICE, False))
+            elif grant == "urn:ietf:params:oauth:grant-type:token-exchange":
+                at = "urn:ietf:params:oauth:token-type:access_token"
+                subject = form.get("subject_token")
+                if CLIENTS.get(form.get("client_id")) != form.get("client_secret"):
+                    self.send(401, {"error": "invalid_client", "error_description": "bad client secret"})
+                elif form.get("audience") != "duckdb-secrets" or form.get("subject_token_type") != at:
+                    self.send(400, {"error": "invalid_target", "error_description": "not an audience of this IdP"})
+                elif subject not in NODE_TOKENS:
+                    self.send(400, {"error": "invalid_grant",
+                                    "error_description": "the subject token %s is not valid" % subject})
+                else:
+                    STATS["exchanges"] += 1
+                    self.send(200, dict(issue(NODE_TOKENS[subject], False), issued_token_type=at))
             elif grant == "urn:ietf:params:oauth:grant-type:device_code":
                 code = form.get("device_code")
                 if code not in DEVICES:

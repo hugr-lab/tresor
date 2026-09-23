@@ -27,6 +27,11 @@ struct AttachRequest {
 	string secret_name;
 	bool insecure_http = false;
 	int64_t timeout_seconds = 300;
+	// acting for duckdb-acl's sessions (specs/008)
+	bool act_for_sessions = false;
+	bool on_behalf_of = false; // EXCHANGE 'on_behalf_of' (Entra); else RFC 8693 token exchange
+	string exchange_scope;
+	int64_t grant_wait_seconds = 10;
 };
 
 AttachRequest ParseAttach(const string &path, const unordered_map<string, Value> &options);

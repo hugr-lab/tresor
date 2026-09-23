@@ -2,6 +2,7 @@
 
 #include "duckdb/common/exception.hpp"
 
+#include <algorithm>
 #include <chrono>
 
 namespace duckdb {
@@ -105,6 +106,13 @@ ServiceResponse TresorSession::Call(const string &method, const string &path, co
 		if (result.status == 401 && attempt == 0) {
 			continue; // the protocol's rule: refresh and retry once
 		}
+		if (result.status == 401 && extra_headers.count("Delegation")) {
+			// the login was just renewed: the grant is what the service refuses - the caller's to handle
+			ServiceResponse refused;
+			refused.status = result.status;
+			refused.body = std::move(result.body);
+			return refused;
+		}
 		ServiceResponse out;
 		out.status = result.status;
 		out.body = std::move(result.body);
@@ -112,6 +120,24 @@ ServiceResponse TresorSession::Call(const string &method, const string &path, co
 	}
 	throw InvalidInputException("tresor: %s refused the renewed login (401) - log in again: DETACH and ATTACH",
 	                            info.host);
+}
+
+oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bool on_behalf_of, const string &scope) {
+	string secret;
+	{
+		lock_guard<mutex> guard(lock);
+		if (closed || flow != LoginFlow::CLIENT_CREDENTIALS) {
+			oidc::TokenSet refused;
+			refused.error = closed ? "the session is closed" : "only a client_credentials login exchanges tokens";
+			return refused;
+		}
+		secret = client_secret;
+	}
+	auto out = on_behalf_of
+	               ? oidc::OnBehalfOf(info.endpoints, info.client_id, secret, subject_token, scope)
+	               : oidc::TokenExchange(info.endpoints, info.client_id, secret, subject_token, info.audience, scope);
+	std::fill(secret.begin(), secret.end(), '\0');
+	return out;
 }
 
 void TresorSession::Close() {

@@ -27,6 +27,7 @@ struct ServiceInfo {
 	string issuer;    // the chosen issuer
 	string client_id; // the public client of people, or the service's own
 	string scope;     // what the login asked for
+	string audience;  // the chosen issuer's `audience` in the discovery: what an exchange asks for (specs/008)
 	bool insecure_http = false;
 	unordered_map<string, bool> capabilities; // discovery's `capabilities` (write, annotate, dynamic, delegation)
 	oidc::Endpoints endpoints;
@@ -58,6 +59,11 @@ public:
 	//! session is closed or cannot be renewed.
 	ServiceResponse Call(const string &method, const string &path, const string &body = "",
 	                     const std::map<std::string, std::string> &extra_headers = {});
+
+	//! Exchange a token someone presented to this node for one meant for the service (specs/008): at the
+	//! session's own IdP, as its own client. Only a client_credentials login can. No lock held across the
+	//! network. The subject token never reaches an error.
+	oidc::TokenSet ExchangeForService(const string &subject_token, bool on_behalf_of, const string &scope);
 
 	//! DETACH: drop the tokens. Calls after this fail.
 	void Close();
