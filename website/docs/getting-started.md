@@ -125,12 +125,31 @@ rule). Name it with the storage, or rename one of them.
 
 ```sql
 CREATE PERSISTENT SECRET lake_rw IN corp (TYPE s3, KEY_ID '…', SECRET '…', SCOPE 's3://lake');
+CREATE PERSISTENT SECRET IF NOT EXISTS lake_rw IN corp (…);     -- nothing if it exists
+CREATE OR REPLACE PERSISTENT SECRET lake_rw IN corp (…);        -- needs `update` on it
+SET default_secret_storage = 'corp';                           -- PERSISTENT without IN goes to the service
+
 CALL corp.annotate_secret('lake_rw', 'Read-write on the lake bucket, owned by the data team');
-CALL corp.grant_secret('lake_rw', principal := 'role:data_team', verbs := ['use']);
+CALL corp.grant_secret('lake_rw', 'role:data_team', ['use']);   -- one grant per principal, replaced
+FROM corp.grants('lake_rw');
+CALL corp.revoke_secret('lake_rw', 'role:data_team');
 DROP PERSISTENT SECRET lake_rw FROM corp;
 ```
 
-Whether each of these is allowed is decided by the service from your role.
+The service decides whether each of these is allowed, from your role. Some things to know:
+- **Names.** DuckDB compares secret names case-insensitively. A new secret is stored in lower case,
+  and an existing one is found by any spelling.
+- **Resolved credentials.** A secret made with a resolving provider (for example s3's
+  `credential_chain`) is stored with *your* resolved credentials, and whoever you grant it to
+  receives them.
+- **Writes take effect immediately.** A `ROLLBACK` does not undo a `CREATE … IN corp`: the service
+  has no transaction to join.
+- **Secret types need their extension.** The type must be one DuckDB knows (an `s3` secret needs
+  httpfs loaded), as for any storage. `allow_persistent_secrets = false` refuses persistent writes,
+  the service's included.
+- **Name the storage when dropping.** `DROP SECRET name` without `FROM corp` finds the secret by
+  name. By name tresor only finds secrets you may `use`, and it fetches the material, which the
+  service may record as a use. `FROM corp` needs only `delete`.
 
 ## Detach
 

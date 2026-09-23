@@ -50,6 +50,98 @@ vector<string> StrList(yyjson_val *value) {
 	return out;
 }
 
+//! JSON text of a string.
+string JsonText(const string &text) {
+	string out = "\"";
+	for (unsigned char c : text) {
+		switch (c) {
+		case '"':
+			out += "\\\"";
+			break;
+		case '\\':
+			out += "\\\\";
+			break;
+		case '\n':
+			out += "\\n";
+			break;
+		case '\r':
+			out += "\\r";
+			break;
+		case '\t':
+			out += "\\t";
+			break;
+		default:
+			if (c < 0x20) {
+				out += StringUtil::Format("\\u%04x", c);
+			} else {
+				out.push_back(char(c));
+			}
+		}
+	}
+	return out + "\"";
+}
+
+//! A Value as the JSON the reading accepts back (FromJson): numbers as their exact text, nested types as
+//! arrays and objects, everything else as its text.
+string ValueJson(const Value &value) {
+	if (value.IsNull()) {
+		return "null";
+	}
+	auto &type = value.type();
+	switch (type.id()) {
+	case LogicalTypeId::BOOLEAN:
+		return BooleanValue::Get(value) ? "true" : "false";
+	case LogicalTypeId::TINYINT:
+	case LogicalTypeId::SMALLINT:
+	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::BIGINT:
+	case LogicalTypeId::HUGEINT:
+	case LogicalTypeId::UTINYINT:
+	case LogicalTypeId::USMALLINT:
+	case LogicalTypeId::UINTEGER:
+	case LogicalTypeId::UBIGINT:
+	case LogicalTypeId::UHUGEINT:
+	case LogicalTypeId::DECIMAL:
+		return value.ToString();
+	case LogicalTypeId::FLOAT:
+	case LogicalTypeId::DOUBLE: {
+		auto text = value.ToString();
+		// inf / nan are not JSON numbers: their text casts back
+		return (text.find_first_not_of("0123456789.-+eE") == string::npos) ? text : JsonText(text);
+	}
+	case LogicalTypeId::LIST:
+	case LogicalTypeId::ARRAY: {
+		auto &children =
+		    type.id() == LogicalTypeId::LIST ? ListValue::GetChildren(value) : ArrayValue::GetChildren(value);
+		string out = "[";
+		for (idx_t i = 0; i < children.size(); i++) {
+			out += (i ? "," : "") + ValueJson(children[i]);
+		}
+		return out + "]";
+	}
+	case LogicalTypeId::STRUCT: {
+		auto &children = StructValue::GetChildren(value);
+		string out = "{";
+		for (idx_t i = 0; i < children.size(); i++) {
+			out += (i ? "," : "") + JsonText(StructType::GetChildName(type, i).GetIdentifierName()) + ":" +
+			       ValueJson(children[i]);
+		}
+		return out + "}";
+	}
+	case LogicalTypeId::MAP: {
+		auto &entries = ListValue::GetChildren(value);
+		string out = "{";
+		for (idx_t i = 0; i < entries.size(); i++) {
+			auto &pair = StructValue::GetChildren(entries[i]);
+			out += (i ? "," : "") + JsonText(pair[0].ToString()) + ":" + ValueJson(pair[1]);
+		}
+		return out + "}";
+	}
+	default:
+		return JsonText(value.ToString());
+	}
+}
+
 //! A path segment: everything but the unreserved characters percent-encoded.
 string Encode(const string &segment) {
 	static const char *hex = "0123456789ABCDEF";
@@ -209,6 +301,53 @@ Value ProtocolValue(const string &secret, const string &key, const string &type,
 	}
 }
 
+string SecretBody(const KeyValueSecret &secret) {
+	string params;
+	for (auto &entry : secret.secret_map) {
+		auto &value = entry.second;
+		if (value.IsNull()) {
+			continue; // not a value: the protocol has no NULL param (the reference server refuses one)
+		}
+		auto key = JsonText(StringUtil::Lower(entry.first.GetIdentifierName()));
+		string json;
+		if (value.type().id() == LogicalTypeId::VARCHAR) {
+			json = JsonText(StringValue::Get(value)); // shorthand for VARCHAR
+		} else {
+			json = "{\"type\":" + JsonText(value.type().ToString()) + ",\"value\":" + ValueJson(value) + "}";
+		}
+		params += (params.empty() ? "" : ",") + key + ":" + json;
+	}
+	string scope;
+	for (auto &prefix : secret.GetScope()) {
+		scope += (scope.empty() ? "" : ",") + JsonText(prefix);
+	}
+	// only keys the secret has: a DuckDB secret type may list redact keys a given secret does not carry
+	// (a tresor token secret has no client_secret), and the protocol requires them to be params
+	string redact;
+	for (auto &key : secret.redact_keys) {
+		auto param = secret.secret_map.find(key);
+		if (param == secret.secret_map.end() || param->second.IsNull()) {
+			continue;
+		}
+		redact += (redact.empty() ? "" : ",") + JsonText(StringUtil::Lower(key.GetIdentifierName()));
+	}
+	return "{\"type\":" + JsonText(StringUtil::Lower(secret.GetType().GetIdentifierName())) +
+	       ",\"provider\":" + JsonText(secret.GetProvider().GetIdentifierName()) + ",\"scope\":[" + scope +
+	       "],\"params\":{" + params + "},\"redact_keys\":[" + redact + "]}";
+}
+
+string JsonString(const string &text) {
+	return JsonText(text);
+}
+
+string CanonicalName(const string &name) {
+	return StringUtil::Lower(name);
+}
+
+string EncodePathSegment(const string &segment) {
+	return Encode(segment);
+}
+
 vector<Descriptor> FetchDescriptors(TresorSession &session) {
 	auto response = session.Call("GET", "/v1/secrets");
 	if (response.status != 200) {
@@ -247,7 +386,7 @@ vector<Descriptor> FetchDescriptors(TresorSession &session) {
 }
 
 TresorSecretStorage::TresorSecretStorage(const string &name, int64_t offset) : SecretStorage(name, offset) {
-	persistent = true; // the secrets live in the service (writes: specs/005)
+	persistent = true; // the secrets live in the service
 }
 
 void TresorSecretStorage::Activate(shared_ptr<TresorSession> session_p, vector<Descriptor> initial) {
@@ -290,10 +429,15 @@ vector<Descriptor> TresorSecretStorage::Snapshot(shared_ptr<TresorSession> &sess
 		lock_guard<mutex> guard(lock);
 		return descriptors;
 	}
+	uint64_t started;
+	{
+		lock_guard<mutex> guard(lock);
+		started = generation;
+	}
 	try {
 		auto fresh = FetchDescriptors(*session_out);
 		lock_guard<mutex> guard(lock);
-		if (session == session_out) {
+		if (session == session_out && generation == started) { // a write meanwhile: this list is already old
 			descriptors = std::move(fresh);
 			listed_at = NowSeconds();
 		}
@@ -462,7 +606,7 @@ unique_ptr<SecretEntry> TresorSecretStorage::GetSecretByName(const string &name,
 	for (auto &d : list) {
 		// a secret the caller may see but not use is not one it can have by name: not found here, so a
 		// local secret of that name is not shadowed by an error
-		if (d.name == name && Lookupable(d) && d.May("use")) {
+		if (StringUtil::CIEquals(d.name, name) && Lookupable(d) && d.May("use")) {
 			auto material = MaterialOf(current, d, transaction);
 			return material ? make_uniq<SecretEntry>(EntryOf(std::move(material))) : nullptr;
 		}
@@ -487,15 +631,93 @@ vector<SecretEntry> TresorSecretStorage::AllSecrets(optional_ptr<CatalogTransact
 	return out;
 }
 
+shared_ptr<TresorSession> TresorSecretStorage::Current() {
+	lock_guard<mutex> guard(lock);
+	return session;
+}
+
+void TresorSecretStorage::Invalidate(const string &name) {
+	lock_guard<mutex> guard(lock);
+	listed_at = 0;
+	failed_at = 0;
+	generation++;
+	materials.erase(name);
+}
+
+string TresorSecretStorage::ServiceName(const string &name) {
+	shared_ptr<TresorSession> current;
+	for (auto &d : Snapshot(current)) {
+		if (StringUtil::CIEquals(d.name, name)) {
+			return d.name;
+		}
+	}
+	return CanonicalName(name);
+}
+
 unique_ptr<SecretEntry> TresorSecretStorage::StoreSecret(unique_ptr<const BaseSecret> secret,
                                                          OnCreateConflict on_conflict,
                                                          optional_ptr<CatalogTransaction> transaction) {
-	throw NotImplementedException("tresor: storing secrets in %s is not supported yet (specs/005)", storage_name);
+	auto current = Current();
+	if (!current) {
+		throw InvalidInputException("tresor: %s is detached", storage_name);
+	}
+	auto key_value = dynamic_cast<const KeyValueSecret *>(secret.get());
+	if (!key_value) {
+		throw InvalidInputException("tresor: only key-value secrets can be stored in %s", storage_name);
+	}
+	auto name = ServiceName(secret->GetName().GetIdentifierName());
+	std::map<std::string, std::string> headers;
+	if (on_conflict == OnCreateConflict::ERROR_ON_CONFLICT || on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
+		headers["If-None-Match"] = "*"; // CREATE / IF NOT EXISTS: never overwrite
+	} else if (on_conflict != OnCreateConflict::REPLACE_ON_CONFLICT) {
+		throw InternalException("tresor: unexpected conflict mode for a secret");
+	}
+	auto response = current->Call("PUT", "/v1/secrets/" + Encode(name), SecretBody(*key_value), headers);
+	Invalidate(name);
+	if (response.status == 412) {
+		if (on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
+			return nullptr; // duckdb's IF NOT EXISTS contract: nothing created, no entry
+		}
+		throw InvalidInputException("Persistent secret with name %s already exists in secret storage '%s'!", name,
+		                            storage_name);
+	}
+	if (response.status == 403) {
+		throw PermissionException("tresor: you may not %s the secret %s in %s (%s)",
+		                          on_conflict == OnCreateConflict::REPLACE_ON_CONFLICT ? "create or replace" : "create",
+		                          name, storage_name, DescribeProblem(response.status, response.body));
+	}
+	if (response.status != 200 && response.status != 201) {
+		throw InvalidInputException("tresor: storing the secret %s in %s: %s", name, storage_name,
+		                            DescribeProblem(response.status, response.body));
+	}
+	auto entry = EntryOf(secret->Clone());
+	return make_uniq<SecretEntry>(std::move(entry));
 }
 
-void TresorSecretStorage::DropSecretByName(const Identifier &name, OnEntryNotFound on_entry_not_found,
+void TresorSecretStorage::DropSecretByName(const Identifier &name_p, OnEntryNotFound on_entry_not_found,
                                            optional_ptr<CatalogTransaction> transaction) {
-	throw NotImplementedException("tresor: dropping secrets from %s is not supported yet (specs/005)", storage_name);
+	auto current = Current();
+	if (!current) {
+		throw InvalidInputException("tresor: %s is detached", storage_name);
+	}
+	auto name = ServiceName(name_p.GetIdentifierName());
+	auto response = current->Call("DELETE", "/v1/secrets/" + Encode(name));
+	Invalidate(name);
+	if (response.status == 404) {
+		if (on_entry_not_found == OnEntryNotFound::THROW_EXCEPTION) {
+			throw InvalidInputException("Failed to remove non-existent persistent secret '%s' in secret storage '%s'",
+			                            name, storage_name);
+		}
+		return;
+	}
+	if (response.status == 403) {
+		throw PermissionException("tresor: you may not delete the secret %s in %s (%s)", name, storage_name,
+		                          DescribeProblem(response.status, response.body));
+	}
+	if (response.status != 204 && response.status != 200) {
+		throw InvalidInputException("tresor: deleting the secret %s in %s: %s", name, storage_name,
+		                            DescribeProblem(response.status, response.body));
+	}
 }
 
 TresorSecretStorage &StorageFor(ClientContext &context, const string &name) {
