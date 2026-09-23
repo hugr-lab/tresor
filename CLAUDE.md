@@ -22,7 +22,7 @@ ATTACH prefix works).
   | --- | --- | --- |
   | duckdb | submodule `duckdb/` | branch `v2.0-cyanoptera`, commit = duckdb-acl's |
   | extension-ci-tools | submodule `extension-ci-tools/` | `main`, commit = duckdb-acl's |
-  | duckdb-ext-common | submodule `duckdb-ext-common/` | `main` until its first tag |
+  | duckdb-ext-common | submodule `duckdb-ext-common/` | tag `v0.1.0`, = duckdb-acl's |
   | distribution | `.github/workflows/distribution.yml` | `@main`, `duckdb_version: v2.0-cyanoptera` |
 
 - **Dependencies**: none yet. HTTPS to the service and the IdP arrives with the OIDC core
