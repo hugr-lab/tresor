@@ -6,6 +6,7 @@
 
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/mutex.hpp"
+#include "duckdb/common/unordered_map.hpp"
 #include "oidc_core.hpp"
 
 #include <functional>
@@ -27,6 +28,7 @@ struct ServiceInfo {
 	string client_id; // the public client of people, or the service's own
 	string scope;     // what the login asked for
 	bool insecure_http = false;
+	unordered_map<string, bool> capabilities; // discovery's `capabilities` (write, annotate, dynamic, delegation)
 	oidc::Endpoints endpoints;
 };
 

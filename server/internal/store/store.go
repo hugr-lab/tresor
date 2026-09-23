@@ -31,6 +31,18 @@ type Secret struct {
 	UpdatedAt  time.Time                  `json:"updated_at"`
 	Version    int64                      `json:"version"`
 	Grants     []Grant                    `json:"grants"`
+	Rules      []Rule                     `json:"delegations"`
+}
+
+// Rule delegates a secret: which actors may use it for which subjects, and how (specs/007).
+type Rule struct {
+	ID         string   `json:"id"`
+	Actors     []string `json:"actors"`
+	Subjects   []string `json:"subjects"`
+	Mode       string   `json:"mode"`
+	Operations []string `json:"operations"`
+	Scope      []string `json:"scope"`
+	TTL        int64    `json:"ttl"`
 }
 
 // Grant gives a principal verbs on one secret.

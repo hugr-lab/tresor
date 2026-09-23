@@ -27,6 +27,7 @@ type fixture struct {
 	etl      string // client:etl: may create anything
 	carol    string // no roles at all
 	stranger string // a valid token for another audience
+	srv      *Server
 }
 
 func newFixture(t *testing.T, basePath string) *fixture {
@@ -51,13 +52,19 @@ policy:
   create:
     - {principal: role:analysts, names: ["team_a_*"]}
     - {principal: client:etl, names: ["*"]}
+  actors:
+    - {principal: client:node, verbs: [use]}
+    - {principal: client:admin-node, verbs: [use, annotate]}
+    - {principal: client:mgr-node, verbs: [use, grant, delegate]}
+    - {principal: client:pinned, issuer: https://elsewhere.example, verbs: [use]}
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
 	st, _ := store.Open("", nil)
 	log := slog.New(slog.NewTextHandler(f.logs, nil))
-	f.server.Config.Handler = New(cfg, auth.NewVerifier(cfg.Issuers), st, log).Handler()
+	f.srv = New(cfg, auth.NewVerifier(cfg.Issuers), st, log)
+	f.server.Config.Handler = f.srv.Handler()
 	f.server.Start()
 	t.Cleanup(f.server.Close)
 	f.alice = idp.Person(t, "duckdb-secrets", "analysts")
@@ -322,8 +329,8 @@ func TestGrantCannotEscalate(t *testing.T) {
 	if r := f.do("DELETE", "/v1/secrets/team_a_x/grants/d", f.alice, ""); r.status != 404 {
 		t.Fatalf("delete a missing grant: %d", r.status)
 	}
-	if r := f.do("PUT", "/v1/secrets/team_a_x/grants/e", f.alice, `{"principal":"role:x","verbs":["delegate"]}`); r.status != 422 {
-		t.Fatalf("delegate is not grantable while delegation is off: %d", r.status)
+	if r := f.do("PUT", "/v1/secrets/team_a_x/grants/e", f.alice, `{"principal":"role:x","verbs":["delegate"]}`); r.status != 200 {
+		t.Fatalf("delegate is grantable: %d", r.status)
 	}
 }
 

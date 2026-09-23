@@ -38,10 +38,11 @@ func TestRefused(t *testing.T) {
 		"an unknown key": good + "\nextra: 1\n",
 		"a symmetric algorithm": strings.Replace(good, "audience: duckdb-secrets",
 			"audience: duckdb-secrets\n    algorithms: [HS256]", 1),
-		"no audience":           strings.Replace(good, "    audience: duckdb-secrets\n", "", 1),
-		"a bad principal":       strings.Replace(good, "role:secrets_admin", "secrets_admin", 1),
-		"a store without a key": good + "store: {path: x.enc}\n",
-		"no issuers":            "listen: 127.0.0.1:1\npublic_url: http://127.0.0.1:1\n",
+		"no audience":            strings.Replace(good, "    audience: duckdb-secrets\n", "", 1),
+		"a bad principal":        strings.Replace(good, "role:secrets_admin", "secrets_admin", 1),
+		"a store without a key":  good + "store: {path: x.enc}\n",
+		"an actor with no verbs": good + "  actors:\n    - {principal: client:quiet, verbs: []}\n",
+		"no issuers":             "listen: 127.0.0.1:1\npublic_url: http://127.0.0.1:1\n",
 	}
 	for name, doc := range cases {
 		if _, err := Parse([]byte(doc)); err == nil {

@@ -94,6 +94,7 @@ void CheckTransport(const AttachRequest &request, const string &what, const stri
 
 struct Discovered {
 	string api;
+	unordered_map<string, bool> capabilities;
 	struct Issuer {
 		string issuer;
 		string client_id;
@@ -135,6 +136,14 @@ Discovered Discover(const AttachRequest &request, string &discovery_url) {
 	}
 	Discovered out;
 	out.api = StripSlashes(Str(root, "api"));
+	auto capabilities = yyjson_obj_get(root, "capabilities");
+	if (capabilities && yyjson_is_obj(capabilities)) {
+		size_t cidx, cmax;
+		yyjson_val *ckey, *cvalue;
+		yyjson_obj_foreach(capabilities, cidx, cmax, ckey, cvalue) {
+			out.capabilities[yyjson_get_str(ckey)] = yyjson_is_true(cvalue);
+		}
+	}
 	if (out.api.empty()) {
 		throw IOException("tresor: the discovery document of %s names no api", request.host);
 	}
@@ -445,6 +454,7 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 	info.insecure_http = request.insecure_http;
 	auto discovered = Discover(request, info.discovery);
 	info.api = discovered.api;
+	info.capabilities = discovered.capabilities;
 
 	// a LOGIN given is a person asking to log in as themselves: no secret is looked up for them
 	auto service_secret = request.mode_given ? nullptr : FindServiceSecret(context, request);

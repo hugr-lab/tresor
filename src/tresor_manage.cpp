@@ -2,6 +2,7 @@
 #include "tresor_login.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/types/interval.hpp"
 
 // The service's management surface as table functions of the catalog (specs/005): annotate_secret,
 // grants, grant_secret, revoke_secret. Each call runs once, when its table function is scanned; the
@@ -14,7 +15,7 @@ using namespace duckdb_yyjson; // NOLINT
 
 namespace {
 
-enum class Action : uint8_t { ANNOTATE, GRANTS, GRANT, REVOKE };
+enum class Action : uint8_t { ANNOTATE, GRANTS, GRANT, REVOKE, DELEGATIONS, ADD_DELEGATION, REMOVE_DELEGATION };
 
 struct ManageBindData : public TableFunctionData {
 	ManageBindData(Action action_p, shared_ptr<TresorSession> session_p, TresorSecretStorage &storage_p)
@@ -24,8 +25,12 @@ struct ManageBindData : public TableFunctionData {
 	shared_ptr<TresorSession> session;
 	reference<TresorSecretStorage> storage; // owned by the SecretManager, for the instance's lifetime
 	string name;                            // the secret, canonical
-	string argument;                        // the comment, or the principal
+	string argument;                        // the comment, the principal, or a delegation rule's id
 	vector<string> verbs;
+	// a delegation rule (add_delegation)
+	vector<string> actors, subjects, operations, scope;
+	string mode = "shared";
+	Value ttl;
 };
 
 struct Grant {
@@ -34,9 +39,17 @@ struct Grant {
 	vector<string> verbs;
 };
 
+struct Rule {
+	string id;
+	vector<string> actors, subjects, operations, scope;
+	string mode;
+	Value ttl;
+};
+
 struct ManageState : public GlobalTableFunctionState {
 	bool done = false;
 	vector<Grant> rows; // grants(): emitted a chunk at a time
+	vector<Rule> rules; // delegations(): likewise
 	idx_t offset = 0;
 };
 
@@ -103,6 +116,90 @@ Value Verbs(const vector<string> &verbs) {
 	return Value::LIST(LogicalType::VARCHAR, std::move(values));
 }
 
+vector<string> Strings(const Value &list, const char *what) {
+	vector<string> out;
+	if (list.IsNull()) {
+		return out;
+	}
+	for (auto &item : ListValue::GetChildren(list)) {
+		if (item.IsNull()) {
+			throw InvalidInputException("tresor: %s must not contain NULL", what);
+		}
+		out.push_back(item.ToString());
+	}
+	return out;
+}
+
+string JsonList(const vector<string> &items) {
+	string out;
+	for (auto &item : items) {
+		out += (out.empty() ? "" : ",") + JsonString(item);
+	}
+	return "[" + out + "]";
+}
+
+vector<string> StrArray(yyjson_val *value) {
+	vector<string> out;
+	if (value && yyjson_is_arr(value)) {
+		size_t idx, max;
+		yyjson_val *item;
+		yyjson_arr_foreach(value, idx, max, item) {
+			if (yyjson_is_str(item)) {
+				out.emplace_back(yyjson_get_str(item));
+			}
+		}
+	}
+	return out;
+}
+
+Rule ParseRule(yyjson_val *item) {
+	Rule rule;
+	auto str = [&](const char *key) {
+		auto value = yyjson_obj_get(item, key);
+		return value && yyjson_is_str(value) ? string(yyjson_get_str(value)) : string();
+	};
+	rule.id = str("id");
+	rule.mode = str("mode");
+	rule.actors = StrArray(yyjson_obj_get(item, "actors"));
+	rule.subjects = StrArray(yyjson_obj_get(item, "subjects"));
+	rule.operations = StrArray(yyjson_obj_get(item, "operations"));
+	rule.scope = StrArray(yyjson_obj_get(item, "scope"));
+	auto ttl = yyjson_obj_get(item, "ttl");
+	rule.ttl = ttl && yyjson_is_int(ttl) && yyjson_get_sint(ttl) > 0 ? Value::BIGINT(yyjson_get_sint(ttl))
+	                                                                 : Value(LogicalType::BIGINT);
+	return rule;
+}
+
+void EmitRule(DataChunk &output, const Rule &rule) {
+	output.data[0].Append(Value(rule.id));
+	output.data[1].Append(Verbs(rule.actors));
+	output.data[2].Append(Verbs(rule.subjects));
+	output.data[3].Append(Value(rule.mode));
+	output.data[4].Append(Verbs(rule.operations));
+	output.data[5].Append(Verbs(rule.scope));
+	output.data[6].Append(rule.ttl);
+}
+
+//! A rule's ttl in whole seconds: an INTERVAL (or text that casts to one: '1 hour') or a number of seconds.
+//! A ttl that is not at least a second is refused - 0 would mean "unbounded" to a service.
+int64_t TtlSeconds(const Value &ttl) {
+	int64_t seconds;
+	try {
+		if (ttl.type().id() == LogicalTypeId::INTERVAL || ttl.type().id() == LogicalTypeId::VARCHAR) {
+			auto interval = IntervalValue::Get(ttl.DefaultCastAs(LogicalType::INTERVAL));
+			seconds = Interval::GetMicro(interval) / Interval::MICROS_PER_SEC;
+		} else {
+			seconds = ttl.DefaultCastAs(LogicalType::BIGINT).GetValue<int64_t>();
+		}
+	} catch (std::exception &) {
+		throw InvalidInputException("tresor: ttl is an INTERVAL or a number of seconds");
+	}
+	if (seconds < 1) {
+		throw InvalidInputException("tresor: ttl must be at least one second");
+	}
+	return seconds;
+}
+
 //! A grant id every client computes the same way, from the principal: FNV-1a 64 - self-contained, so no
 //! DuckDB version or build flag changes it.
 string GrantId(const string &principal) {
@@ -124,7 +221,54 @@ unique_ptr<FunctionData> ManageBind(ClientContext &context, TableFunctionBindInp
 		names.emplace_back(name);
 		return_types.push_back(std::move(type));
 	};
+	auto rule_columns = [&]() {
+		add("id", LogicalType::VARCHAR);
+		add("actors", LogicalType::LIST(LogicalType::VARCHAR));
+		add("subjects", LogicalType::LIST(LogicalType::VARCHAR));
+		add("mode", LogicalType::VARCHAR);
+		add("operations", LogicalType::LIST(LogicalType::VARCHAR));
+		add("scope", LogicalType::LIST(LogicalType::VARCHAR));
+		add("ttl", LogicalType::BIGINT);
+	};
+	if (ACTION == Action::DELEGATIONS || ACTION == Action::ADD_DELEGATION || ACTION == Action::REMOVE_DELEGATION) {
+		// refused before any request when the service does not offer the optional part (protocol, Delegation)
+		auto &capabilities = data->session->Info().capabilities;
+		auto delegation = capabilities.find("delegation");
+		if (delegation == capabilities.end() || !delegation->second) {
+			throw InvalidInputException("tresor: %s does not offer delegation", data->session->Info().host);
+		}
+	}
 	switch (ACTION) {
+	case Action::DELEGATIONS:
+		rule_columns();
+		break;
+	case Action::ADD_DELEGATION:
+		data->actors = Strings(input.inputs[1], "the actors");
+		data->subjects = Strings(input.inputs[2], "the subjects");
+		if (data->actors.empty() || data->subjects.empty()) {
+			throw InvalidInputException("tresor: add_delegation needs its actors and its subjects");
+		}
+		for (auto &named : input.named_parameters) {
+			auto key = StringUtil::Lower(named.first.GetIdentifierName());
+			if (key == "mode") {
+				data->mode = named.second.IsNull() ? "shared" : StringUtil::Lower(named.second.ToString());
+			} else if (key == "operations") {
+				data->operations = Strings(named.second, "the operations");
+			} else if (key == "scope") {
+				data->scope = Strings(named.second, "the scope");
+			} else if (key == "ttl") {
+				data->ttl = named.second;
+				if (!data->ttl.IsNull()) {
+					(void)TtlSeconds(data->ttl); // refused at bind, before any request
+				}
+			}
+		}
+		rule_columns();
+		break;
+	case Action::REMOVE_DELEGATION:
+		data->argument = Arg(input, 1, "the rule's id");
+		add("id", LogicalType::VARCHAR);
+		break;
 	case Action::ANNOTATE:
 		data->argument = Arg(input, 1, "the comment");
 		add("name", LogicalType::VARCHAR);
@@ -172,9 +316,12 @@ void EmitGrant(DataChunk &output, idx_t row, const Grant &grant) {
 void ManageScan(ClientContext &context, TableFunctionInput &input, DataChunk &output) {
 	auto &state = input.global_state->Cast<ManageState>();
 	if (state.done) {
-		// grants(): the rest of the rows, a chunk at a time
+		// grants() / delegations(): the rest of the rows, a chunk at a time
 		while (state.offset < state.rows.size() && output.size() < STANDARD_VECTOR_SIZE) {
 			EmitGrant(output, 0, state.rows[state.offset++]);
+		}
+		while (state.offset < state.rules.size() && output.size() < STANDARD_VECTOR_SIZE) {
+			EmitRule(output, state.rules[state.offset++]);
 		}
 		return;
 	}
@@ -185,6 +332,52 @@ void ManageScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 	data.name = storage.ServiceName(data.name);
 	auto path = "/v1/secrets/" + EncodePathSegment(data.name);
 	switch (data.action) {
+	case Action::DELEGATIONS: {
+		auto response = data.session->Call("GET", path + "/delegations");
+		if (response.status != 200) {
+			Refused(data, response, "list the delegation rules of");
+		}
+		JsonDoc doc(response.body);
+		auto root = doc.Root();
+		if (root && yyjson_is_arr(root)) {
+			size_t idx, max;
+			yyjson_val *item;
+			yyjson_arr_foreach(root, idx, max, item) {
+				state.rules.push_back(ParseRule(item));
+			}
+		}
+		while (state.offset < state.rules.size() && output.size() < STANDARD_VECTOR_SIZE) {
+			EmitRule(output, state.rules[state.offset++]);
+		}
+		return;
+	}
+	case Action::ADD_DELEGATION: {
+		string body = "{\"actors\":" + JsonList(data.actors) + ",\"subjects\":" + JsonList(data.subjects) +
+		              ",\"mode\":" + JsonString(data.mode) + ",\"operations\":" + JsonList(data.operations) +
+		              ",\"scope\":" + JsonList(data.scope);
+		if (!data.ttl.IsNull()) {
+			body += ",\"ttl\":" + std::to_string(TtlSeconds(data.ttl));
+		}
+		body += "}";
+		auto response = data.session->Call("POST", path + "/delegations", body);
+		if (response.status != 201 && response.status != 200) {
+			Refused(data, response, "delegate");
+		}
+		JsonDoc doc(response.body);
+		EmitRule(output, ParseRule(doc.Root()));
+		return;
+	}
+	case Action::REMOVE_DELEGATION: {
+		auto response = data.session->Call("DELETE", path + "/delegations/" + EncodePathSegment(data.argument));
+		if (response.status == 404) {
+			throw InvalidInputException("tresor: the secret %s has no delegation rule %s", data.name, data.argument);
+		}
+		if (response.status != 204 && response.status != 200) {
+			Refused(data, response, "remove a delegation rule of");
+		}
+		output.data[0].Append(Value(data.argument));
+		return;
+	}
 	case Action::ANNOTATE: {
 		auto response = data.session->Call("PATCH", path, "{\"comment\":" + JsonString(data.argument) + "}");
 		if (response.status != 200) {
@@ -266,6 +459,17 @@ TableFunction Manage(const char *name, vector<LogicalType> arguments, table_func
 	return function;
 }
 
+TableFunction AddDelegation(shared_ptr<TresorSession> session, TresorSecretStorage &storage) {
+	auto text = LogicalType::VARCHAR;
+	auto function = Manage("add_delegation", {text, LogicalType::LIST(text), LogicalType::LIST(text)},
+	                       ManageBind<Action::ADD_DELEGATION>, std::move(session), storage);
+	function.named_parameters["mode"] = text;
+	function.named_parameters["operations"] = LogicalType::LIST(text);
+	function.named_parameters["scope"] = LogicalType::LIST(text);
+	function.named_parameters["ttl"] = LogicalType::ANY;
+	return function;
+}
+
 } // namespace
 
 vector<TableFunction> ManagementFunctions(shared_ptr<TresorSession> session, TresorSecretStorage &storage) {
@@ -275,6 +479,9 @@ vector<TableFunction> ManagementFunctions(shared_ptr<TresorSession> session, Tre
 	    Manage("grants", {text}, ManageBind<Action::GRANTS>, session, storage),
 	    Manage("grant_secret", {text, text, LogicalType::LIST(text)}, ManageBind<Action::GRANT>, session, storage),
 	    Manage("revoke_secret", {text, text}, ManageBind<Action::REVOKE>, session, storage),
+	    Manage("delegations", {text}, ManageBind<Action::DELEGATIONS>, session, storage),
+	    AddDelegation(session, storage),
+	    Manage("remove_delegation", {text, text}, ManageBind<Action::REMOVE_DELEGATION>, session, storage),
 	};
 }
 

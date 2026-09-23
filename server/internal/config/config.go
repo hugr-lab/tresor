@@ -64,6 +64,18 @@ type ServiceRule struct {
 type Policy struct {
 	Admins []string     `yaml:"admins"`
 	Create []CreateRule `yaml:"create"`
+	// Actors are the servers allowed to act for users (delegation, specs/007), and for which verbs;
+	// management verbs are denied unless listed. "create" is the service-level verb.
+	Actors []ActorRule `yaml:"actors"`
+}
+
+// ActorRule lets a service (a client: principal) act for users with the verbs listed - none listed, none
+// allowed. Issuer, when set, pins the actor to the issuer its token must come from: a client: name is not
+// issuer-qualified, and a same-named client of another configured issuer must not pass for it.
+type ActorRule struct {
+	Principal string   `yaml:"principal"`
+	Issuer    string   `yaml:"issuer"`
+	Verbs     []string `yaml:"verbs"`
 }
 
 // CreateRule lets a principal create secrets whose names match one of the patterns (path.Match).
@@ -101,9 +113,9 @@ var allowedAlgorithms = map[string]bool{
 	"ES256": true, "ES384": true, "ES512": true, "EdDSA": true,
 }
 
-// the per-secret verbs this server grants; `delegate` joins when delegation does
+// the per-secret verbs this server grants
 var knownVerbs = map[string]bool{
-	"use": true, "update": true, "delete": true, "annotate": true, "grant": true,
+	"use": true, "update": true, "delete": true, "annotate": true, "grant": true, "delegate": true,
 }
 
 // KnownVerb says whether v is one of the protocol's per-secret verbs.
@@ -180,6 +192,19 @@ func (c *Config) validate() error {
 	for _, p := range c.Policy.Admins {
 		if err := checkPrincipal(p); err != nil {
 			return fmt.Errorf("policy.admins: %w", err)
+		}
+	}
+	for _, a := range c.Policy.Actors {
+		if !strings.HasPrefix(a.Principal, "client:") || len(a.Principal) <= len("client:") {
+			return fmt.Errorf("policy.actors: %q - an actor is a service, client:<id>", a.Principal)
+		}
+		if len(a.Verbs) == 0 {
+			return fmt.Errorf("policy.actors: %s lists no verbs - leave it out instead", a.Principal)
+		}
+		for _, v := range a.Verbs {
+			if !KnownVerb(v) && v != "create" {
+				return fmt.Errorf("policy.actors: unknown verb %q", v)
+			}
 		}
 	}
 	for _, r := range c.Policy.Create {

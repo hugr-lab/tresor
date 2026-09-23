@@ -22,8 +22,10 @@ It is **not meant for production**: one process, one encrypted file, no high ava
     audience;
   - asymmetric algorithms only.
 
-Delegation and dynamic secrets are not implemented yet (`capabilities` says so, and `delegate`
-cannot be granted). Issuers must be https unless they are on loopback: their signing keys are
+- Delegation: rules, grant exchange, the `Delegation` header, and actor policy. Only `shared` rules
+  are supported.
+
+Dynamic secrets and `user`-mode delegation are not implemented (`capabilities.dynamic` is false). Issuers must be https unless they are on loopback: their signing keys are
 fetched from them.
 
 ## Run it
@@ -56,6 +58,9 @@ policy:
   create:
     - {principal: role:analysts, names: ["team_a_*"]}
     - {principal: client:etl, names: ["*"]}
+  actors:                                # servers that may act for users, and with which verbs
+    - {principal: client:acl-node, verbs: [use]}                     # none listed: not allowed
+    - {principal: client:ops-node, issuer: https://login.corp.example/realms/main, verbs: [use, annotate]}
 ```
 
 ## Who may do what
@@ -77,6 +82,20 @@ policy:
 - **Creating** is allowed to admins and to the `policy.create` rules, by name pattern.
 - **Invisible secrets.** A secret you hold no verb on answers 404, exactly like one that does not
   exist.
+
+## Delegation
+
+- **Rules.** A secret's rules (`delegate` verb) name servers (`client:` principals) and users; only
+  `shared` mode is supported.
+- **Actors.** A server listed in `policy.actors`, optionally pinned to the issuer of its token,
+  exchanges a person's token for a grant. The grant lives in memory only (8 h at most, and at most
+  100 000 grants), is bound to that server, and is never logged.
+- **Revocation.** Admins revoke by actor or subject (`DELETE /v1/delegations?actor=…`), and users
+  revoke their own grants.
+- **Under a grant:**
+  - every check uses the user's principals;
+  - the actor's `verbs` only take away (management verbs are denied unless listed);
+  - material needs a rule.
 
 ## Identity provider setup (Keycloak)
 
