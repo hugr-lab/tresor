@@ -12,6 +12,7 @@
 //   SELECT acl_stub_open('s1', '<token>', '<issuer>', 300);   -- the observers' OnSessionOpen
 //   SET acl_stub_session = 's1';                               -- the next statements run under s1
 //   SELECT acl_stub_close('s1', 'client');                     -- the observers' OnSessionClose
+//   SELECT acl_stub_stamp(99);                                 -- the connection state of another contract
 //
 // A session is published at each statement's QueryBegin and withdrawn at its QueryEnd, as acl does.
 
@@ -102,6 +103,17 @@ void CloseFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	}
 }
 
+//! acl_stub_stamp(version): restamp this connection's AclConnection, as an acl built from another revision of
+//! the contract would have it - the reader must refuse it. The version it had.
+void StampFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &raw = *state.GetContext().registered_state->GetOrCreate<acl::AclConnection>(acl::AclConnection::StateKey());
+	for (idx_t row = 0; row < args.size(); row++) {
+		auto previous = raw.contract_version;
+		raw.contract_version = int32_t(args.data[0].GetValue(row).GetValue<int64_t>());
+		result.SetValue(row, Value::BIGINT(previous));
+	}
+}
+
 } // namespace
 
 void AclStubExtension::Load(ExtensionLoader &loader) {
@@ -116,6 +128,9 @@ void AclStubExtension::Load(ExtensionLoader &loader) {
 	ScalarFunction close(Identifier("acl_stub_close"), {text, text}, LogicalType::BIGINT, CloseFun);
 	close.SetStability(FunctionStability::VOLATILE);
 	loader.RegisterFunction(close);
+	ScalarFunction stamp(Identifier("acl_stub_stamp"), {LogicalType::BIGINT}, LogicalType::BIGINT, StampFun);
+	stamp.SetStability(FunctionStability::VOLATILE);
+	loader.RegisterFunction(stamp);
 }
 
 std::string AclStubExtension::Name() {

@@ -85,6 +85,7 @@ the grant failed, lookups in `corp` find nothing and explicit calls fail with th
 | `ACT_FOR_SESSIONS` | `false` | act for duckdb-acl's sessions |
 | `EXCHANGE` | `'token_exchange'` | `'token_exchange'` (RFC 8693: Keycloak, Okta, …) or `'on_behalf_of'` (Entra) |
 | `EXCHANGE_SCOPE` | — | the scope asked for; required for `on_behalf_of` (`api://…/.default`) |
+| `EXCHANGE_AUDIENCE` | the discovery's | the audience users' tokens are exchanged for; without it, the discovery's is accepted only if the node's own token carries it |
 | `SESSION_GRANT_WAIT` | `10` | seconds a session's statement waits for its grant |
 
 The identity provider must allow the node's client to exchange tokens. In Keycloak (standard token
@@ -93,4 +94,6 @@ exchange):
 - give the users' client an audience mapper that names the node's client;
 - give the node's client an audience mapper that names the service's client.
 
-The test realm in `server/testdata/keycloak` has all three.
+The test realm in `server/testdata/keycloak` has all three. With Entra, the token's `iss` must equal
+the issuer the node logs in with: v1 tokens (`https://sts.windows.net/<tenant>/`) against a v2
+issuer are refused as "from another issuer".

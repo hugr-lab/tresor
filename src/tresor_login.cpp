@@ -1,5 +1,7 @@
 #include "tresor_login.hpp"
 
+#include <algorithm>
+
 #include "duckdb/catalog/catalog_transaction.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/printer.hpp"
@@ -427,6 +429,9 @@ AttachRequest ParseAttach(const string &path, const unordered_map<string, Value>
 		} else if (key == "exchange_scope") {
 			actor_option_given = true;
 			request.exchange_scope = value.ToString();
+		} else if (key == "exchange_audience") {
+			actor_option_given = true;
+			request.exchange_audience = value.ToString();
 		} else if (key == "session_grant_wait") {
 			actor_option_given = true;
 			request.grant_wait_seconds = BigIntValue::Get(value.DefaultCastAs(LogicalType::BIGINT));
@@ -436,13 +441,13 @@ AttachRequest ParseAttach(const string &path, const unordered_map<string, Value>
 		} else {
 			throw InvalidInputException("tresor: unknown ATTACH option '%s' (known: LOGIN, ISSUER, SECRET, "
 			                            "INSECURE_HTTP, LOGIN_TIMEOUT, ACT_FOR_SESSIONS, EXCHANGE, EXCHANGE_SCOPE, "
-			                            "SESSION_GRANT_WAIT)",
+			                            "EXCHANGE_AUDIENCE, SESSION_GRANT_WAIT)",
 			                            option.first);
 		}
 	}
 	if (!request.act_for_sessions && actor_option_given) {
-		throw InvalidInputException("tresor: EXCHANGE, EXCHANGE_SCOPE and SESSION_GRANT_WAIT configure "
-		                            "ACT_FOR_SESSIONS - set it too");
+		throw InvalidInputException("tresor: EXCHANGE, EXCHANGE_SCOPE, EXCHANGE_AUDIENCE and SESSION_GRANT_WAIT "
+		                            "configure ACT_FOR_SESSIONS - set it too");
 	}
 	if (request.act_for_sessions && request.mode_given) {
 		throw InvalidInputException("tresor: ACT_FOR_SESSIONS is for a node's service login (SECRET of flow "
@@ -483,6 +488,56 @@ string DescribeProblem(int status, const string &body) {
 	return out;
 }
 
+vector<string> JwtAudiences(const string &token, bool &is_jwt) {
+	is_jwt = false;
+	vector<string> out;
+	auto first = token.find('.');
+	auto second = first == string::npos ? string::npos : token.find('.', first + 1);
+	if (second == string::npos) {
+		return out;
+	}
+	// base64url, no padding
+	string payload;
+	uint32_t buffer = 0;
+	int bits = 0;
+	for (auto c : token.substr(first + 1, second - first - 1)) {
+		int value;
+		if (c >= 'A' && c <= 'Z') {
+			value = c - 'A';
+		} else if (c >= 'a' && c <= 'z') {
+			value = c - 'a' + 26;
+		} else if (c >= '0' && c <= '9') {
+			value = c - '0' + 52;
+		} else if (c == '-' || c == '+') {
+			value = 62;
+		} else if (c == '_' || c == '/') {
+			value = 63;
+		} else if (c == '=') {
+			break;
+		} else {
+			return out;
+		}
+		buffer = (buffer << 6) | uint32_t(value);
+		bits += 6;
+		if (bits >= 8) {
+			bits -= 8;
+			payload.push_back(char((buffer >> bits) & 0xff));
+		}
+	}
+	JsonDoc doc(payload);
+	auto root = doc.Root();
+	if (!root || !yyjson_is_obj(root)) {
+		return out;
+	}
+	is_jwt = true;
+	auto aud = yyjson_obj_get(root, "aud");
+	if (aud && yyjson_is_str(aud)) {
+		out.emplace_back(yyjson_get_str(aud));
+	}
+	out = aud && yyjson_is_arr(aud) ? StrList(root, "aud") : out;
+	return out;
+}
+
 shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &request) {
 	ServiceInfo info;
 	info.host = request.host;
@@ -493,6 +548,12 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 
 	// a LOGIN given is a person asking to log in as themselves: no secret is looked up for them
 	auto service_secret = request.mode_given ? nullptr : FindServiceSecret(context, request);
+	if (request.act_for_sessions &&
+	    (!service_secret || StringUtil::Lower(SecretString(*service_secret, "flow")) != "client_credentials")) {
+		// refused before any login: a headless node must not sit in a browser or device flow first
+		throw InvalidInputException("tresor: ACT_FOR_SESSIONS needs a service login - a SECRET of flow "
+		                            "client_credentials");
+	}
 	LoginFlow flow;
 	oidc::TokenSet tokens;
 	string client_secret;
@@ -565,9 +626,27 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 			throw InvalidInputException("tresor: ACT_FOR_SESSIONS needs a service login - a SECRET of flow "
 			                            "client_credentials");
 		}
+		// the audience users' tokens are exchanged for is the node's to decide, not the service's: pinned by
+		// EXCHANGE_AUDIENCE, or the discovery's - only when the node's own token, which the IdP issued for this
+		// login, is meant for it too. A service (or whoever alters its discovery) never picks where tokens go
+		if (!request.exchange_audience.empty()) {
+			info.audience = request.exchange_audience;
+		} else if (!info.audience.empty() && !request.on_behalf_of) {
+			bool is_jwt = false;
+			auto own = JwtAudiences(tokens.access_token, is_jwt);
+			if (std::find(own.begin(), own.end(), info.audience) == own.end()) {
+				throw InvalidInputException("tresor: %s names the audience '%s', which the node's own token is not "
+				                            "issued for - set EXCHANGE_AUDIENCE to the audience users' tokens are "
+				                            "to be exchanged for",
+				                            request.host, info.audience);
+			}
+		}
+		if (request.on_behalf_of) {
+			info.audience.clear(); // On-Behalf-Of targets its scope
+		}
 		if (info.audience.empty() && request.exchange_scope.empty()) {
-			throw InvalidInputException("tresor: %s names no audience for its issuer, and no EXCHANGE_SCOPE was "
-			                            "given - nothing to exchange a session's token for",
+			throw InvalidInputException("tresor: %s names no audience for its issuer, and no EXCHANGE_AUDIENCE or "
+			                            "EXCHANGE_SCOPE was given - nothing to exchange a session's token for",
 			                            request.host);
 		}
 	}

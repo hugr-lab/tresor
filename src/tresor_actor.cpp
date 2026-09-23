@@ -6,8 +6,10 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/types/timestamp.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
 
+#include <algorithm>
 #include <chrono>
 
 // Acting for duckdb-acl's sessions (specs/008). acl calls the observer on its own threads and must not
@@ -22,6 +24,8 @@ using namespace duckdb_yyjson; // NOLINT
 namespace {
 
 constexpr idx_t WORKERS = 2;
+constexpr int64_t STOP_SECONDS = 10;      // DETACH revokes the grants still held within this
+constexpr int REVOKE_TIMEOUT_SECONDS = 5; // one revocation
 
 int64_t NowSeconds() {
 	return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
@@ -74,10 +78,19 @@ ServiceResponse Caller::Call(const string &method, const string &path, const str
 	if (!refused.empty()) {
 		throw PermissionException("tresor: %s", refused);
 	}
-	if (!IsNode()) {
-		headers["Delegation"] = grant;
+	if (IsNode()) {
+		return session->Call(method, path, body, headers);
 	}
-	return session->Call(method, path, body, headers);
+	headers["Delegation"] = grant;
+	auto response = session->Call(method, path, body, headers);
+	if (response.status == 401) {
+		// the node's login was renewed and retried by the session: a 401 now is the grant, refused
+		if (rejected) {
+			rejected();
+		}
+		throw PermissionException("tresor: the service no longer accepts this acl session's delegation grant");
+	}
+	return response;
 }
 
 TresorActor::TresorActor(shared_ptr<TresorSession> session_p, ActorOptions options_p)
@@ -114,11 +127,15 @@ void TresorActor::Stop() {
 	}
 	observer.reset();
 	{
-		lock_guard<mutex> guard(lock);
+		unique_lock<mutex> guard(lock);
 		if (stopping) {
 			return;
 		}
 		stopping = true;
+		// DETACH is bounded: the grants still held are revoked within a deadline, and after the first
+		// failed revocation not at all - a grant ends with its ttl anyway, a hung service must not hang DETACH
+		stop_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(STOP_SECONDS);
+		gone = nullptr;
 		// queued exchanges are dropped - their tokens with them; the grants still held are revoked
 		for (auto it = jobs.begin(); it != jobs.end();) {
 			if (!it->revoke) {
@@ -138,6 +155,8 @@ void TresorActor::Stop() {
 			Wipe(entry.second.grant);
 		}
 		sessions.clear();
+		// a session's close already past the lock may still be telling the storage: let it finish
+		changed.wait(guard, [&]() { return gone_running == 0; });
 	}
 	queued.notify_all();
 	changed.notify_all();
@@ -157,11 +176,11 @@ void TresorActor::OnSessionGone(std::function<void(const string &)> callback) {
 void TresorActor::Opened(const string &acl_session, const string &token_issuer, int64_t expires_at,
                          const string &token) {
 	lock_guard<mutex> guard(lock);
-	if (stopping || acl_session.empty()) {
-		return;
+	if (stopping || acl_session.empty() || sessions.count(acl_session)) {
+		return; // acl never reuses an id (its contract): a second open of one is ignored, not a second grant
 	}
 	auto &entry = sessions[acl_session];
-	entry = Entry();
+	entry.wait_until = std::chrono::steady_clock::now() + std::chrono::seconds(options.grant_wait_seconds);
 	Job job;
 	job.acl_session = acl_session;
 	job.token = token; // the only copy, until the exchange is done
@@ -179,30 +198,57 @@ void TresorActor::Closed(const string &acl_session) {
 		if (entry == sessions.end()) {
 			return; // opened before this ATTACH, or already gone
 		}
+		bool forget = true;
 		if (entry->second.state == State::PENDING) {
-			entry->second.closed = true; // the worker revokes the grant when it arrives, and forgets the entry
-		} else {
-			if (entry->second.state == State::READY && !stopping) {
-				Job job;
-				job.revoke = true;
-				job.token = entry->second.grant;
-				jobs.push_back(std::move(job));
-				queued.notify_one();
+			// still queued: dropped with its token; already being exchanged: revoked when the grant arrives
+			forget = false;
+			for (auto job = jobs.begin(); job != jobs.end(); ++job) {
+				if (!job->revoke && job->acl_session == acl_session) {
+					Wipe(job->token);
+					jobs.erase(job);
+					forget = true;
+					break;
+				}
 			}
+			if (!forget) {
+				entry->second.closed = true;
+			}
+		} else if (entry->second.state == State::READY && !stopping) {
+			Job job;
+			job.revoke = true;
+			job.token = entry->second.grant;
+			jobs.push_back(std::move(job));
+			queued.notify_one();
+		}
+		if (forget) {
 			Wipe(entry->second.grant);
 			sessions.erase(entry);
 		}
 		callback = gone;
+		if (callback) {
+			gone_running++;
+		}
 	}
 	changed.notify_all();
 	if (callback) {
-		callback(acl_session);
+		try {
+			callback(acl_session);
+		} catch (...) {
+		}
+		lock_guard<mutex> guard(lock);
+		gone_running--;
+		changed.notify_all();
 	}
 }
 
-string TresorActor::GrantFor(const string &acl_session, string &why) {
+bool TresorActor::Serves(const string &acl_session) {
+	lock_guard<mutex> guard(lock);
+	auto entry = sessions.find(acl_session);
+	return entry != sessions.end() && !entry->second.closed;
+}
+
+string TresorActor::GrantFor(const string &acl_session, optional_ptr<ClientContext> context, string &why) {
 	unique_lock<mutex> guard(lock);
-	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(options.grant_wait_seconds);
 	while (true) {
 		auto entry = sessions.find(acl_session);
 		if (entry == sessions.end() || entry->second.closed) {
@@ -223,13 +269,18 @@ string TresorActor::GrantFor(const string &acl_session, string &why) {
 			}
 			return entry->second.grant;
 		}
-		if (changed.wait_until(guard, deadline) == std::cv_status::timeout) {
-			auto again = sessions.find(acl_session);
-			if (again != sessions.end() && again->second.state == State::PENDING) {
-				why = "this acl session's delegation grant is still pending (SESSION_GRANT_WAIT)";
-				return string();
-			}
+		// pending: until SESSION_GRANT_WAIT after the open, in short slices - an interrupted query stops waiting
+		auto now = std::chrono::steady_clock::now();
+		if (now >= entry->second.wait_until) {
+			why = "this acl session's delegation grant is still pending (SESSION_GRANT_WAIT)";
+			return string();
 		}
+		if (context && context->IsInterrupted()) {
+			why = "interrupted while waiting for this acl session's delegation grant";
+			return string();
+		}
+		auto slice = MinValue(entry->second.wait_until, now + std::chrono::milliseconds(100));
+		changed.wait_until(guard, slice);
 	}
 }
 
@@ -255,6 +306,11 @@ void TresorActor::Fail(const string &acl_session, const string &why) {
 	changed.notify_all();
 }
 
+bool TresorActor::RevokeAllowed() {
+	lock_guard<mutex> guard(lock);
+	return !stopping || (!revoke_failed && std::chrono::steady_clock::now() < stop_deadline);
+}
+
 void TresorActor::Work() {
 	while (true) {
 		Job job;
@@ -274,7 +330,7 @@ void TresorActor::Work() {
 				Exchange(job);
 			}
 		} catch (std::exception &) {
-			// a failed revocation leaves the grant to its ttl; a failed exchange was already recorded
+			// a failed exchange is recorded (its reason names the step, never a token)
 			if (!job.revoke) {
 				Fail(job.acl_session, "the delegation grant could not be obtained (the service or the IdP failed)");
 			}
@@ -296,6 +352,17 @@ void TresorActor::Exchange(Job &job) {
 	if (!exchanged.Ok()) {
 		Fail(job.acl_session, "the identity provider refused to exchange this acl session's token: " + exchanged.error);
 		return;
+	}
+	// the exchanged token goes to the service only if it is meant for it: a JWT must name the pinned audience
+	if (!options.audience.empty()) {
+		bool is_jwt = false;
+		auto audiences = JwtAudiences(exchanged.access_token, is_jwt);
+		if (is_jwt && std::find(audiences.begin(), audiences.end(), options.audience) == audiences.end()) {
+			Wipe(exchanged.access_token);
+			Fail(job.acl_session, "the identity provider exchanged this acl session's token for one not meant for " +
+			                          options.audience + " - not sent");
+			return;
+		}
 	}
 	string body = "{\"subject_token\":" + JsonString(exchanged.access_token);
 	Wipe(exchanged.access_token);
@@ -368,10 +435,17 @@ void TresorActor::Exchange(Job &job) {
 }
 
 void TresorActor::Revoke(Job &job) {
+	if (!RevokeAllowed()) {
+		return; // DETACH's deadline passed, or the service already failed a revocation: the ttl ends it
+	}
 	try {
-		(void)session->Call("DELETE", "/v1/delegations/" + EncodePathSegment(job.token));
+		auto response =
+		    session->Call("DELETE", "/v1/delegations/" + EncodePathSegment(job.token), "", {}, REVOKE_TIMEOUT_SECONDS);
+		(void)response;
 	} catch (std::exception &) {
-		// the grant ends with its ttl; the error names the request's URL, with the grant in it - dropped
+		// the error names the request's URL, with the grant in it - dropped; the grant ends with its ttl
+		lock_guard<mutex> guard(lock);
+		revoke_failed = stopping; // at DETACH, the rest are not tried: the service is not answering
 	}
 }
 

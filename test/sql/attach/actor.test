@@ -35,12 +35,20 @@ ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS corp (INSECURE_HTTP true,
 ----
 EXCHANGE is 'token_exchange' or 'on_behalf_of'
 
+# the audience users' tokens are exchanged for is the node's to decide: a service naming another audience than
+# the node's own token has is refused (a compromised service must not pick where users' tokens go)
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/shifty' AS corp (INSECURE_HTTP true, ACT_FOR_SESSIONS true);
+----
+names the audience 'payroll-api', which the node's own token is not issued for
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS corp (INSECURE_HTTP true, EXCHANGE_AUDIENCE 'duckdb-secrets');
+----
+configure ACT_FOR_SESSIONS
+
 statement ok
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS corp (INSECURE_HTTP true, ACT_FOR_SESSIONS true, SESSION_GRANT_WAIT 5);
-
-# the same service, attached without acting: under an acl session it serves nothing
-statement ok
-ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS plain (INSECURE_HTTP true);
 
 # --- the node, outside any session: its own identity, its own secrets ------------------------------------------
 
@@ -71,9 +79,10 @@ SELECT subject, actor FROM corp.whoami();
 alice	client:etl
 
 query I
-SELECT name FROM corp.secrets();
+SELECT name FROM corp.secrets() ORDER BY name;
 ----
 alice_lake
+shared_lake
 
 query II
 SELECT name, storage FROM which_secret('s3://acting/x.parquet', 's3');
@@ -91,7 +100,54 @@ SELECT tresor_secret_param('node_lake', 'key_id');
 ----
 node_lake
 
-# a service that does not act for sessions: explicit calls refused, lookups find nothing
+# one name, two identities: the session's material, never the node's cached one (and back, below)
+query I
+SELECT DISTINCT tresor_secret_param('shared_lake', 'key_id');
+----
+VARCHAR ALICE-SHARED
+
+# writes under a session go as the user through the grant: here the actor policy refuses them
+statement error
+CREATE PERSISTENT SECRET team_a_x IN corp (TYPE http, SCOPE 'https://team-a.example', BEARER_TOKEN 't');
+----
+actor_not_allowed
+
+statement error
+CALL corp.grant_secret('shared_lake', 'role:interns', ['use']);
+----
+you may not list the grants of the secret shared_lake
+
+# acl's connection state stamped with another contract: nobody can tell whose statement this is - refused
+query I
+SELECT acl_stub_stamp(99);
+----
+1
+
+statement error
+SELECT * FROM corp.whoami();
+----
+another acl_connection contract
+
+query I
+SELECT count(*) FROM which_secret('s3://acting/x.parquet', 's3') WHERE storage = 'corp';
+----
+0
+
+query I
+SELECT acl_stub_stamp(1);
+----
+99
+
+# the same service, attached without acting: under an acl session its explicit calls are refused and its
+# lookups find nothing (attached only for this: by name, two storages holding one secret are ambiguous)
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS plain (INSECURE_HTTP true);
+
+query I
+SELECT count(*) FROM which_secret('s3://acting/x.parquet', 's3') WHERE storage = 'plain';
+----
+0
+
 statement error
 SELECT * FROM plain.whoami();
 ----
@@ -101,6 +157,9 @@ statement error
 SELECT * FROM plain.secrets();
 ----
 does not act for duckdb-acl sessions
+
+statement ok
+DETACH plain;
 
 # --- back to the node: its view, untouched ---------------------------------------------------------------
 
@@ -117,6 +176,22 @@ SELECT DISTINCT name FROM which_secret('s3://acting/x.parquet', 's3');
 ----
 node_lake
 
+query I
+SELECT DISTINCT tresor_secret_param('shared_lake', 'key_id');
+----
+VARCHAR NODE-SHARED
+
+statement ok
+SET acl_stub_session = 's1';
+
+query I
+SELECT DISTINCT tresor_secret_param('shared_lake', 'key_id');
+----
+VARCHAR ALICE-SHARED
+
+statement ok
+SET acl_stub_session = '';
+
 # --- the session ends: its grant is revoked, and the session gets nothing more -------------------------------
 
 query I
@@ -124,7 +199,7 @@ SELECT acl_stub_close('s1', 'client');
 ----
 1
 
-sleep 1 second
+sleep 2 seconds
 
 query I
 SELECT comment LIKE '%live 0' FROM corp.secrets() WHERE name = 'stats';
@@ -230,6 +305,53 @@ SELECT count(*) FROM which_secret('s3://acting/x.parquet', 's3');
 statement ok
 SET acl_stub_session = '';
 
+# the IdP hands back a token for another audience: it is never sent to the service
+statement ok
+SELECT acl_stub_open('s8', 'node-token-mallory', 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', 300);
+
+statement ok
+SET acl_stub_session = 's8';
+
+statement error
+SELECT * FROM corp.whoami();
+----
+exchanged this acl session's token for one not meant for duckdb-secrets - not sent
+
+statement ok
+SET acl_stub_session = '';
+
+# a slow exchange: a statement waits SESSION_GRANT_WAIT (counted from the open) and is refused meanwhile - on
+# a second attachment acting with a one-second wait
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS quick (INSECURE_HTTP true, ACT_FOR_SESSIONS true, SESSION_GRANT_WAIT 1);
+
+statement ok
+SELECT acl_stub_open('s9', 'node-token-slow', 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', 300);
+
+statement ok
+SET acl_stub_session = 's9';
+
+statement error
+SELECT * FROM quick.whoami();
+----
+still pending (SESSION_GRANT_WAIT)
+
+query I
+SELECT subject FROM corp.whoami();
+----
+alice
+
+statement ok
+SET acl_stub_session = '';
+
+query I
+SELECT acl_stub_close('s9', 'client');
+----
+2
+
+statement ok
+DETACH quick;
+
 # --- DETACH revokes the grants still held --------------------------------------------------------------
 
 statement ok
@@ -248,6 +370,9 @@ SET acl_stub_session = '';
 
 statement ok
 DETACH corp;
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS plain (INSECURE_HTTP true);
 
 # erin's grant expired at the service but was never revoked (the fake keeps it): only it is left
 query I

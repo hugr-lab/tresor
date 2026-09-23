@@ -373,10 +373,7 @@ string EncodePathSegment(const string &segment) {
 }
 
 vector<Descriptor> FetchDescriptors(const Caller &caller) {
-	auto response = caller.Call("GET", "/v1/secrets");
-	if (response.status == 401 && !caller.IsNode()) {
-		throw PermissionException("tresor: the service no longer accepts this acl session's delegation grant");
-	}
+	auto response = caller.Call("GET", "/v1/secrets"); // a refused grant throws (PermissionException)
 	if (response.status != 200) {
 		throw IOException("tresor: listing the secrets of %s: %s", caller.session->Info().host,
 		                  DescribeProblem(response.status, response.body));
@@ -473,10 +470,17 @@ Caller TresorSecretStorage::CallerFor(optional_ptr<ClientContext> context) {
 		caller.refused = storage_name + " does not act for duckdb-acl sessions (ATTACH it with ACT_FOR_SESSIONS)";
 		return caller;
 	}
-	caller.grant = acting->GrantFor(view.session_id, why);
+	caller.grant = acting->GrantFor(view.session_id, context, why);
 	if (caller.grant.empty()) {
 		caller.refused = why.empty() ? "this acl session has no delegation grant" : why;
+		return caller;
 	}
+	// a 401 on the grant, wherever it surfaces (a lookup, a write, a management call): the session's
+	// view goes, and the session gets nothing more
+	auto rejected = caller;
+	caller.rejected = [this, rejected]() {
+		GrantRejected(rejected);
+	};
 	return caller;
 }
 
@@ -509,10 +513,18 @@ shared_ptr<TresorSecretStorage::View> TresorSecretStorage::ViewOf(const Caller &
 	if (caller.IsNode()) {
 		return node;
 	}
-	auto &view = acl_views[caller.acl_session];
-	if (!view) {
-		view = make_shared_ptr<View>();
+	auto existing = acl_views.find(caller.acl_session);
+	if (existing != acl_views.end()) {
+		return existing->second;
 	}
+	// a session the actor no longer serves (closed while this statement ran) gets no new view: its close
+	// already dropped the old one, and a new one would keep its user's material until DETACH. Checked under
+	// this lock, which the close's ForgetSession takes too - so a view made here is dropped by that close
+	if (!actor || !actor->Serves(caller.acl_session)) {
+		return nullptr;
+	}
+	auto view = make_shared_ptr<View>();
+	acl_views[caller.acl_session] = view;
 	return view;
 }
 
@@ -558,8 +570,12 @@ vector<Descriptor> TresorSecretStorage::Snapshot(const Caller &caller, shared_pt
 		}
 		return view.descriptors;
 	} catch (PermissionException &) {
-		GrantRejected(caller); // the grant was refused: the session's view goes, and it gets nothing more
-		return vector<Descriptor>();
+		if (caller.IsNode()) {
+			lock_guard<mutex> guard(lock);
+			view.failed_at = NowSeconds();
+			return view.descriptors;
+		}
+		return vector<Descriptor>(); // the grant was refused (marked by the call): this session gets nothing
 	} catch (std::exception &) {
 		// the service is unreachable: the last list stays authoritative for matching (a secret it covers
 		// fails at its material fetch - closed; a path it does not cover is not this storage's business)
@@ -573,15 +589,8 @@ vector<Descriptor> TresorSecretStorage::Refresh(const Caller &caller) {
 	if (!caller.session) {
 		throw InvalidInputException("tresor: %s is detached", storage_name);
 	}
-	vector<Descriptor> fresh;
-	try {
-		fresh = FetchDescriptors(caller); // throws the refusal, for an acl session without a grant
-	} catch (PermissionException &) {
-		if (!caller.IsNode() && caller.refused.empty()) {
-			GrantRejected(caller); // the service refused the grant itself
-		}
-		throw;
-	}
+	// throws the refusal: an acl session without a grant, or one the service refused (marked by the call)
+	auto fresh = FetchDescriptors(caller);
 	auto view = ViewOf(caller);
 	lock_guard<mutex> guard(lock);
 	if (view && session == caller.session) {
@@ -603,11 +612,14 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &calle
 			return cached->second.secret->Clone();
 		}
 	}
-	auto response = caller.Call("GET", "/v1/secrets/" + Encode(d.name));
-	if (response.status == 401 && !caller.IsNode()) {
-		// the node's login was renewed and retried by the session: a 401 now is the grant, refused
-		GrantRejected(caller);
-		return nullptr;
+	ServiceResponse response;
+	try {
+		response = caller.Call("GET", "/v1/secrets/" + Encode(d.name));
+	} catch (PermissionException &) {
+		if (caller.IsNode()) {
+			throw;
+		}
+		return nullptr; // the service refused the session's grant (marked by the call): a lookup finds nothing
 	}
 	if (response.status == 404 || response.status == 403) {
 		// gone, or no longer ours to use, since the list was fetched: not a match - and the list is stale

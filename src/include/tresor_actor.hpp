@@ -13,13 +13,16 @@
 #include "tresor_session.hpp"
 
 #include "duckdb/common/mutex.hpp"
+#include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/unordered_map.hpp"
 
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <thread>
 
 namespace duckdb {
+class ClientContext;
 class DatabaseInstance;
 namespace acl {
 class SessionObserver;
@@ -35,6 +38,7 @@ void Wipe(string &text);
 struct ActorOptions {
 	bool on_behalf_of = false; // EXCHANGE 'on_behalf_of' (Entra); else RFC 8693
 	string scope;              // EXCHANGE_SCOPE
+	string audience;           // the audience an exchanged token must carry (RFC 8693; pinned at ATTACH)
 	int64_t grant_wait_seconds = 10;
 };
 
@@ -45,6 +49,7 @@ struct Caller {
 	string acl_session;                // the acl session's ops id; empty: the node itself
 	string grant;                      // the Delegation header's value, for an acl session
 	string refused;                    // non-empty: this statement may not reach the service
+	std::function<void()> rejected;    // the service refused the grant (401): the session gets nothing more
 
 	bool IsNode() const {
 		return acl_session.empty();
@@ -52,7 +57,8 @@ struct Caller {
 	bool Usable() const {
 		return session && refused.empty();
 	}
-	//! The call, with the grant for an acl session. Throws the reason when refused or detached.
+	//! The call, with the grant for an acl session. Throws the reason when refused or detached, and when
+	//! the service refuses the grant (after marking it rejected).
 	ServiceResponse Call(const string &method, const string &path, const string &body = "",
 	                     std::map<std::string, std::string> headers = {}) const;
 };
@@ -70,9 +76,12 @@ public:
 	//! join the workers. Before the session's tokens are dropped.
 	void Stop();
 
-	//! The grant of an acl session, waiting up to the configured time for a pending one; empty, with
-	//! `why`, when there is none to use.
-	string GrantFor(const string &acl_session, string &why);
+	//! The grant of an acl session; a pending one is waited for until SESSION_GRANT_WAIT after the session
+	//! opened (so a statement's many lookups share one wait), in slices that notice an interrupted query.
+	//! Empty, with `why`, when there is none to use.
+	string GrantFor(const string &acl_session, optional_ptr<ClientContext> context, string &why);
+	//! Is this acl session one the actor serves now (not closed)?
+	bool Serves(const string &acl_session);
 	//! The service refused a session's grant (401): the session gets nothing from here on.
 	void Rejected(const string &acl_session);
 	//! Called (outside the actor's lock) when a session is gone: the storage drops its caches.
@@ -86,6 +95,7 @@ private:
 	enum class State : uint8_t { PENDING, READY, FAILED };
 	struct Entry {
 		State state = State::PENDING;
+		std::chrono::steady_clock::time_point wait_until; // a pending grant is waited for until then
 		bool closed = false; // closed while pending: the grant is revoked as soon as it arrives
 		string grant;
 		int64_t grant_expires_at = 0;
@@ -103,6 +113,7 @@ private:
 	void Exchange(Job &job);
 	void Revoke(Job &job);
 	void Fail(const string &acl_session, const string &why);
+	bool RevokeAllowed(); // while stopping: within Stop's deadline, and no revocation has failed yet
 
 	shared_ptr<TresorSession> session;
 	ActorOptions options;
@@ -113,7 +124,10 @@ private:
 	unordered_map<string, Entry> sessions;
 	vector<std::thread> workers;
 	bool stopping = false;
+	std::chrono::steady_clock::time_point stop_deadline;
+	bool revoke_failed = false;
 	std::function<void(const string &)> gone;
+	idx_t gone_running = 0; // callbacks in flight: Stop waits for them, the storage may go after it
 	shared_ptr<acl::SessionObserver> observer;
 	shared_ptr<acl::AclSessionHooks> hooks;
 };

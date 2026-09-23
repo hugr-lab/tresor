@@ -78,11 +78,8 @@ void WhoamiScan(ClientContext &context, TableFunctionInput &data, DataChunk &out
 	auto &session = *bind.session;
 	// under a duckdb-acl session: the session's user, through its grant - or the reason there is none
 	auto caller = bind.storage.CallerFor(&context);
-	auto response = caller.Call("GET", "/v1/whoami");
-	if (response.status == 401 && !caller.IsNode()) {
-		bind.storage.GrantRejected(caller);
-		throw PermissionException("tresor: the service no longer accepts this acl session's delegation grant");
-	}
+	auto response = caller.Call("GET", "/v1/whoami"); // a refused grant throws, marked
+
 	if (response.status != 200) {
 		throw InvalidInputException("tresor: whoami at %s: %s", session.Info().host,
 		                            DescribeProblem(response.status, response.body));

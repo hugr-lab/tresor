@@ -46,13 +46,22 @@ ATTACH 'tresor:secrets.corp' AS corp (SECRET node, ACT_FOR_SESSIONS true);
 | `ACT_FOR_SESSIONS` | `false` | act for acl sessions: exchange, grant, use, revoke |
 | `EXCHANGE` | `'token_exchange'` | `'token_exchange'` (RFC 8693) or `'on_behalf_of'` (Entra) |
 | `EXCHANGE_SCOPE` | (none) | the scope asked for at the exchange; required for `on_behalf_of` (`api://…/.default`) |
+| `EXCHANGE_AUDIENCE` | the discovery's | the audience a session's token is exchanged for (RFC 8693) |
 | `SESSION_GRANT_WAIT` | `10` | seconds a session's first statement waits for its grant |
 
 - **A service login only.** `ACT_FOR_SESSIONS` needs a `client_credentials` login (`SECRET` of flow
   `client_credentials`). The exchange is made as that client, and the service's actor policy names
   it (`client:<id>`).
-- **The exchange's audience** is the `audience` of the chosen issuer in the service's discovery,
-  and `scope` is `EXCHANGE_SCOPE`. With neither, the ATTACH is refused.
+- **The exchange's audience is the node's to decide**, not the service's:
+  - `EXCHANGE_AUDIENCE` sets it;
+  - otherwise the discovery's `audience` is used, but only if the node's own access token (issued
+    by the IdP its SECRET binds) carries it in `aud`;
+  - otherwise the ATTACH is refused.
+
+  A JWT that comes back from the exchange must carry that audience, or it is not sent to the
+  service. `scope` is `EXCHANGE_SCOPE`. With neither an audience nor a scope, the ATTACH is refused.
+  All of this is checked before any login starts, so a headless node never sits in a browser or
+  device flow.
 
 ### The session's life
 
@@ -89,7 +98,7 @@ connection (through the transaction's `ClientContext`):
 | --- | --- | --- |
 | under no acl session (or with no connection) | any | as the node: its own login, as before |
 | under session S, whose grant is ready | on | as the node **with `Delegation: <grant>`**: the service answers as S's user |
-| under S, grant pending | on | waits up to `SESSION_GRANT_WAIT`, then as above or refused |
+| under S, grant pending | on | waits until `SESSION_GRANT_WAIT` after S opened (one wait shared by the statement's many lookups; an interrupted query stops waiting), then as above or refused |
 | under S, grant failed, expired, or refused by the service (401) | on | refused |
 | under S | off | refused: "corp does not act for acl sessions" |
 | acl's connection state stamped with another contract version | any | refused (it cannot tell whose statement this is) |
@@ -116,13 +125,21 @@ non-normative note: an actor revokes a grant when the session it was made for en
 - **Never the node's authority for a user.** Every path from a statement under an acl session
   either carries the session's grant or finds nothing. There is no fallback to the node's view.
 - **Tokens.** The user's token lives from `OnSessionOpen` to the end of the exchange, the exchanged
-  one until the grant arrives. Both are then wiped, never logged, and never in an error. The user's
+  one until the grant arrives. tresor then overwrites its own copies. That is best effort, since the
+  transport's buffers (httplib, yyjson) are not its to clear. Tokens are never logged and never in
+  an error. The user's
   token is sent only to the IdP that issued it (its issuer is checked), and the exchanged one only
   to the service (its audience).
 - **Grant ids** are bearer credentials when held together with the node's token. They are kept in
   memory, never logged, never shown by any function, and revoked at session end.
 - **Bounded.** `OnSessionOpen` never blocks on the network, so acl's connect waits only for a copy.
   A statement waits at most `SESSION_GRANT_WAIT` for a grant.
+- **What acl publishes is what counts.** A statement acl publishes as under a session never falls
+  back to the node. A lookup that reaches tresor without a connection (duckdb's `DatabaseInstance`
+  file openers, a background refresh), or on an internal connection some extension opens, is the
+  node's own work. Neither can be told apart from the node's work. An acl that predates the
+  contract (spec 078) never publishes, so every statement is the node's; tresor cannot detect that
+  yet (follow-up).
 - **Contract mismatch.** An acl built from another `acl_connection` version: every statement is
   refused, since tresor cannot tell whose statement it is. No observer is registered on mismatched
   hooks.
@@ -185,6 +202,45 @@ non-normative note: an actor revokes a grant when the session it was made for en
   once. If a request carrying `Delegation` is still refused after that, the 401 goes back to the
   caller, which marks the session's grant rejected, instead of being read as "log in again".
 
+## The review's findings (applied)
+
+An independent review found no path where a statement acl publishes as under a session reaches the
+node's grant, list or material, and no deadlock. It found these:
+- **The exchange audience came from the service's discovery.** A compromised service could have had
+  users' tokens exchanged for any audience the node's client may target. It is now pinned on the
+  node (`EXCHANGE_AUDIENCE`, or the discovery's only if the node's own token carries it), and an
+  exchanged JWT with another `aud` is never sent.
+- **DETACH was unbounded.** It revoked every grant through a lock held across the network, 30 s per
+  request. Now revocations have a 5 s timeout, DETACH gives them 10 s in all, and after the first
+  failure it stops, since a grant ends with its ttl.
+- **One lock across every call.** `TresorSession::Call` held the session's lock across the request.
+  On a node every user's calls queued behind the slowest one. The lock now covers the token and its
+  renewal only, and a 401 renews only if no other call already has.
+- **The grant wait applied per lookup.** A statement makes many lookups, so it could wait several
+  times `SESSION_GRANT_WAIT`, and it ignored an interrupt. The wait is now measured from the
+  session's open and taken in 100 ms slices that check for an interrupt.
+- **A close racing a running statement recreated the session's view,** which kept the user's
+  material until DETACH. A view is now made only for a session the actor still serves, checked
+  under the storage's lock, which the close's `ForgetSession` also takes.
+- **A second open of the same id overwrote a live grant** without revoking it (reproduced). It is now
+  ignored, since acl never reuses an id.
+- **Smaller fixes:**
+  - A session closed while its exchange is still queued is dropped, with its token.
+  - The session-gone callback is cleared at Stop, which waits for callbacks in flight.
+  - A 401 under a grant is handled on every path (writes and management included), through
+    `Caller::Call`.
+  - `ACT_FOR_SESSIONS` without a service SECRET is refused before any login.
+  - The `test_keycloak.sh` duckdb-acl check reads only the server log lines of its own run.
+  - Tests added:
+    - writes and management under a session (the fake enforces `Delegation` on writes);
+    - one secret name with different material for the node and for the user, alternating;
+    - acl's state stamped with another contract version;
+    - a pending grant timing out;
+    - a service naming another audience;
+    - an exchanged token for another audience.
+  - The docs say which statements count as "under a session", that wiping is best effort, and
+    that Entra v1 issuers do not match a v2 login.
+
 ## Alternatives considered
 
 - **Exchanging on the first statement** instead of at open. That keeps the user's token past the
@@ -197,6 +253,9 @@ non-normative note: an actor revokes a grant when the session it was made for en
   shared one could not be revoked when a single session ends.
 
 ## Follow-ups
+
+- acl stamps its presence in the contract (a publisher flag on `AclSessionHooks`, set when acl loads),
+  so `ACT_FOR_SESSIONS` can refuse an acl that never publishes (asked of duckdb-acl).
 
 - A CI job running `test/acl/actor.sql` with duckdb-acl's own `acl.duckdb_extension` (an artifact of
   its distribution build at the pinned duckdb commit).

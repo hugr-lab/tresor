@@ -90,16 +90,25 @@ string TresorSession::AccessToken(bool force) {
 }
 
 ServiceResponse TresorSession::Call(const string &method, const string &path, const string &body,
-                                    const std::map<std::string, std::string> &extra_headers) {
-	lock_guard<mutex> guard(lock);
+                                    const std::map<std::string, std::string> &extra_headers, int timeout_seconds) {
+	string used;
 	for (int attempt = 0; attempt < 2; attempt++) {
-		auto token = AccessToken(attempt > 0);
+		string token;
+		{
+			// the lock covers the token and its renewal only, never the request: a node serves many users'
+			// sessions through one login, and one slow call must not hold up the others
+			lock_guard<mutex> guard(lock);
+			// after a 401, renew - unless another call already did while this one was on the wire
+			token = AccessToken(attempt > 0 && tokens.access_token == used);
+		}
+		used = token;
 		std::map<std::string, std::string> headers {{"Authorization", "Bearer " + token},
 		                                            {"Accept", "application/json"}};
 		for (auto &header : extra_headers) {
 			headers[header.first] = header.second;
 		}
-		auto result = oidc::HttpSend(method, info.api + path, headers, body, body.empty() ? "" : "application/json");
+		auto result = oidc::HttpSend(method, info.api + path, headers, body, body.empty() ? "" : "application/json",
+		                             timeout_seconds);
 		if (!result.error.empty()) {
 			throw IOException("tresor: %s %s failed: %s", method, info.api + path, result.error);
 		}
@@ -112,6 +121,9 @@ ServiceResponse TresorSession::Call(const string &method, const string &path, co
 			refused.status = result.status;
 			refused.body = std::move(result.body);
 			return refused;
+		}
+		if (result.status == 401) {
+			break;
 		}
 		ServiceResponse out;
 		out.status = result.status;

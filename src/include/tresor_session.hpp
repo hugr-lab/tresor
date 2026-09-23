@@ -40,9 +40,9 @@ struct ServiceResponse {
 };
 
 //! The logged-in session behind an attached catalog. Tokens live here and nowhere else: never on disk,
-//! never in a message. Shared by every connection using the catalog, so everything is under one lock -
-//! held across the network call too (a renewal must not race another), so a slow service or IdP holds
-//! the other connections' calls for up to the transport's timeout.
+//! never in a message. Shared by every connection using the catalog: the tokens are under one lock, held
+//! for a renewal (which must not race another) but never across a call to the service - a node serves
+//! many users' sessions through one login (specs/008).
 class TresorSession {
 public:
 	TresorSession(ServiceInfo info, LoginFlow flow, oidc::TokenSet tokens, string client_secret);
@@ -58,7 +58,7 @@ public:
 	//! expire is renewed first; a 401 renews once and retries once (protocol, Errors). Throws when the
 	//! session is closed or cannot be renewed.
 	ServiceResponse Call(const string &method, const string &path, const string &body = "",
-	                     const std::map<std::string, std::string> &extra_headers = {});
+	                     const std::map<std::string, std::string> &extra_headers = {}, int timeout_seconds = 30);
 
 	//! Exchange a token someone presented to this node for one meant for the service (specs/008): at the
 	//! session's own IdP, as its own client. Only a client_credentials login can. No lock held across the
