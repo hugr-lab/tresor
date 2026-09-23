@@ -11,18 +11,18 @@ SELECT tresor_version() IS NOT NULL;
 ----
 true
 
-# the ATTACH type is ours: both spellings reach tresor's attach, which is not implemented yet -
-# the error proves the routing; specs/002 replaces it with the real attach. The path names the
-# service WITHOUT a scheme (https is implied), like quack's `quack:host:port`.
+# the ATTACH type is ours: both spellings reach tresor's attach, whose discovery of a name that
+# cannot resolve fails - the message proves the routing (specs/002). The path names the service
+# WITHOUT a scheme (https is implied), like quack's `quack:host:port`.
 statement error
 ATTACH 'tresor:secrets.example.invalid' AS corp;
 ----
-<REGEX>:.*tresor: attaching a secrets service is not implemented yet.*
+<REGEX>:.*tresor: discovery of secrets.example.invalid failed.*
 
 statement error
 ATTACH 'secrets.example.invalid:8443/v1' AS corp (TYPE tresor);
 ----
-<REGEX>:.*tresor: attaching a secrets service is not implemented yet.*
+<REGEX>:.*tresor: discovery of secrets.example.invalid:8443/v1 failed.*
 
 # why no scheme: before it looks at the type, duckdb's ATTACH treats an http(s):// path as a remote
 # database FILE - it demands httpfs and forces READ_ONLY (DatabaseManager::AttachDatabase,

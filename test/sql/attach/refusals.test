@@ -1,0 +1,45 @@
+# name: test/sql/attach/refusals.test
+# description: What ATTACH refuses before or during discovery (specs/002)
+# group: [attach]
+
+require-env TRESOR_TEST_PORT
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+# https is the default: the fake speaks http, so without INSECURE_HTTP the TLS handshake fails
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp;
+----
+discovery of 127.0.0.1:{TRESOR_TEST_PORT} failed
+
+# several issuers and none named: the user decides, not the list order
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/multi' AS corp (INSECURE_HTTP true);
+----
+name one with ISSUER
+
+# a named issuer the service does not list
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/multi' AS corp (INSECURE_HTTP true, ISSUER 'https://idp.example');
+----
+does not accept the issuer 'https://idp.example'
+
+# naming one of them works (a person, in the browser: no secret covers this path)
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/multi' AS corp (INSECURE_HTTP true, ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+
+statement ok
+DETACH corp;
+
+# a service speaking another protocol version
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/wrong' AS corp (INSECURE_HTTP true);
+----
+speaks "duckdb-secrets/2"
+
+# not a service at all
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/nothing' AS corp (INSECURE_HTTP true);
+----
+answered HTTP 404

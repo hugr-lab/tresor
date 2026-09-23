@@ -5,9 +5,9 @@ title: Getting started
 
 # Getting started
 
-:::caution Target design
-This page describes the interface tresor is being built to. Today only the `tresor` ATTACH type is
-registered.
+:::caution Work in progress
+Attaching, logging in and `corp.whoami()` work today. The sections from *Use the secrets* on describe
+the interface tresor is being built to.
 :::
 
 ## Install
@@ -34,12 +34,26 @@ provider to use, and logs you in:
 - in a browser (authorization code + PKCE, redirected back to a local port), or
 - with a device code, when there is no browser (SSH, containers) — the URL and code are printed.
 
-The login lasts for the session; the token refreshes by itself.
+`LOGIN 'auto'` (the default) opens a browser when it can: always on macOS and Windows, and on Linux
+when a display is set. Otherwise it uses the device code. `LOGIN 'browser'` and `LOGIN 'device'`
+choose explicitly. The environment variable `BROWSER` names the program to open the URL with. The
+login waits up to `LOGIN_TIMEOUT` seconds (300 by default), and Ctrl-C cancels it.
+
+If the service accepts more than one identity provider, name yours:
 
 ```sql
-FROM corp.whoami();      -- issuer, subject, roles, token expiry
-FROM corp.secrets();     -- the secrets your role may use, with what you may do to each
+ATTACH 'tresor:secrets.corp.example' AS corp (ISSUER 'https://login.corp.example/realms/main');
 ```
+
+The login lasts for the session and refreshes by itself. The tokens stay in memory and are never
+written to disk, so a new DuckDB process logs in again.
+
+```sql
+FROM corp.whoami();      -- service, issuer, subject, roles, token expiry, what you may create, login flow
+FROM corp.secrets();     -- the secrets your role may use, with what you may do to each (coming next)
+```
+
+The attached catalog `corp` holds functions only. It is read-only: you cannot create tables in it.
 
 ## As a service: attach with a secret
 
@@ -48,12 +62,34 @@ A process without a person logs in with its own credential, kept in a local secr
 ```sql
 CREATE SECRET corp_login (
     TYPE tresor,
-    SCOPE 'secrets.corp.example',
-    FLOW 'client_credentials', CLIENT_ID '…', CLIENT_SECRET '…'
-    -- or FLOW 'private_key_jwt', PRIVATE_KEY '…'
-    -- or FLOW 'federated', ASSERTION_FILE '/var/run/secrets/tokens/…'   (Kubernetes, Azure workload identity)
+    SCOPE 'tresor:secrets.corp.example',
+    FLOW 'client_credentials', CLIENT_ID '…', CLIENT_SECRET '…',
+    ISSUER 'https://login.corp.example/realms/main'   -- the IdP this credential belongs to
+    -- optional: OAUTH_SCOPE 'api://duckdb-secrets/.default'
 );
-ATTACH 'tresor:secrets.corp.example' AS corp;   -- the secret is found by its SCOPE
+ATTACH 'tresor:secrets.corp.example' AS corp;                       -- the secret is found by its SCOPE
+ATTACH 'tresor:secrets.corp.example' AS corp (SECRET corp_login);   -- or named
+```
+
+`SCOPE` is required and names the service: `tresor:<host>[:port][/base]`. It covers that host, any
+path under it and, when it names no port, any port. A longer scope wins over a shorter one. A
+`client_credentials` secret must name its `ISSUER`, so a service's credential only ever goes to its
+own identity provider, whatever the secrets service's discovery says. `LOGIN 'browser'` or
+`LOGIN 'device'` always logs you in as yourself, even when a service secret covers the host.
+
+`FLOW 'token', TOKEN '…'` uses an access token the process already holds. It is not renewed: when it
+expires, replace the secret and attach again. Private-key JWTs and federated workload identities
+(Kubernetes, GitHub, Azure) are planned.
+
+A `PERSISTENT` secret is written to DuckDB's local secret directory like any other. Keep service
+credentials in a temporary secret when the process can create them from its environment.
+
+## Development against a local service
+
+Plain http is allowed only to this machine, and only when asked for:
+
+```sql
+ATTACH 'tresor:127.0.0.1:8080' AS dev (INSECURE_HTTP true);
 ```
 
 ## Use the secrets
@@ -79,5 +115,5 @@ Whether each of these is allowed is decided by the service from your role.
 ## Detach
 
 ```sql
-DETACH corp;   -- logs out; the service's secrets leave the lookup
+DETACH corp;   -- logs out: the tokens are dropped (and, once secrets arrive, they leave the lookup)
 ```

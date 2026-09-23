@@ -22,11 +22,12 @@ ATTACH prefix works).
   | --- | --- | --- |
   | duckdb | submodule `duckdb/` | branch `v2.0-cyanoptera`, commit = duckdb-acl's |
   | extension-ci-tools | submodule `extension-ci-tools/` | `main`, commit = duckdb-acl's |
-  | duckdb-ext-common | submodule `duckdb-ext-common/` | tag `v0.1.0`, = duckdb-acl's |
+  | duckdb-ext-common | submodule `duckdb-ext-common/` | tag `v0.2.0` (the OIDC browser flow + TLS fix; duckdb-acl to follow) |
   | distribution | `.github/workflows/distribution.yml` | `@main`, `duckdb_version: v2.0-cyanoptera` |
 
-- **Dependencies**: none yet. HTTPS to the service and the IdP arrives with the OIDC core
-  (duckdb-ext-common `oidc/`, TLS from vcpkg OpenSSL as in duckdb-acl) — spec 002 decides.
+- **Dependencies**: OpenSSL from vcpkg (`vcpkg.json`, static, as in duckdb-acl), for the OIDC core
+  (duckdb-ext-common `oidc/`, compiled in as `duckdb::tresor::oidc` with `DUCKDB_EXT_COMMON_OIDC_TLS=1`),
+  which is tresor's whole HTTP transport: the IdP's flows and the service's API (specs/002).
 - **Platforms**: Linux, macOS, Windows; **no wasm** (loopback login, device polling, HTTPS client).
 
 ## Project structure
@@ -37,8 +38,9 @@ duckdb-ext-common/          # submodule: shared contracts + hook bases; tresor O
                             #   first consumer) and contracts/tresor_*.hpp there (charter R6)
 server/                     # the reference duckdb-secrets/1 server (Go) — for tests and as an example
 website/                    # docs (docusaurus); docs/protocol.md is the specification
-test/sql/                   # sqllogictests
-scripts/ci/                 # smoke_load.sh, assert_ran.sh, check_docs_links.py
+test/sql/                   # sqllogictests; attach/ needs the fake service
+test/fake/                  # fake duckdb-secrets service + IdP (Python stdlib) and the fake browser
+scripts/ci/                 # smoke_load.sh, test_attach.sh, assert_ran.sh, check_docs_links.py
 specs/                      # one lightweight spec per feature (see specs/README.md)
 design/                     # LOCAL, gitignored research
 ```
@@ -47,8 +49,10 @@ design/                     # LOCAL, gitignored research
 
 ```sh
 git submodule update --init --recursive
+make vcpkg-setup                            # once (or VCPKG_TOOLCHAIN_PATH=<an existing vcpkg>/scripts/buildsystems/vcpkg.cmake)
 GEN=ninja make                              # release: duckdb (2.0) + tresor
-build/release/test/unittest 'test/sql/*'    # sqllogictests
+build/release/test/unittest 'test/sql/*'    # sqllogictests (test/sql/attach/* skip without TRESOR_TEST_PORT)
+scripts/ci/test_attach.sh                   # attach/login tests against test/fake/fake_service.py
 scripts/ci/smoke_load.sh                    # out of tree: explicit LOAD, and ATTACH 'tresor:...' loading it alone
 find src \( -name '*.cpp' -o -name '*.hpp' \) | xargs clang-format -i      # pin: clang_format==11.0.1
 cd website && npm ci && npx docusaurus build                               # docs (onBrokenLinks: throw)
@@ -58,7 +62,9 @@ cd website && npm ci && npx docusaurus build                               # doc
 test could prove that `ATTACH 'tresor:…'` loads the installed extension. So `require tresor` does not
 work — load by build path (`LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension'`), or
 `INSTALL tresor FROM '__BUILD_DIRECTORY__/repository'` into `SET extension_directories = [...]`
-(`extension_directory` is deprecated on 2.0). In gate tests set `autoload_known_extensions = false`.
+(`extension_directory` is deprecated on 2.0). In gate tests set `autoload_known_extensions = false`. Tests that need a service
+`require-env TRESOR_TEST_PORT` and run through `scripts/ci/test_attach.sh` (the fake speaks http on
+loopback, so they ATTACH with `INSECURE_HTTP true`; `BROWSER` is the fake browser).
 
 ## Code style
 

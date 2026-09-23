@@ -45,6 +45,7 @@ jobs:
     env:
       GEN: ninja
       CCACHE_DIR: ${{ github.workspace }}/.ccache
+      VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/vcpkg_bincache,readwrite'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -59,6 +60,20 @@ jobs:
       # submodules, so it is the one that can tell when that copy drifts from duckdb's
       - name: clang-format config is in sync with duckdb
         run: diff <(tail -n +2 .clang-format) duckdb/.clang-format
+
+      # OpenSSL (the https client, specs/002) comes from vcpkg through the merged manifest - the
+      # standard duckdb-extension dependency flow
+      - name: Setup vcpkg
+        run: make vcpkg-setup
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v6
+        with:
+          path: vcpkg_bincache
+          key: vcpkg-bincache-linux_amd64-${{ hashFiles('.gitmodules', 'vcpkg.json') }}-${{ github.run_id }}
+          restore-keys: |
+            vcpkg-bincache-linux_amd64-${{ hashFiles('.gitmodules', 'vcpkg.json') }}-
+            vcpkg-bincache-linux_amd64-
 
       - name: Restore ccache
         uses: actions/cache@v6
@@ -82,7 +97,13 @@ jobs:
       - name: Unit suites
         run: |
           build/release/test/unittest 'test/sql/*' 2>&1 | tee suite.log
-          scripts/ci/assert_ran.sh suite.log 2 12
+          scripts/ci/assert_ran.sh suite.log 3 20
+
+      # the attach tests against the fake service + IdP (specs/002); none of them may skip here
+      - name: Attach suites
+        run: |
+          scripts/ci/test_attach.sh 2>&1 | tee attach.log
+          scripts/ci/assert_ran.sh attach.log 3 30 'require-env TRESOR_TEST_PORT'
 
       - name: Upload extension artifact
         if: github.event_name != 'pull_request'
@@ -99,6 +120,7 @@ jobs:
     env:
       GEN: ninja
       CCACHE_DIR: ${{ github.workspace }}/.ccache
+      VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/vcpkg_bincache,readwrite'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -106,6 +128,20 @@ jobs:
 
       - name: Install build dependencies
         run: brew install ninja ccache
+
+      # OpenSSL (the https client, specs/002) comes from vcpkg through the merged manifest - the
+      # standard duckdb-extension dependency flow
+      - name: Setup vcpkg
+        run: make vcpkg-setup
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v6
+        with:
+          path: vcpkg_bincache
+          key: vcpkg-bincache-osx_arm64-${{ hashFiles('.gitmodules', 'vcpkg.json') }}-${{ github.run_id }}
+          restore-keys: |
+            vcpkg-bincache-osx_arm64-${{ hashFiles('.gitmodules', 'vcpkg.json') }}-
+            vcpkg-bincache-osx_arm64-
 
       - name: Restore ccache
         uses: actions/cache@v6
@@ -127,7 +163,13 @@ jobs:
       - name: Unit suites
         run: |
           build/release/test/unittest 'test/sql/*' 2>&1 | tee suite.log
-          scripts/ci/assert_ran.sh suite.log 2 12
+          scripts/ci/assert_ran.sh suite.log 3 20
+
+      # the attach tests against the fake service + IdP (specs/002); none of them may skip here
+      - name: Attach suites
+        run: |
+          scripts/ci/test_attach.sh 2>&1 | tee attach.log
+          scripts/ci/assert_ran.sh attach.log 3 30 'require-env TRESOR_TEST_PORT'
 
       - name: Upload extension artifact
         uses: actions/upload-artifact@v7
