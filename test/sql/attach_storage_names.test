@@ -1,0 +1,22 @@
+# name: test/sql/attach_storage_names.test
+# description: A catalog name duckdb's secret manager uses is refused before any login, even as the very first secret operation (specs/004)
+# group: [sql]
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+# the first statement touching secrets: duckdb loads its own storages now, then refuses the name -
+# before discovery (the host would not resolve) and before any login
+statement error
+ATTACH 'tresor:secrets.example.invalid' AS local_file (LOGIN 'browser');
+----
+cannot attach as "local_file"
+
+# the secret manager is intact
+statement ok
+CREATE SECRET s (TYPE tresor, SCOPE 'tresor:x', FLOW 'token', TOKEN 't');
+
+query I
+SELECT count(*) FROM duckdb_secrets() WHERE name = 's';
+----
+1

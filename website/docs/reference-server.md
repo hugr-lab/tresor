@@ -106,5 +106,7 @@ build/release/test/unittest --skip-error-messages '' 'test/sql/conformance/*'
 ```
 
 Set `TRESOR_CONFORMANCE_PERSON=1` and a `BROWSER` that can complete your identity provider's login
-to include the person flow. `scripts/ci/test_keycloak.sh` runs the whole suite against the reference
+to include the person flow. To include the secrets case, seed a secret the conformance client may
+use and name it: `TRESOR_CONFORMANCE_SECRET`, `_SECRET_TYPE`, `_SECRET_PATH` (covered by its scope),
+`_SECRET_KEY` and `_SECRET_VALUE` (a VARCHAR parameter). `scripts/ci/test_keycloak.sh` runs the whole suite against the reference
 server and Keycloak in docker.

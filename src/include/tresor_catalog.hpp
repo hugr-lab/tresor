@@ -9,6 +9,7 @@
 #pragma once
 
 #include "tresor_session.hpp"
+#include "tresor_storage.hpp"
 
 #include "duckdb/catalog/duck_catalog.hpp"
 #include "duckdb/function/table_function.hpp"
@@ -18,20 +19,27 @@ namespace tresor {
 
 //! What a catalog function carries: the session of the catalog it lives in.
 struct TresorFunctionInfo : public TableFunctionInfo {
-	explicit TresorFunctionInfo(shared_ptr<TresorSession> session_p) : session(std::move(session_p)) {
+	explicit TresorFunctionInfo(shared_ptr<TresorSession> session_p,
+	                            optional_ptr<TresorSecretStorage> storage_p = nullptr)
+	    : session(std::move(session_p)), storage(storage_p) {
 	}
 	shared_ptr<TresorSession> session;
+	optional_ptr<TresorSecretStorage> storage;
 };
 
 class TresorCatalog : public DuckCatalog {
 public:
-	TresorCatalog(AttachedDatabase &db, shared_ptr<TresorSession> session);
+	TresorCatalog(AttachedDatabase &db, shared_ptr<TresorSession> session, TresorSecretStorage &storage,
+	              vector<Descriptor> initial);
+	//! A catalog that goes without a DETACH (a rolled-back ATTACH, a failure after the storage callback)
+	//! takes its secrets out of the lookup too.
+	~TresorCatalog() override;
 
 	void Initialize(bool load_builtin) override;
 	string GetCatalogType() override {
 		return "tresor";
 	}
-	//! DETACH is the logout: the session's tokens are dropped.
+	//! DETACH is the logout: the session's tokens are dropped and the secrets leave the lookup.
 	void OnDetach(ClientContext &context) override;
 
 	TresorSession &Session() {
@@ -40,10 +48,13 @@ public:
 
 private:
 	shared_ptr<TresorSession> session;
+	TresorSecretStorage &storage; // owned by the SecretManager, for the instance's lifetime
+	vector<Descriptor> initial;   // the list the ATTACH fetched: the storage starts from it
 };
 
-//! The catalog's table functions (tresor_whoami.cpp).
+//! The catalog's table functions (tresor_whoami.cpp, tresor_secrets.cpp).
 TableFunction WhoamiFunction(shared_ptr<TresorSession> session);
+TableFunction SecretsFunction(shared_ptr<TresorSession> session, TresorSecretStorage &storage);
 
 } // namespace tresor
 } // namespace duckdb

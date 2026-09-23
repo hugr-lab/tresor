@@ -124,6 +124,9 @@ create.
 }
 ```
 
+A client lists descriptors (no material) and fetches material only for the secret its lookup
+picks. It may cache material; a dynamic secret's no longer than its `expires_at`.
+
 `permissions` lists the verbs **the caller** holds on this secret. `delegation` summarises the
 secret's delegation rules, when the caller may see them.
 

@@ -16,6 +16,12 @@ a sqllogictest can only steer the fake through what it attaches:
                client renews it (a renewed token is accepted for good)
     revoking   like expiring, and its issuer (/idp-revoking) refuses every refresh: invalid_grant
     noflows    lists human_flows and service_flows, both empty: a client attempts no login at all
+    broken     logs in and lists its secrets, but every material fetch answers 503: a lookup that picks
+               one of them fails closed, and nothing else is disturbed
+    nolist     logs in, but its secrets list answers 503: nothing to attach
+
+Every realm serves the same secrets (SECRETS below) to every identity. A descriptor's comment counts
+how often its material was fetched ("fetched N") - the only window a sqllogictest has into caching.
 
     fake_service.py --port-file PATH     # binds a free port and writes it to PATH
 """
@@ -26,6 +32,7 @@ import hashlib
 import json
 import secrets
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -39,9 +46,74 @@ PERSON = {"subject": "alice", "roles": ["role:analysts", "group:sales"], "create
 SERVICE = {"subject": "client:etl", "roles": ["role:etl"], "create": True}
 CLIENTS = {"etl": "s3cr3t"}
 STATIC_TOKENS = {"static-token": {"subject": "client:static", "roles": [], "create": False}}
-REALMS = {"", "multi", "wrong", "expiring", "revoking", "noflows"}
+REALMS = {"", "multi", "wrong", "expiring", "revoking", "noflows", "broken", "nolist"}
 ISSUERS = {"idp", "idp2", "idp-revoking"}
 FIRST_USES = 2  # expiring/revoking: how many whoami calls a token as first issued survives
+
+
+SECRETS = {
+    "crm_ro": {
+        "type": "mssql", "scope": ["mssql://crm.corp.example"], "permissions": ["use", "annotate"],
+        "params": {
+            "host": "crm.corp.example",
+            "user": "crm_reader",
+            "password": {"type": "VARCHAR", "value": "p@ss-word"},
+            "port": {"type": "INTEGER", "value": 1433},
+            "encrypt": {"type": "BOOLEAN", "value": True},
+            "extra_http_headers": {"type": "MAP(VARCHAR, VARCHAR)", "value": {"X-Tenant": "sales"}},
+            "limits": {"type": "STRUCT(max_rows BIGINT, ratio DOUBLE)", "value": {"max_rows": 1000, "ratio": 0.5}},
+            "replicas": {"type": "VARCHAR[]", "value": ["crm-a", "crm-b"]},
+            "big": {"type": "HUGEINT", "value": 123456789012345678901234567890},
+            "amount": {"type": "DECIMAL(38,2)", "value": "12345678901234567890.12"},
+        },
+        "redact_keys": ["password"],
+    },
+    "lake": {
+        "type": "s3", "scope": ["s3://lake"], "permissions": ["use"],
+        "params": {"key_id": "AKIA-LAKE", "secret": {"type": "VARCHAR", "value": "hunter2"}, "region": "eu-west-1"},
+        "redact_keys": ["secret"],
+    },
+    "lake_team_a": {
+        "type": "s3", "scope": ["s3://lake/team-a"], "permissions": ["use"],
+        "params": {"key_id": "AKIA-TEAM-A", "secret": {"type": "VARCHAR", "value": "x"}},
+        "redact_keys": ["secret"],
+    },
+    "seen_not_used": {
+        "type": "s3", "scope": ["s3://lake/restricted"], "permissions": ["annotate"],
+        "params": {"key_id": "NEVER"}, "redact_keys": [],
+    },
+    "dyn": {  # expires 20 s after each fetch: served from the cache for half of that
+        "type": "s3", "scope": ["s3://dyn"], "permissions": ["use"], "dynamic": True, "lifetime": 20,
+        "params": {"key_id": "DYN"}, "redact_keys": [],
+    },
+    "dyn_expired": {  # already expired when served: never reused
+        "type": "s3", "scope": ["s3://dyn-expired"], "permissions": ["use"], "dynamic": True, "lifetime": -60,
+        "params": {"key_id": "DYN"}, "redact_keys": [],
+    },
+    # a login a service must never be able to plant: it covers every loopback ATTACH
+    "planted": {
+        "type": "tresor", "scope": ["tresor:127.0.0.1"], "permissions": ["use"],
+        "params": {"flow": "token", "token": "planted-token"}, "redact_keys": ["token"],
+    },
+    "bare_number": {
+        "type": "mssql", "scope": ["mssql://bare"], "permissions": ["use"],
+        "params": {"port": 1433}, "redact_keys": [],
+    },
+    "bad_value": {
+        "type": "mssql", "scope": ["mssql://bad"], "permissions": ["use"],
+        "params": {"port": {"type": "INTEGER", "value": "not-a-number"}}, "redact_keys": [],
+    },
+}
+FETCHED = {}  # secret name -> material fetches
+
+
+def descriptor(name, sec):
+    return {
+        "name": name, "type": sec["type"], "provider": "config", "scope": sec["scope"],
+        "comment": "fetched %d" % FETCHED.get(name, 0), "owner": "role:admins",
+        "created_at": "2026-09-01T10:00:00Z", "updated_at": "2026-09-10T08:30:00Z", "version": "7",
+        "dynamic": sec.get("dynamic", False), "permissions": sec["permissions"], "delegation": None,
+    }
 
 
 def s256(verifier):
@@ -162,6 +234,39 @@ class Handler(BaseHTTPRequestHandler):
                 "expires_at": "2030-01-01T00:00:00Z",
                 "permissions": {"create": identity["create"]},
             })
+            return
+        if rest == "/v1/secrets" or rest.startswith("/v1/secrets/"):
+            auth = self.headers.get("Authorization", "")
+            token = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
+            with LOCK:
+                known = token in TOKENS or token in STATIC_TOKENS
+            if not known:
+                self.problem(401, "unauthenticated", "token missing, invalid or expired")
+                return
+            if realm == "nolist" or (realm == "broken" and rest != "/v1/secrets"):
+                self.problem(503, "service_unavailable", "the store is down")
+                return
+            if rest == "/v1/secrets":
+                with LOCK:
+                    self.send(200, [descriptor(n, s) for n, s in SECRETS.items()])
+                return
+            name = urllib.parse.unquote(rest[len("/v1/secrets/"):])
+            sec = SECRETS.get(name)
+            if sec is None:
+                self.problem(404, "not_found", "no secret %s" % name)
+                return
+            if "use" not in sec["permissions"]:
+                self.problem(403, "no_verb", "the caller's roles do not hold use")
+                return
+            with LOCK:
+                FETCHED[name] = FETCHED.get(name, 0) + 1
+                body = dict(descriptor(name, sec), params=dict(sec["params"]), redact_keys=sec["redact_keys"],
+                            expires_at=None)
+                if sec.get("dynamic"):
+                    body["params"]["key_id"] = "DYN-%d" % FETCHED[name]
+                    body["expires_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                       time.gmtime(time.time() + sec["lifetime"]))
+            self.send(200, body)
             return
         self.send(404, {"type": "not_found"})
 

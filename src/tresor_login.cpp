@@ -335,8 +335,8 @@ oidc::TokenSet PersonLogin(ClientContext &context, const AttachRequest &request,
 
 } // namespace
 
-JsonDoc::JsonDoc(const string &body) {
-	doc = yyjson_read(body.data(), body.size(), 0);
+JsonDoc::JsonDoc(const string &body, yyjson_read_flag flags) {
+	doc = yyjson_read(body.data(), body.size(), flags);
 }
 
 JsonDoc::~JsonDoc() {

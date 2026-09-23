@@ -13,5 +13,7 @@ public:
 
 //! The `tresor` secret type: a service's login (tresor_secret.cpp).
 void RegisterTresorSecret(ExtensionLoader &loader);
+//! tresor_secret_param(name, key): a secret's parameter as DuckDB holds it (tresor_secrets.cpp).
+void RegisterTresorSecretParam(ExtensionLoader &loader);
 
 } // namespace duckdb
