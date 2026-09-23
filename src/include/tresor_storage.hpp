@@ -55,7 +55,7 @@ public:
 	//! Whom a call made for the statement running on `context` goes as (specs/008): the node, when no
 	//! duckdb-acl session runs there (or there is no connection); the session's user through its grant;
 	//! or nobody, with the reason. A lookup waits here for a pending grant, up to SESSION_GRANT_WAIT.
-	Caller CallerFor(optional_ptr<ClientContext> context);
+	Caller CallerFor(optional_ptr<ClientContext> context, bool resolve_grant = true);
 	//! The service refused a caller's grant (401): the acl session gets nothing more.
 	void GrantRejected(const Caller &caller);
 
@@ -103,6 +103,7 @@ private:
 		int64_t failed_at = 0;
 		bool listed = false; // a view never listed waits for its first list instead of matching nothing
 		unordered_map<string, Material> materials;
+		unordered_map<string, string> refused; // an acl session's listed secrets not delegated here: name -> version
 	};
 
 	//! The view of a caller (created for a new acl session); null when the caller cannot be served.
@@ -117,6 +118,9 @@ private:
 	SecretEntry EntryOf(unique_ptr<const BaseSecret> secret);
 	//! The node itself, for the same session: the view lookups fall back to under an acl session (specs/009).
 	static Caller NodeOf(const Caller &caller);
+	//! Under an acl session, does this attachment serve the node's own secrets: only a service login does.
+	static bool ServesNodeUnderSessions(const Caller &caller);
+	bool Refused(View &view, const Descriptor &d);
 	//! The best match of one view (a caller's), with its material; no match when the caller has none.
 	SecretMatch MatchIn(const Caller &caller, const string &path, const string &type,
 	                    optional_ptr<CatalogTransaction> transaction);

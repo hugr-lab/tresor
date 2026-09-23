@@ -432,9 +432,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         if actor:  # the user, through a grant: only what a rule delegates to this actor for them
             names = DELEGATED.get(identity["subject"], {})
-            listing = {n: {"type": "s3", "scope": ["s3://shared" if n == "shared_lake" else "s3://acting"],
+            listing = {n: {"type": "s3", "scope": ["s3://shared" if n == "shared_lake" else "s3://alice"],
                            "permissions": ["use"], "owner": "role:admins", "params": {"key_id": k},
                            "redact_keys": []} for n, k in names.items()}
+            if identity["subject"] == "alice":
+                # the user's own secret, listed with use but delegated by no rule: its material is not_delegable
+                listing["alice_own"] = {"type": "s3", "scope": ["s3://alice/own"], "permissions": ["use"],
+                                        "owner": "subject:alice", "params": {"key_id": "OWN"}, "redact_keys": [],
+                                        "not_delegable": True}
         else:
             with LOCK:
                 stats = "exchanges %d grants %d revoked %d live %d" % (
@@ -454,7 +459,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, [descriptor(n, sec) for n, sec in listing.items()])
             return
         name = urllib.parse.unquote(rest[len("/v1/secrets/"):]) if rest.startswith("/v1/secrets/") else None
-        if name not in listing or "use" not in listing[name]["permissions"]:
+        if name not in listing or "use" not in listing[name]["permissions"] or listing[name].get("not_delegable"):
             self.problem(403, "not_delegable", "no rule delegates this secret") if actor else \
                 self.problem(404, "not_found", "no secret")
             return

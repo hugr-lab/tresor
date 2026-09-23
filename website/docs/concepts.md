@@ -76,17 +76,19 @@ When a user's acl session opens, tresor:
    `corp.whoami()` (which answers the user, with `actor` = the node);
 4. revokes the grant when the session ends.
 
-Under a session, a secret lookup is served **the user's delegated secret** wherever one covers the
-path. That is whatever a rule lets this node use for them: an http API, another acl node through
-quack. Every other path is served **the node's own secret**, which is what its catalogs (ducklake,
-iceberg, attached databases) read. A path that both cover gets the delegated one. If the grant is
-still pending, lookups wait up to `SESSION_GRANT_WAIT` seconds (10 by default). Without a usable
-grant, only the node's secrets serve. Explicit calls (`corp.whoami()`, `corp.secrets()`, writes) are
-always the user's, through the grant, or fail with the reason.
+Under a session, a secret lookup on a path **the node holds a secret for** is served the node's own
+secret. That is what its catalogs (ducklake, iceberg, attached databases) read, and no user can
+redirect it. **Every other path** is served the user's delegated secret: whatever a rule lets this
+node use for them, such as an http API or another acl node through quack. If the grant is still
+pending, those lookups wait up to `SESSION_GRANT_WAIT` seconds (10 by default); the node's paths
+never wait. Without a usable grant, only the node's paths are served. Explicit calls
+(`corp.whoami()`, `corp.secrets()`, writes) are always the user's, through the grant, or fail with
+the reason. Keep one attachment per service on a node: across two attachments, DuckDB's own rule
+picks.
 
 This applies only to statements duckdb-acl runs under a session, through a service-login attachment.
-Everywhere else the ordinary rule holds: a person's attachment serves that person's secrets, and a
-node's own work is served the node's.
+A person's attachment serves nothing under a session. Everywhere else the ordinary rule holds: a
+person's attachment serves that person's secrets, and a node's own work is served the node's.
 
 | Option | Default | |
 | --- | --- | --- |

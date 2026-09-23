@@ -442,7 +442,7 @@ bool TresorSecretStorage::IncludeInLookups() {
 	return session != nullptr;
 }
 
-Caller TresorSecretStorage::CallerFor(optional_ptr<ClientContext> context) {
+Caller TresorSecretStorage::CallerFor(optional_ptr<ClientContext> context, bool resolve_grant) {
 	Caller caller;
 	shared_ptr<TresorActor> acting;
 	{
@@ -470,6 +470,9 @@ Caller TresorSecretStorage::CallerFor(optional_ptr<ClientContext> context) {
 	if (!acting) {
 		caller.refused = storage_name + " does not act for duckdb-acl sessions (ATTACH it with ACT_FOR_SESSIONS)";
 		return caller;
+	}
+	if (!resolve_grant) {
+		return caller; // whose statement only: the grant is asked for (and waited for) when it is needed
 	}
 	caller.grant = acting->GrantFor(view.session_id, context, why);
 	if (caller.grant.empty()) {
@@ -622,6 +625,13 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &calle
 		}
 		return nullptr; // the service refused the session's grant (marked by the call): a lookup finds nothing
 	}
+	if (response.status == 403 && !caller.IsNode()) {
+		// listed under the grant but not delegated to this node (the user's own secret, no rule): skipped until
+		// its version changes - neither the list nor the next lookup pays for it again
+		lock_guard<mutex> guard(lock);
+		view.refused[d.name] = d.version;
+		return nullptr;
+	}
 	if (response.status == 404 || response.status == 403) {
 		// gone, or no longer ours to use, since the list was fetched: not a match - and the list is stale
 		lock_guard<mutex> guard(lock);
@@ -730,29 +740,40 @@ SecretMatch TresorSecretStorage::MatchIn(const Caller &caller, const string &pat
 	if (!view) {
 		return SecretMatch();
 	}
-	// score the usable descriptors by duckdb's own rule, on placeholders without material
-	SecretMatch best;
-	optional_ptr<const Descriptor> best_descriptor;
-	for (auto &d : list) {
-		if (!Lookupable(d) || !StringUtil::CIEquals(d.type, type) || !d.May("use")) {
+	// score the usable descriptors by duckdb's own rule, on placeholders without material; best first
+	vector<std::pair<SecretMatch, idx_t>> candidates;
+	for (idx_t i = 0; i < list.size(); i++) {
+		auto &d = list[i];
+		if (!Lookupable(d) || !StringUtil::CIEquals(d.type, type) || !d.May("use") || Refused(*view, d)) {
 			continue; // a secret the caller may not use never matches: its material would be refused
 		}
 		auto entry =
 		    EntryOf(make_uniq<KeyValueSecret>(d.scope, Identifier(d.type), Identifier(d.provider), Identifier(d.name)));
-		best = SelectBestMatch(entry, path, tie_break_offset, best);
-		if (best.HasMatch() && best.GetSecret().GetName().GetIdentifierName() == d.name) {
-			best_descriptor = &d; // this descriptor is the best so far
+		SecretMatch none;
+		auto match = SelectBestMatch(entry, path, tie_break_offset, none);
+		if (match.HasMatch()) {
+			candidates.emplace_back(std::move(match), i);
 		}
 	}
-	if (!best_descriptor) {
-		return SecretMatch();
+	std::stable_sort(candidates.begin(), candidates.end(),
+	                 [](const std::pair<SecretMatch, idx_t> &a, const std::pair<SecretMatch, idx_t> &b) {
+		                 return a.first.score > b.first.score;
+	                 });
+	// the best whose material comes back: one the service refuses (not delegated to this node) is skipped
+	for (auto &candidate : candidates) {
+		auto material = MaterialOf(caller, *view, list[candidate.second], transaction);
+		if (material) {
+			auto entry = EntryOf(std::move(material));
+			return SecretMatch(entry, candidate.first.score);
+		}
 	}
-	auto material = MaterialOf(caller, *view, *best_descriptor, transaction);
-	if (!material) {
-		return SecretMatch();
-	}
-	auto entry = EntryOf(std::move(material));
-	return SecretMatch(entry, best.score);
+	return SecretMatch();
+}
+
+bool TresorSecretStorage::Refused(View &view, const Descriptor &d) {
+	lock_guard<mutex> guard(lock);
+	auto refused = view.refused.find(d.name);
+	return refused != view.refused.end() && refused->second == d.version;
 }
 
 unique_ptr<SecretEntry> TresorSecretStorage::ByNameIn(const Caller &caller, const string &name,
@@ -765,7 +786,7 @@ unique_ptr<SecretEntry> TresorSecretStorage::ByNameIn(const Caller &caller, cons
 	for (auto &d : list) {
 		// a secret the caller may see but not use is not one it can have by name: not found here, so a
 		// local secret of that name is not shadowed by an error
-		if (StringUtil::CIEquals(d.name, name) && Lookupable(d) && d.May("use")) {
+		if (StringUtil::CIEquals(d.name, name) && Lookupable(d) && d.May("use") && !Refused(*view, d)) {
 			auto material = MaterialOf(caller, *view, d, transaction);
 			return material ? make_uniq<SecretEntry>(EntryOf(std::move(material))) : nullptr;
 		}
@@ -773,41 +794,58 @@ unique_ptr<SecretEntry> TresorSecretStorage::ByNameIn(const Caller &caller, cons
 	return nullptr;
 }
 
-// Lookups under a duckdb-acl session (specs/009): the session's user's secret - what the service delegates
-// to this node for them, through the grant - wins wherever one covers the path, whatever the node holds
-// there; every other path is the node's own (the catalogs it serves: ducklake, iceberg). Users reach those
-// paths only through what acl admits - its gate is the boundary, not the credentials (security.md).
-// Outside a session: the node, as ever.
+// Lookups under a duckdb-acl session (specs/009), through an attachment with the node's service login: the
+// node's own secret wherever it covers the path - the paths of its catalogs are the node's, and no user may
+// redirect them with a secret of theirs; the session's delegated secret (through the grant) on every other
+// path. An attachment with a person's login serves nothing under a session. Users reach the node's paths
+// only through what acl admits - its gate is the boundary, not the credentials (security.md). Outside a
+// session: the attachment's own login, as ever.
+bool TresorSecretStorage::ServesNodeUnderSessions(const Caller &caller) {
+	return caller.session && caller.session->Flow() == LoginFlow::CLIENT_CREDENTIALS;
+}
+
 SecretMatch TresorSecretStorage::LookupSecret(const string &path, const string &type,
                                               optional_ptr<CatalogTransaction> transaction) {
-	auto caller = CallerOf(transaction);
-	if (!caller.IsNode()) {
-		auto delegated = MatchIn(caller, path, type, transaction);
-		if (delegated.HasMatch()) {
-			return delegated;
+	auto context = transaction ? transaction->context : nullptr;
+	auto who = CallerFor(context, false); // whose statement, without waiting for a grant
+	if (who.IsNode()) {
+		return MatchIn(who, path, type, transaction);
+	}
+	if (ServesNodeUnderSessions(who)) {
+		auto node_match = MatchIn(NodeOf(who), path, type, transaction);
+		if (node_match.HasMatch()) {
+			return node_match; // the node's path: never waits for, nor depends on, the session's grant
 		}
 	}
-	return MatchIn(NodeOf(caller), path, type, transaction);
+	auto caller = CallerFor(context);
+	return caller.Usable() ? MatchIn(caller, path, type, transaction) : SecretMatch();
 }
 
 unique_ptr<SecretEntry> TresorSecretStorage::GetSecretByName(const string &name,
                                                              optional_ptr<CatalogTransaction> transaction) {
-	auto caller = CallerOf(transaction);
-	if (!caller.IsNode()) {
-		auto delegated = ByNameIn(caller, name, transaction);
-		if (delegated) {
-			return delegated;
+	auto context = transaction ? transaction->context : nullptr;
+	auto who = CallerFor(context, false);
+	if (who.IsNode()) {
+		return ByNameIn(who, name, transaction);
+	}
+	if (ServesNodeUnderSessions(who)) {
+		auto node_entry = ByNameIn(NodeOf(who), name, transaction);
+		if (node_entry) {
+			return node_entry;
 		}
 	}
-	return ByNameIn(NodeOf(caller), name, transaction);
+	auto caller = CallerFor(context);
+	return caller.Usable() ? ByNameIn(caller, name, transaction) : nullptr;
 }
 
 vector<SecretEntry> TresorSecretStorage::AllSecrets(optional_ptr<CatalogTransaction> transaction) {
-	auto caller = CallerOf(transaction);
+	auto context = transaction ? transaction->context : nullptr;
+	auto who = CallerFor(context, false);
 	vector<SecretEntry> out;
 	unordered_set<string> seen;
 	// descriptors only: listing never fetches material; never throws (duckdb_secrets() must work while a
-	// service is down). Under a session: the user's delegated secrets, then the node's under other names
+	// service is down). Under a session: the node's (if this attachment serves them), then the delegated ones
+	// under other names - the order lookups by name take
 	auto add = [&](const Caller &from) {
 		shared_ptr<View> view;
 		for (auto &d : Snapshot(from, view)) {
@@ -817,10 +855,17 @@ vector<SecretEntry> TresorSecretStorage::AllSecrets(optional_ptr<CatalogTransact
 			}
 		}
 	};
-	if (!caller.IsNode()) {
+	if (who.IsNode()) {
+		add(who);
+		return out;
+	}
+	if (ServesNodeUnderSessions(who)) {
+		add(NodeOf(who));
+	}
+	auto caller = CallerFor(context);
+	if (caller.Usable()) {
 		add(caller);
 	}
-	add(NodeOf(caller));
 	return out;
 }
 
@@ -847,17 +892,19 @@ void TresorSecretStorage::Invalidate(const string &name) {
 
 unique_ptr<const BaseSecret> TresorSecretStorage::RefreshMaterial(const string &name,
                                                                   optional_ptr<CatalogTransaction> transaction) {
-	// the secret the lookup served: the session's delegated one if it has it, else the node's (specs/009)
-	auto caller = CallerOf(transaction);
+	// the secret the lookup served, in the lookup's order (specs/009): the node's if it has the name, else
+	// the session's delegated one
+	auto context = transaction ? transaction->context : nullptr;
+	auto caller = CallerFor(context, false);
 	if (!caller.IsNode()) {
-		shared_ptr<View> view;
-		bool delegated = false;
-		for (auto &d : Snapshot(caller, view)) {
-			delegated = delegated || (StringUtil::CIEquals(d.name, name) && Lookupable(d) && d.May("use"));
+		bool node_has = false;
+		if (ServesNodeUnderSessions(caller)) {
+			shared_ptr<View> node_view;
+			for (auto &d : Snapshot(NodeOf(caller), node_view)) {
+				node_has = node_has || (StringUtil::CIEquals(d.name, name) && Lookupable(d) && d.May("use"));
+			}
 		}
-		if (!delegated) {
-			caller = NodeOf(caller);
-		}
+		caller = node_has ? NodeOf(caller) : CallerFor(context);
 	}
 	shared_ptr<View> view;
 	for (auto &d : Snapshot(caller, view)) {

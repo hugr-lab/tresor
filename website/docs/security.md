@@ -25,22 +25,25 @@ things beyond roles:
 ## What a server must never do
 
 A server acting for users **never adds its own authority** to a user's request. Every call it makes
-on a user's behalf carries the user's delegation grant; the service checks the user's rights, the
+for a user's resource carries the user's delegation grant; the service checks the user's rights, the
 delegation rule, and that this server may act for users at all. A delegated secret is never resolved
-with the server's own identity when the user's is missing — that would make every user a confused
-deputy of the server. On a duckdb-acl node, tresor holds to this per statement:
-- A statement that acl publishes as running under a user's session is served the user's
-  **delegated** secrets through the session's grant. The service checks the user's rights and the
-  owner's rule.
-- Paths no delegated secret covers are served the **node's own** secrets. These are what the
-  node's catalogs read (ducklake, iceberg, attached databases).
-- Explicit calls (whoami, listings, writes, management) are never the node's under a session.
+with the server's own identity. On a duckdb-acl node, tresor holds to this per statement that acl
+publishes as running under a user's session:
+- **The node's own paths.** A path the node holds a secret for is served that secret: it is what the
+  node's catalogs read (ducklake, iceberg, attached databases). No user's secret can take such a path
+  over, so a user cannot redirect the node's lake writes to an endpoint of their own.
+- **Every other path** is served the user's **delegated** secret through the session's grant, or
+  nothing when there is no usable grant.
+- **Explicit calls** (whoami, listings, writes, management) are never the node's under a session.
+- **A person's attachment** serves nothing under a session.
 
 The node's secrets are kept from users by **acl's function gate, not by the credentials**. A user
 who could name the lake's bucket directly (`read_parquet`, `COPY`, `ATTACH`, a replacement scan, any
 extension's URL-fetching function) would read it with the node's key. Keep acl's `readers` category
-closed to users; it is closed by default. Do not give the node its own secret on the scopes you
-delegate: without a usable grant, the node's would serve them.
+closed to users; it is closed by default. Under a session, `duckdb_secrets()` would show the node's
+secret names and scopes; acl's gate keeps it from principals. If acl is built from another contract
+version, tresor cannot tell whose statement it is: it serves the node's paths only and refuses
+explicit calls.
 
 On a server, lock the configuration so users cannot widen what the process reveals:
 `allow_unredacted_secrets = false`, `lock_configuration = true`, and no `CREATE SECRET` for
