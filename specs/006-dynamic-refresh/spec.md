@@ -1,6 +1,6 @@
 # Spec 006: dynamic secrets — the `tresor` provider behind httpfs's `REFRESH auto`
 
-- **Status**: draft
+- **Status**: implemented
 - **Date**: 2026-09-23
 - **Author**: VGSML (with Claude)
 
