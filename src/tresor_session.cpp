@@ -117,7 +117,7 @@ string TresorSession::AccessToken(bool force) {
 		if (info.audience_parameter && !info.audience.empty()) {
 			extra["audience"] = info.audience;
 		}
-		renewed = credential.Mint(info.endpoints, info.scope, extra, info.audience);
+		renewed = credential.Mint(info.endpoints, info.scope, extra);
 		break;
 	}
 	case LoginFlow::TOKEN:
@@ -187,7 +187,7 @@ ServiceResponse TresorSession::Call(const string &method, const string &path, co
 }
 
 oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bool on_behalf_of, const string &scope) {
-	oidc::ClientAuth auth;
+	ServiceCredential proof; // paths and ids: copied under the lock - the files are read and the IdP called outside it
 	{
 		lock_guard<mutex> guard(lock);
 		if (closed || (flow != LoginFlow::CLIENT_CREDENTIALS && flow != LoginFlow::FEDERATED)) {
@@ -196,15 +196,17 @@ oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bo
 			    closed ? "the session is closed" : "only a client_credentials or federated login exchanges tokens";
 			return refused;
 		}
-		string why;
-		if (!credential.Auth(auth, why)) {
-			oidc::TokenSet refused;
-			refused.error = why;
-			refused.error_code = "invalid_client";
-			return refused;
-		}
+		proof = credential;
 	}
+	oidc::ClientAuth auth;
 	oidc::TokenSet out;
+	string why;
+	if (!proof.Auth(auth, why)) {
+		proof.Wipe();
+		out.error = why;
+		out.error_code = "invalid_client";
+		return out;
+	}
 	if (on_behalf_of) {
 		out = oidc::OnBehalfOf(info.endpoints, auth, subject_token, scope);
 	} else {
@@ -215,13 +217,22 @@ oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bo
 		if (!out.Ok() && out.error_code != "invalid_client" && out.error_code != "invalid_grant") {
 			// an IdP that issues no refresh token by exchange, whatever it answers (its wording and code vary, and
 			// a strict RFC 8693 answer is refused as invalid_token_type): the plain exchange. A bad client or a
-			// dead subject token would fail that the same way
-			out = oidc::TokenExchange(info.endpoints, auth, subject_token, info.audience, scope);
+			// dead subject token would fail that the same way. The proof afresh: a federated assertion may be
+			// single-use at the IdP (a key signs anew anyway)
+			WipeAuth(auth);
+			if (proof.Auth(auth, why)) {
+				out = oidc::TokenExchange(info.endpoints, auth, subject_token, info.audience, scope);
+			} else {
+				out = oidc::TokenSet();
+				out.error = why;
+				out.error_code = "invalid_client";
+			}
 		}
 	}
 	std::fill(out.refresh_token.begin(), out.refresh_token.end(), '\0');
 	out.refresh_token.clear();
 	WipeAuth(auth);
+	proof.Wipe();
 	return out;
 }
 

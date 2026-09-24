@@ -21,7 +21,9 @@ openssl req -x509 -new -key "$keys/keynode.pem" -subj /CN=keynode -days 1 -out "
 chmod 600 "$keys/keynode.pem" "$keys/eckeynode.pem"
 cp "$keys/keynode.pem" "$keys/keynode-open.pem"
 chmod 644 "$keys/keynode-open.pem"
-printf 'platform-jwt\n' >"$keys/fed.token"
+printf 'eyJhbGciOiJub25lIn0.eyJzdWIiOiJmZWRub2RlIn0.c2ln\n' >"$keys/fed.token"
+cp "$keys/keynode.pem" "$keys/keynode-group.pem"
+chmod 640 "$keys/keynode-group.pem"
 export TRESOR_TEST_KEYS="$keys"
 python3 "$root/test/fake/fake_service.py" --port-file "$work/port" &
 fake=$!

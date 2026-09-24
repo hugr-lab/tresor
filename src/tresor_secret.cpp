@@ -29,7 +29,7 @@ const FlowRule &RuleOf(const string &flow) {
 	                                          {"oauth_scope", "key_id", "certificate_file"}};
 	static const FlowRule federated {
 	    {"client_id", "issuer"}, {{"assertion_file", "assertion_source"}}, {"oauth_scope", "assertion_audience"}};
-	static const FlowRule managed_identity {{"issuer"}, {}, {"client_id"}};
+	static const FlowRule managed_identity {{"issuer", "audience"}, {}, {"client_id"}};
 	static const FlowRule token {{"token"}, {}, {}};
 	if (flow == "client_credentials") {
 		return client_credentials;
@@ -186,8 +186,9 @@ void RegisterTresorSecret(ExtensionLoader &loader) {
 	function.secret_type = "tresor";
 	function.provider = Identifier("config");
 	function.function = CreateTresorSecret;
-	for (auto name : {"flow", "client_id", "client_secret", "token", "oauth_scope", "issuer", "private_key_file",
-	                  "key_id", "certificate_file", "assertion_file", "assertion_source", "assertion_audience"}) {
+	for (auto name :
+	     {"flow", "client_id", "client_secret", "token", "oauth_scope", "issuer", "private_key_file", "key_id",
+	      "certificate_file", "assertion_file", "assertion_source", "assertion_audience", "audience"}) {
 		function.named_parameters[name] = LogicalType::VARCHAR;
 	}
 	loader.RegisterFunction(function);

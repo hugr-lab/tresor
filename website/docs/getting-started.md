@@ -130,21 +130,30 @@ CREATE SECRET ci (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'federa
     CLIENT_ID 'ci', ISSUER '…', ASSERTION_SOURCE 'github_actions',
     ASSERTION_AUDIENCE 'api://AzureADTokenExchange');
 
--- on Azure: the platform's managed identity, nothing secret at all (CLIENT_ID for a user-assigned one)
+-- on Azure: the platform's managed identity, nothing secret at all (CLIENT_ID for a user-assigned one);
+-- AUDIENCE names what its token is for, and must be the service's audience
 CREATE SECRET node (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'managed_identity',
-    ISSUER 'https://login.microsoftonline.com/<tenant>/v2.0');
+    ISSUER 'https://login.microsoftonline.com/<tenant>/v2.0', AUDIENCE '<the service API app client id>');
 ```
 
 - **The secret holds paths, never a key or a token.**
   - Files are read when a login needs them, at ATTACH and at each renewal, so rotated files are
     picked up.
-  - A key file must be readable by its owner only (`chmod 600`; Kubernetes: `defaultMode: 0400`).
+  - A key file may be read by its owner and, read-only, by its group (`chmod 600` or `640`;
+    Kubernetes: `defaultMode: 0400`, which a pod's `fsGroup` makes 0440). Others may not read it,
+    and no group may write it. There is no check on Windows, where the file's ACL decides.
+  - The files are subject to DuckDB's own sandbox: with `enable_external_access = false` (outside
+    `allowed_directories`), a login reads none.
+  - A federated token file must hold a JWT; any other content is never sent.
   - Keys are RSA (2048 bits or more, RS256) or P-256 (ES256), unencrypted PEM.
 - **A node acting for duckdb-acl sessions** (`ACT_FOR_SESSIONS`) may log in with a key or
   federated. A managed identity cannot: it is no client at the identity provider, so it has
   nothing to exchange a session's token as.
+- **A managed identity's token is only for `AUDIENCE`.** A service whose discovery names another
+  audience is refused, and a token the platform minted for another audience is never sent.
 - **An identity provider that takes the audience from a request parameter** (Auth0) gets it when
-  the service's discovery sets `audience_parameter`. Nothing to configure on the client.
+  the service's discovery sets `audience_parameter`. Nothing to configure on the client, except
+  that a node acting for sessions then has to pin `EXCHANGE_AUDIENCE` itself.
 
 A `PERSISTENT` secret is written to DuckDB's local secret directory like any other. A
 `CLIENT_SECRET` in it is written too; the flows above write only paths and ids. Keep a secret's

@@ -254,7 +254,7 @@ Audited &Audited::For(const Caller &caller, const string &service) {
 	if (caller.session) {
 		auto &info = caller.session->Info();
 		event.host = info.host;
-		event.login = LoginFlowName(caller.session->Flow());
+		event.login = caller.session->LoginName();
 		event.principal = caller.session->Subject().substr(0, 512); // the service's whoami: bounded
 	}
 	event.user = caller.user;

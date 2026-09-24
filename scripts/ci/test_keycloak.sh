@@ -258,7 +258,7 @@ if [ -n "$keynode_uuid" ] && curl -sf -o /dev/null -X PUT -H "Authorization: Bea
 	printf "LOAD '%s';\nCREATE SECRET kn (TYPE tresor, SCOPE 'tresor:127.0.0.1:%s', FLOW 'client_credentials', CLIENT_ID 'keynode', ISSUER '%s', PRIVATE_KEY_FILE '%s');\nATTACH 'tresor:127.0.0.1:%s' AS kn (INSECURE_HTTP true, SECRET kn);\nSELECT 'key:' || login || '|' || subject FROM kn.whoami();\n" \
 		"$(dirname "$unittest")/../extension/tresor/tresor.duckdb_extension" "$server_port" "$issuer" \
 		"$work/keynode.pem" "$server_port" | "$cli" -unsigned -list -noheader >"$work/key.log" 2>&1 || true
-	grep -Eq '^key:client_credentials\|' "$work/key.log" && key_ok=1
+	grep -Eq '^key:private_key_jwt\|' "$work/key.log" && key_ok=1
 fi
 if [ "$key_ok" = 1 ]; then
 	echo "test_keycloak: private_key_jwt: a node logged in to Keycloak with its key, no secret"

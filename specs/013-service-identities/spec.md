@@ -67,15 +67,21 @@ CREATE SECRET node (TYPE tresor, FLOW 'managed_identity', ISSUER 'https://login.
     token runs out. It is used and wiped, so a rotated file is picked up.
   - The secret itself holds only paths. A persistent `tresor` secret therefore writes nothing secret
     to disk, unlike a `CLIENT_SECRET`.
-  - A **key** file may not be group- or world-readable on POSIX systems (the SSH rule); such a file
-    is refused, and the reason says so.
+  - A **key** file follows the SSH rule, as Kubernetes allows it, on POSIX systems. Others may not
+    read it, and a group may only read it (a pod's `fsGroup` makes a secret volume 0440). Anything
+    else is refused, and the reason says so. The check is on the opened descriptor (`fstat`).
+  - Every file is subject to DuckDB's own sandbox (`enable_external_access`, `allowed_directories`),
+    checked at each ATTACH. A file is at most 64 KiB.
+  - A federated token file must hold a JWT's shape. A key or a config file is never sent as an
+    assertion.
   - A federated **token** file is not held to that rule. Platforms mount it readable (Kubernetes
     projected tokens are 0644 by default), and it is short-lived and bound to an audience.
 - **The key.** A PEM file: RSA (RS256) or P-256 (ES256).
   - `KEY_ID` sets the header's `kid` (Keycloak, Okta match on it).
   - `CERTIFICATE_FILE` adds `x5t` and `x5t#S256` (Entra matches on the certificate thumbprint).
-- **What a managed identity's token is for.** The service's `audience` from the discovery, as the
-  resource. The token then goes to the service like a `token` login's, but it is re-minted from
+- **What a managed identity's token is for.** The secret's required `AUDIENCE`, as the resource. The
+  service's discovery must name the same audience, or the ATTACH is refused; the service never picks
+  which Azure resource the identity mints for. The token then goes to the service like a `token` login's, but it is re-minted from
   the platform when it runs out. Such a login cannot act for sessions: there is no client to
   exchange tokens with (below).
 
@@ -159,9 +165,39 @@ expects (apps, API permissions, `accessTokenAcceptedVersion`) is documented in
     says so.
 - **Entra:** `entra_live.sh`, by hand, against the owner's tenant.
 
+## The review's findings (applied)
+
+- **HIGH: the credential files were read around DuckDB's sandbox.** With
+  `enable_external_access = false`, `read_text()` was refused while a federated login still read the
+  file and sent its content to the secret's issuer (confirmed). Now:
+  - the sandbox applies to every file a login reads;
+  - a federated token file must be JWT-shaped;
+  - a file is at most 64 KiB.
+- **HIGH: a managed identity's token was for whatever the discovery named.** A hostile service could
+  name `https://management.azure.com/` and receive an ARM token; the `aud` check was circular. Now
+  the secret names its `AUDIENCE`, and a discovery naming another is refused.
+- **HIGH: `audience_parameter` defeated the node's exchange-audience guard (specs/008).** The node's
+  own token carried the audience only because the discovery had asked for it. Now a node acting for
+  sessions must pin `EXCHANGE_AUDIENCE` where the discovery sets `audience_parameter`.
+- **Kubernetes' fsGroup was refused.** A group may now read a key (0440/0640), never write it. The
+  check is on the opened file descriptor.
+- **The exchange read files under the session's lock.** The credential (paths) is now copied under
+  the lock and used outside it. The fallback exchange builds its proof afresh: a federated
+  assertion may be single-use.
+- **A key login read as `client_credentials`.** whoami and the audit now say `private_key_jwt`.
+- **The managed identity's `aud` check failed open for a non-JWT token.** Now it fails closed.
+- **The spec claimed tests that did not exist.** They exist now: renewal (a key, a federated file)
+  through the `expiring` realm, a rotated token file picked up, the device request's audience, the
+  header's `kid` and `x5t`, 0640 accepted.
+- **Entra:**
+  - the docs name the `idtyp` optional claim;
+  - the redirect is `http://127.0.0.1/callback`;
+  - the script fails when a step does, and cuts the node's secret out of its output.
+- **Protocol:** `audience_parameter` is documented as trust equal to `scopes`.
+
 ## Checked
 
-- **`test/sql/attach/service_identities.test`** (fake IdP, 73 assertions). The keys are made per run
+- **`test/sql/attach/service_identities.test`** (fake IdP, 109 assertions). The keys are made per run
   by `test_attach.sh`, and the fake verifies each signature with `openssl`.
   - Each flow's parameters and their refusals.
   - RSA and P-256 keys; `KEY_ID` with a certificate.

@@ -43,7 +43,7 @@ CREATE SECRET gh (TYPE tresor, SCOPE 'tresor:x', FLOW 'federated', CLIENT_ID 'fe
 ASSERTION_SOURCE is 'github_actions'
 
 statement error
-CREATE SECRET mi (TYPE tresor, SCOPE 'tresor:x', FLOW 'managed_identity', ISSUER 'http://i', CLIENT_SECRET 's');
+CREATE SECRET mi (TYPE tresor, SCOPE 'tresor:x', FLOW 'managed_identity', ISSUER 'http://i', AUDIENCE 'a', CLIENT_SECRET 's');
 ----
 does not take CLIENT_SECRET
 
@@ -66,7 +66,7 @@ ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS k (INSECURE_HTTP true, SECRET ke
 query II
 SELECT subject, login FROM k.whoami();
 ----
-client:keynode	client_credentials
+client:keynode	private_key_jwt
 
 statement ok
 DETACH k;
@@ -95,6 +95,24 @@ CREATE OR REPLACE SECRET keyed (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TES
 statement ok
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS k (INSECURE_HTTP true, SECRET keyed);
 
+# the kid and the certificate's thumbprints are in the assertion's header
+query II
+SELECT idp('last_kid'), idp('last_x5t');
+----
+"k1"	"yes"
+
+statement ok
+DETACH k;
+
+# a group may read a key (a Kubernetes fsGroup mounts it 0440): 0640 is fine
+statement ok
+CREATE OR REPLACE SECRET keyed (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'client_credentials',
+    CLIENT_ID 'keynode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp',
+    PRIVATE_KEY_FILE '{TRESOR_TEST_KEYS}/keynode-group.pem');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS k (INSECURE_HTTP true, SECRET keyed);
+
 statement ok
 DETACH k;
 
@@ -107,7 +125,7 @@ CREATE OR REPLACE SECRET keyed (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TES
 statement error
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS k (INSECURE_HTTP true, SECRET keyed);
 ----
-may be read by others than its owner
+may be read or written by others than its owner
 
 statement ok
 CREATE OR REPLACE SECRET keyed (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'client_credentials',
@@ -180,14 +198,92 @@ federated	"api://AzureADTokenExchange"
 statement ok
 DETACH f;
 
+# a key where a token should be: not sent - the flow carries only a JWT-shaped token
+statement ok
+CREATE OR REPLACE SECRET fed (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'federated',
+    CLIENT_ID 'fednode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_FILE '{TRESOR_TEST_KEYS}/keynode.pem');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS f (INSECURE_HTTP true, SECRET fed);
+----
+does not hold a token
+
 statement ok
 DROP SECRET fed;
 
+# --- renewal: a service's token re-minted from the secret's files, a rotated token file picked up ------------------
+
+# the expiring realm answers 401 after two uses of a token as first issued: every renewal is a new mint
+statement ok
+CREATE SECRET keyed_exp (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/expiring', FLOW 'client_credentials',
+    CLIENT_ID 'keynode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp',
+    PRIVATE_KEY_FILE '{TRESOR_TEST_KEYS}/keynode.pem');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/expiring' AS ke (INSECURE_HTTP true, SECRET keyed_exp);
+
+statement ok
+CREATE TABLE minted AS SELECT idp('assertions')::INT AS n;
+
+loop i 0 4
+
+query I
+SELECT subject FROM ke.whoami();
+----
+client:keynode
+
+endloop
+
+query I
+SELECT idp('assertions')::INT > n FROM minted;
+----
+true
+
+statement ok
+DETACH ke;
+
+statement ok
+CREATE SECRET fed_exp (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/expiring', FLOW 'federated',
+    CLIENT_ID 'fednode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_FILE '{TRESOR_TEST_KEYS}/fed.token');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/expiring' AS fe (INSECURE_HTTP true, SECRET fed_exp);
+
+query I
+SELECT idp('last_federated');
+----
+"eyJhbGciOiJub25lIn0.eyJzdWIiOiJmZWRub2RlIn0.c2ln"
+
+# the platform rotates the token file: the next mint reads the new one
+statement ok
+COPY (SELECT 'eyJhbGciOiJub25lIn0.eyJzdWIiOiJmZWRub2RlMiJ9.c2ln') TO '{TRESOR_TEST_KEYS}/fed.token' (FORMAT CSV, HEADER false, QUOTE '');
+
+loop i 0 4
+
+statement ok
+SELECT subject FROM fe.whoami();
+
+endloop
+
+query I
+SELECT idp('last_federated');
+----
+"eyJhbGciOiJub25lIn0.eyJzdWIiOiJmZWRub2RlMiJ9.c2ln"
+
+statement ok
+DETACH fe;
+
 # --- Azure managed identity: nothing secret at all, a token for the service's audience ---------------------------
+
+statement error
+CREATE SECRET mi (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'managed_identity',
+    ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+----
+needs AUDIENCE
 
 statement ok
 CREATE SECRET mi (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'managed_identity',
-    ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+    ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', AUDIENCE 'duckdb-secrets');
 
 statement ok
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS m (INSECURE_HTTP true, SECRET mi);
@@ -200,10 +296,20 @@ client:mi	managed_identity	"duckdb-secrets"
 statement ok
 DETACH m;
 
+# the service may not pick the audience: a secret for another one is not used for it
+statement ok
+CREATE OR REPLACE SECRET mi (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'managed_identity',
+    ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', AUDIENCE 'https://management.azure.com/');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS m (INSECURE_HTTP true, SECRET mi);
+----
+its token is not sent to another audience
+
 # a token the platform minted for another audience never goes to the service
 statement ok
 CREATE OR REPLACE SECRET mi (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'managed_identity',
-    ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', CLIENT_ID 'mismatch');
+    ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', AUDIENCE 'duckdb-secrets', CLIENT_ID 'mismatch');
 
 statement error
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS m (INSECURE_HTTP true, SECRET mi);
@@ -213,7 +319,7 @@ not meant for duckdb-secrets
 # a managed identity is no client at the IdP: it cannot exchange a session's token
 statement ok
 CREATE SECRET mi_acting (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting', FLOW 'managed_identity',
-    ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+    ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', AUDIENCE 'duckdb-secrets');
 
 statement error
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS m (INSECURE_HTTP true, SECRET mi_acting, ACT_FOR_SESSIONS true);
@@ -275,6 +381,12 @@ SELECT idp('cc_audience');
 statement ok
 DETACH a;
 
+# a node acting for sessions pins the exchange audience itself where the discovery picks the node's own
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/auth0' AS a (INSECURE_HTTP true, SECRET etl_auth0, ACT_FOR_SESSIONS true);
+----
+pins the audience users' tokens are exchanged for with EXCHANGE_AUDIENCE
+
 statement ok
 SET tresor_keychain = 'off';
 
@@ -289,6 +401,17 @@ SELECT idp('authorize_audience');
 statement ok
 DETACH p;
 
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/auth0' AS d (INSECURE_HTTP true, LOGIN 'device');
+
+query I
+SELECT idp('device_audience');
+----
+"https://api.auth0.example"
+
+statement ok
+DETACH d;
+
 # ... and not where it does not
 statement ok
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS q (INSECURE_HTTP true, LOGIN 'browser');
@@ -300,3 +423,17 @@ SELECT idp('authorize_audience');
 
 statement ok
 DETACH q;
+
+# --- DuckDB's sandbox: a file read_text() may not read, a login may not read and send either ---------------------
+
+statement ok
+CREATE SECRET sandboxed (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'federated', CLIENT_ID 'fednode',
+    ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_FILE '{TRESOR_TEST_KEYS}/fed.token');
+
+statement ok
+SET enable_external_access = false;
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS sb (INSECURE_HTTP true, SECRET sandboxed);
+----
+outside what this DuckDB may read

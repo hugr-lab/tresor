@@ -671,7 +671,14 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 			if (secret_flow == "managed_identity") {
 				flow = LoginFlow::MANAGED_IDENTITY;
 				credential.kind = ServiceCredential::Kind::MANAGED_IDENTITY;
+				credential.audience = SecretString(*service_secret, "audience");
 				listed = "managed_identity";
+				// the platform mints for what the secret names; the service must be that audience, never pick one
+				if (credential.audience != info.audience) {
+					throw InvalidInputException("tresor: %s names the audience '%s', but the managed identity's secret "
+					                            "is for '%s' - its token is not sent to another audience",
+					                            request.host, info.audience, credential.audience);
+				}
 			} else if (secret_flow == "federated") {
 				flow = LoginFlow::FEDERATED;
 				credential.assertion_file = SecretString(*service_secret, "assertion_file");
@@ -693,6 +700,7 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 					listed = "private_key_jwt";
 				}
 			}
+			credential.CheckAccess(context);
 			if (!issuer.OffersService(listed)) {
 				throw InvalidInputException("tresor: %s does not accept %s logins", request.host, listed);
 			}
@@ -711,7 +719,7 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 			if (info.audience_parameter && !info.audience.empty()) {
 				extra["audience"] = info.audience;
 			}
-			tokens = credential.Mint(info.endpoints, info.scope, extra, info.audience);
+			tokens = credential.Mint(info.endpoints, info.scope, extra);
 			if (!tokens.Ok()) {
 				throw InvalidInputException("tresor: the %s login to %s failed: %s", LoginFlowName(flow), request.host,
 				                            tokens.error);
@@ -749,6 +757,13 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 		}
 	}
 
+	if (request.act_for_sessions && info.audience_parameter && request.exchange_audience.empty()) {
+		// the node's own token's audience was the discovery's choice (it was asked for): it proves nothing about
+		// where users' tokens may go - the node pins that itself
+		throw InvalidInputException("tresor: %s asks for the audience parameter - a node acting for sessions pins the "
+		                            "audience users' tokens are exchanged for with EXCHANGE_AUDIENCE",
+		                            request.host);
+	}
 	if (request.act_for_sessions) {
 		// the exchange is made as the node's own client: a client_credentials or federated login has one
 		if (flow != LoginFlow::CLIENT_CREDENTIALS && flow != LoginFlow::FEDERATED) {

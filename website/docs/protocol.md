@@ -81,7 +81,9 @@ fixes only what a client sees.
 - `audience_parameter` — optional, `false` when absent. When `true`, a client sends
   `audience=<audience>` on the authorization, device and client credentials requests to this issuer.
   Some identity providers (Auth0) choose a token's audience from that parameter, not from their
-  configuration.
+  configuration. The field puts the audience in the service's hands, like `scopes` already does;
+  a client trusts it no further. A server acting for users does not take the discovery's audience
+  as proof when this is set: it pins the exchange audience itself.
 - `client_id` — a **public** client for people (authorization code with PKCE, loopback redirect).
 - `capabilities.delegation` — whether the optional [delegation](#delegation) resources exist.
   Grants are not optional in version 1.

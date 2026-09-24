@@ -153,11 +153,13 @@ STATS = {"exchanges": 0, "grants": 0, "revoked": 0, "refresh_asked": 0}
 # revocations - read by the tests at GET /_stats
 IDP_STATS = {"authorize": 0, "refresh": 0, "refresh_scope": "", "revoked_tokens": 0,
              # specs/013: what the audience parameter, the platform endpoints and the assertions carried
-             "authorize_audience": "", "cc_audience": "", "mi_resource": "", "gh_audience": "", "assertions": 0}
+             "authorize_audience": "", "cc_audience": "", "mi_resource": "", "gh_audience": "", "assertions": 0,
+             "device_audience": "", "last_federated": "", "last_kid": "", "last_x5t": ""}
 # specs/013: services that prove themselves without a secret - public keys from the test script's key directory
 KEYS = os.environ.get("TRESOR_TEST_KEYS", "")
 KEY_CLIENTS = {"keynode": "keynode.pub", "eckeynode": "eckeynode.pub"}
-FEDERATED = {"fednode": {"platform-jwt", "github-jwt"}}
+# federated tokens the fake's "federation" trusts: JWT-shaped, as a platform's are (tresor sends nothing else)
+FEDERATED = {"fednode": {"eyJhbGciOiJub25lIn0.eyJzdWIiOiJmZWRub2RlIn0.c2ln", "eyJhbGciOiJub25lIn0.eyJzdWIiOiJmZWRub2RlMiJ9.c2ln", "github-jwt"}}
 SEEN_JTI = set()
 
 
@@ -192,6 +194,8 @@ def verify_assertion(client, jwt, token_endpoint):
         return False
     if not (time.time() < claims.get("exp", 0) <= time.time() + 330):
         return False
+    IDP_STATS["last_kid"] = header.get("kid", "")
+    IDP_STATS["last_x5t"] = "yes" if header.get("x5t") and header.get("x5t#S256") else "no"
     alg = header.get("alg")
     if alg == "ES256":
         raw = der_ecdsa(raw)
@@ -221,6 +225,7 @@ def client_ok(form, token_endpoint):
             return False
         IDP_STATS["assertions"] += 1
         if client in FEDERATED:
+            IDP_STATS["last_federated"] = assertion  # a test token, not a credential: the rotation is read here
             return assertion in FEDERATED[client]
         return verify_assertion(client, assertion, token_endpoint)
     return client in CLIENTS and CLIENTS.get(client) == form.get("client_secret")
@@ -771,6 +776,7 @@ class Handler(BaseHTTPRequestHandler):
         if rest == "/device":
             code = "dev-" + secrets.token_urlsafe(8)
             with LOCK:
+                IDP_STATS["device_audience"] = form.get("audience", "")
                 DEVICES[code] = 1  # one authorization_pending, then approved
             self.send(200, {
                 "device_code": code, "user_code": "ABCD-EFGH",

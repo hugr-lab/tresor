@@ -116,7 +116,7 @@ void WhoamiScan(ClientContext &context, TableFunctionInput &data, DataChunk &out
 	output.data[4].Append(StringOrNull(root, "actor"));
 	output.data[5].Append(expires_at);
 	output.data[6].Append(can_create);
-	output.data[7].Append(Value(LoginFlowName(session.Flow())));
+	output.data[7].Append(Value(session.LoginName()));
 }
 
 } // namespace

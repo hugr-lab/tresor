@@ -56,10 +56,21 @@ curl -sf "http://127.0.0.1:$port/.well-known/duckdb-secrets" >/dev/null || {
 	exit 1
 }
 
-step() { # $1: what, then the SQL after LOAD
+failed=0
+step() { # $1: what, then the SQL after LOAD; a step passes when whoami answered
 	echo "entra_live: $1"
-	printf "LOAD '%s';\n%s\n" "$ext" "$2" | "$duckdb" -unsigned -list -noheader 2>&1 |
-		sed -E -e 's/eyJ[A-Za-z0-9._-]*/<token>/g' -e 's/^/  /' || true
+	local out
+	out="$(printf "LOAD '%s';\n%s\n" "$ext" "$2" | "$duckdb" -unsigned -list -noheader 2>&1 || true)"
+	# never a token, and never the node's secret (a parser error would quote the SQL)
+	out="$(printf '%s\n' "$out" | sed -E 's/eyJ[A-Za-z0-9._-]*/<token>/g')"
+	if [ -n "${ENTRA_NODE_SECRET:-}" ]; then
+		out="${out//$ENTRA_NODE_SECRET/<secret>}"
+	fi
+	printf '%s\n' "$out" | sed 's/^/  /'
+	if ! printf '%s\n' "$out" | grep -q '^login='; then
+		echo "  FAILED" >&2
+		failed=1
+	fi
 }
 whoami="SELECT 'login=' || login || ' subject=' || subject || ' roles=' || roles::VARCHAR FROM e.whoami();"
 host="127.0.0.1:$port"
@@ -81,3 +92,4 @@ if [ -n "${ENTRA_NODE_SECRET:-}" ]; then
 fi
 echo "entra_live: the reference server's view (subjects, no tokens):"
 grep -E 'msg=request' "$work/server.log" | sed -E 's/^/  /' | tail -10
+exit "$failed"

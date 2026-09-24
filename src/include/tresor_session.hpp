@@ -56,6 +56,10 @@ public:
 	LoginFlow Flow() const {
 		return flow;
 	}
+	//! What whoami and the audit call this login (a key login is private_key_jwt, not client_credentials).
+	string LoginName() const {
+		return flow == LoginFlow::CLIENT_CREDENTIALS ? credential.LoginName() : LoginFlowName(flow);
+	}
 	//! Who logged in, as the service named it at the login's whoami (`subject:<issuer>|<sub>`); set once,
 	//! before the session is shared.
 	const string &Subject() const {
