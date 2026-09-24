@@ -11,6 +11,8 @@ issuers:
     roles_claim: realm_access.roles
     # a client-credentials token carries Keycloak's client_id session note (the service_account scope)
     service: {claim: client_id}
+    # the service's own client at Keycloak: it mints token_exchange secrets for callers (tresor specs/010)
+    exchange: {client_id: duckdb-secrets, client_secret_env: TRESOR_EXCHANGE_SECRET}
 policy:
   # only admins manage secrets and grant their use, to roles and groups (tresor specs/009); the etl service
   # is one, for the conformance suite

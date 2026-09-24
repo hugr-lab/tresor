@@ -136,6 +136,7 @@ WRITES = {}  # secret name -> PUT / DELETE / PATCH the service received for it
 # at the IdP by the etl client for tokens meant for the service
 NODE_TOKENS = {
     "node-token-alice": {"subject": "alice", "roles": ["role:analysts"], "create": []},
+    "node-token-norefresh": {"subject": "alice", "roles": ["role:analysts"], "create": []},  # no refresh by exchange
     "node-token-carol": {"subject": "carol", "roles": ["role:interns"], "create": []},  # the grant is refused
     "node-token-erin": {"subject": "erin", "roles": ["role:analysts"], "create": []},  # a grant living 1 s
     "node-token-slow": {"subject": "alice", "roles": ["role:analysts"], "create": []},  # exchanged after 3 s
@@ -143,7 +144,7 @@ NODE_TOKENS = {
 }
 REFUSED_NODE_TOKEN = "node-token-dave"  # the IdP refuses to exchange it
 GRANTS = {}  # grant id -> {"actor": subject, "user": identity, "expires": epoch}
-STATS = {"exchanges": 0, "grants": 0, "revoked": 0}
+STATS = {"exchanges": 0, "grants": 0, "revoked": 0, "refresh_asked": 0}
 
 
 def descriptor(name, sec):
@@ -420,8 +421,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         # the node's own secrets - under a grant too (specs/009): a grant acts with the actor's rights, for its user
         with LOCK:
-            stats = "exchanges %d grants %d revoked %d live %d" % (
-                STATS["exchanges"], STATS["grants"], STATS["revoked"], len(GRANTS))
+            stats = "exchanges %d refresh-asked %d grants %d revoked %d live %d" % (
+                STATS["exchanges"], STATS["refresh_asked"], STATS["grants"], STATS["revoked"], len(GRANTS))
         listing = {
             "node_lake": {"type": "s3", "scope": ["s3://acting"], "permissions": ["use"],
                           "params": {"key_id": "NODE"}, "redact_keys": []},
@@ -665,10 +666,19 @@ class Handler(BaseHTTPRequestHandler):
                 elif subject not in NODE_TOKENS:
                     self.send(400, {"error": "invalid_grant",
                                     "error_description": "the subject token %s is not valid" % subject})
+                elif subject == "node-token-norefresh" and form.get("requested_token_type", "").endswith("refresh_token"):
+                    # an IdP that issues no refresh token by exchange (specs/010): the client asks again, plainly
+                    self.send(400, {"error": "invalid_request", "error_description": "requested_token_type unsupported"})
                 else:
                     STATS["exchanges"] += 1
                     aud = "payroll-api" if subject == "node-token-mallory" else "duckdb-secrets"
-                    self.send(200, dict(issue(NODE_TOKENS[subject], False, aud=aud), issued_token_type=at))
+                    if form.get("requested_token_type", "").endswith("refresh_token"):
+                        # Keycloak's shape: asked for, a refresh token beside the access token (specs/010)
+                        STATS["refresh_asked"] += 1
+                        self.send(200, dict(issue(NODE_TOKENS[subject], True, aud=aud),
+                                            issued_token_type="urn:ietf:params:oauth:token-type:refresh_token"))
+                    else:
+                        self.send(200, dict(issue(NODE_TOKENS[subject], False, aud=aud), issued_token_type=at))
             elif grant == "urn:ietf:params:oauth:grant-type:device_code":
                 code = form.get("device_code")
                 if code not in DEVICES:

@@ -363,6 +363,30 @@ SELECT acl_stub_close('s9', 'client');
 statement ok
 DETACH quick;
 
+# the node's exchange asks for a refresh token (specs/010: Keycloak then binds the token to the user's session,
+# which the service's own exchange needs) and drops it; an IdP that issues none by exchange is asked plainly
+query I
+SELECT regexp_matches(comment, 'refresh-asked [1-9]') FROM corp.secrets() WHERE name = 'stats';
+----
+true
+
+statement ok
+SELECT acl_stub_open('s10', 'node-token-norefresh', 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', 300);
+
+statement ok
+SET acl_stub_session = 's10';
+
+query II
+SELECT subject, actor FROM corp.whoami();
+----
+alice	client:etl
+
+statement ok
+SET acl_stub_session = '';
+
+statement ok
+SELECT acl_stub_close('s10', 'client');
+
 # --- DETACH revokes the grants still held --------------------------------------------------------------
 
 statement ok

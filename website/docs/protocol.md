@@ -157,6 +157,10 @@ type>", "value": <JSON>}`; a bare string is shorthand for `VARCHAR`. Nested valu
 `"dynamic": true` means the service generates `params` on every `GET` and returns an `expires_at`.
 A client caches the material until shortly before that time.
 
+A dynamic secret's material may depend on **the caller**, for example a token minted for them for a
+downstream server. Under a delegation grant, such material is the **grant's user's**, never the
+server's own. A client caches it per caller: tresor keeps each acl session's apart from the node's.
+
 ### Conditional writes
 
 `PUT` carries the secret as `{type, provider, scope, params, redact_keys}` (and optionally
@@ -223,8 +227,8 @@ session". It does not add the user's rights to the server's:
 - **Management passes through a server only for an administrator.** The user must hold an
   administrative role themselves, and the service's policy must let this server pass that verb on.
   This is how an administrator manages secrets through a node.
-- A token-for-the-caller secret (the reference server's `token_exchange`) is minted for the grant's
-  **user**, never for the server.
+- Material that depends on the caller (the reference server's `token_exchange`) is minted for the
+  grant's **user**, never for the server.
 
 ### Actors
 

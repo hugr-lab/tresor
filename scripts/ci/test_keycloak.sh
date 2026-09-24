@@ -25,6 +25,7 @@ done
 
 cleanup() {
 	[ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null || true
+	[ -n "${echo_pid:-}" ] && kill "$echo_pid" 2>/dev/null || true
 	[ "${KEEP_KEYCLOAK:-0}" = "1" ] || "${compose[@]}" down >/dev/null 2>&1 || true
 	rm -rf "$work"
 }
@@ -44,8 +45,14 @@ echo "test_keycloak: building and starting tresor-server"
 # the test config, on the ports of this run
 sed -e "s/127.0.0.1:18480/127.0.0.1:$kc_port/g" -e "s/127.0.0.1:18443/127.0.0.1:$server_port/g" \
 	"$root/server/testdata/keycloak/server.yaml" >"$work/server.yaml"
-"$work/tresor-server" -config "$work/server.yaml" >"$work/server.log" 2>&1 &
+# the service's exchange client secret (specs/010): from the environment, as the config names it
+TRESOR_EXCHANGE_SECRET=svc-secret "$work/tresor-server" -config "$work/server.yaml" >"$work/server.log" 2>&1 &
 server_pid=$!
+# a downstream http API that answers whom a bearer token was minted for (specs/010)
+python3 "$root/test/keycloak/echo.py" --port-file "$work/echo.port" &
+echo_pid=$!
+for _ in $(seq 50); do [ -s "$work/echo.port" ] && break; sleep 0.1; done
+export TRESOR_KC_ECHO="127.0.0.1:$(cat "$work/echo.port")"
 for _ in $(seq 50); do curl -sf "http://127.0.0.1:$server_port/.well-known/duckdb-secrets" >/dev/null && break; sleep 0.2; done
 if ! kill -0 "$server_pid" 2>/dev/null || ! curl -sf "http://127.0.0.1:$server_port/.well-known/duckdb-secrets" >/dev/null; then
 	cat "$work/server.log" >&2
@@ -75,6 +82,23 @@ curl -sf -o /dev/null -X PUT "http://127.0.0.1:$server_port/v1/secrets/conforman
 	echo "test_keycloak: granting the conformance secret failed" >&2
 	exit 1
 }
+# a token-for-the-caller secret (specs/010): an http secret for the echo API, minted per caller; the node's role
+# and the analysts may use it. Put through the protocol: DuckDB's own CREATE SECRET knows no such provider
+curl -sf -o /dev/null -X PUT "http://127.0.0.1:$server_port/v1/secrets/kc_echo" \
+	-H "Authorization: Bearer $etl_token" -H 'Content-Type: application/json' -H 'If-None-Match: *' \
+	-d '{"type":"http","provider":"token_exchange","scope":["http://'"$TRESOR_KC_ECHO"'"],
+	     "params":{"audience":"echo-api"},"redact_keys":[]}' || {
+	echo "test_keycloak: seeding the minted secret failed" >&2
+	exit 1
+}
+for role in nodes analysts; do
+	curl -sf -o /dev/null -X PUT "http://127.0.0.1:$server_port/v1/secrets/kc_echo/grants/$role" \
+		-H "Authorization: Bearer $etl_token" -H 'Content-Type: application/json' \
+		-d '{"principal":"role:'"$role"'","verbs":["use"]}' || {
+		echo "test_keycloak: granting the minted secret failed" >&2
+		exit 1
+	}
+done
 export TRESOR_CONFORMANCE_SECRET=conformance_lake TRESOR_CONFORMANCE_SECRET_TYPE=s3
 export TRESOR_CONFORMANCE_SECRET_PATH=s3://conformance-lake/x.parquet
 export TRESOR_CONFORMANCE_SECRET_KEY=key_id TRESOR_CONFORMANCE_SECRET_VALUE=AKIA-CONFORMANCE
