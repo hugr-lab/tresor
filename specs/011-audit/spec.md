@@ -183,6 +183,29 @@ ones refused.
   - the logout at DETACH is on the instance's logger;
   - the ext-common pin moves to `v0.7.0` before merge (and CLAUDE.md's pin table with it).
 
+## Checked live (2026-09-24)
+
+`scripts/dev/otel_live.sh` (a bench, not CI) runs tresor, duckdb-acl (72734f6) and acl-otel (main, its
+spec 011) in one DuckDB against Keycloak, the reference server and acl-otel's local stack. alice's
+statement, under her acl session with `SET acl_traceparent`, reads the echo API with a token minted for
+her. What arrived:
+
+- **Tempo:** in the caller's trace, `acl SELECT` (acl-otel) and `tresor.lookup` (scope `tresor`), both
+  children of the caller's span.
+- **Loki:** the records login, session_grant (obtained), lookup, session_grant (revoked), logout.
+- **The reference server's log:** both service calls of the statement (the list, the material), each
+  with the same `trace_id` and the caller's span as `parent_span_id`.
+- **The echo API:** `aud=echo-api user=alice`.
+
+Found and fixed here: `principal` was whoami's bare `sub`. It is now `subject:<issuer>|<sub>`, as
+the protocol spells a principal and as `user` already was.
+
+Seen, for acl and acl-otel:
+- `tresor.lookup` is a sibling of `acl SELECT`, not its child, because acl publishes the caller's
+  `traceparent`, not its own statement span;
+- acl-otel's `acl_otel_status().tresor` counted 5 events but `records.sent` and `spans.sent` 0,
+  while Loki and Tempo had them.
+
 ## Follow-ups
 
 - acl-otel consumes `TRSA` 1 (task handed to duckdb-acl): OTLP logs, spans parented by the event's

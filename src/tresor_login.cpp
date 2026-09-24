@@ -661,9 +661,17 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 	{
 		JsonDoc doc(whoami.body);
 		auto root = doc.Root();
+		// the principal as the protocol spells one (`subject:<issuer>|<sub>`), as the audit's `user` is: whoami
+		// answers the bare `sub` and its issuer; a subject that already names its kind is kept
 		auto subject = root && yyjson_is_obj(root) ? yyjson_obj_get(root, "subject") : nullptr;
+		auto issuer = root && yyjson_is_obj(root) ? yyjson_obj_get(root, "issuer") : nullptr;
 		if (subject && yyjson_is_str(subject)) {
-			session->SetSubject(yyjson_get_str(subject));
+			string sub = yyjson_get_str(subject);
+			bool named = StringUtil::StartsWith(sub, "subject:") || StringUtil::StartsWith(sub, "client:");
+			if (!named && issuer && yyjson_is_str(issuer) && yyjson_get_len(issuer) > 0) {
+				sub = "subject:" + string(yyjson_get_str(issuer)) + "|" + sub;
+			}
+			session->SetSubject(std::move(sub));
 		}
 	}
 	return session;
