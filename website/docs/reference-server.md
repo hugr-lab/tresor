@@ -51,7 +51,8 @@ issuers:
     client_id: duckdb                    # the public client people log in with
     scopes: [openid]
     human_flows: [authorization_code, device_code]
-    service_flows: [client_credentials]
+    service_flows: [client_credentials, private_key_jwt]   # also: federated, managed_identity
+    # audience_parameter: true           # Auth0: clients send audience=<audience> (tresor specs/013)
     roles_claim: realm_access.roles      # Keycloak; Entra/Okta: roles
     groups_claim: groups
     service: {claim: client_id}          # what marks a client-credentials token (see below)
@@ -186,3 +187,27 @@ to include the person flow. To include the secrets case, seed a secret the confo
 use and name it: `TRESOR_CONFORMANCE_SECRET`, `_SECRET_TYPE`, `_SECRET_PATH` (covered by its scope),
 `_SECRET_KEY` and `_SECRET_VALUE` (a VARCHAR parameter). `scripts/ci/test_keycloak.sh` runs the whole suite against the reference
 server and Keycloak in docker.
+
+## Entra ID, checked live (tresor specs/013)
+
+`scripts/dev/entra_live.sh` runs tresor against an Entra tenant through this server. It takes
+everything from the environment and never writes a credential to the repository. It expects three
+app registrations:
+
+| App | What | Settings |
+| --- | --- | --- |
+| the service's API | the audience | an Application ID URI (`api://duckdb-secrets`); a delegated scope `access_as_user`; an app role (e.g. `nodes`); `accessTokenAcceptedVersion: 2` in the manifest; the optional access-token claim `idtyp` (how the server tells an app's token from a person's) |
+| people's client | a public client | "Allow public client flows"; a mobile/desktop redirect `http://127.0.0.1/callback` (Entra ignores a loopback port, not the path); the API permission `access_as_user` |
+| the node | a confidential client | a certificate (upload the `.crt`); optionally a client secret; the API's app role granted, with admin consent |
+
+```sh
+export ENTRA_TENANT=<tenant id> ENTRA_API_CLIENT_ID=<the API app's client id> ENTRA_API_URI=api://duckdb-secrets \
+       ENTRA_PEOPLE_CLIENT_ID=<people's client id> ENTRA_NODE_CLIENT_ID=<node client id> \
+       ENTRA_NODE_KEY_FILE=node.key ENTRA_NODE_CERT_FILE=node.crt   # ENTRA_NODE_SECRET optional
+scripts/dev/entra_live.sh
+```
+
+A v2 token's `aud` is the API app's client id, so that is the server's `audience` (and a managed
+identity's `AUDIENCE`); the URI builds the scopes.
+It prints, per step, the login flow, the subject and the roles, and the server's request lines. It never
+prints a token.

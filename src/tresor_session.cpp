@@ -33,13 +33,18 @@ string LoginFlowName(LoginFlow flow) {
 		return "token";
 	case LoginFlow::REMEMBERED:
 		return "remembered";
+	case LoginFlow::FEDERATED:
+		return "federated";
+	case LoginFlow::MANAGED_IDENTITY:
+		return "managed_identity";
 	}
 	return "unknown";
 }
 
-TresorSession::TresorSession(ServiceInfo info_p, LoginFlow flow_p, oidc::TokenSet tokens_p, string client_secret_p)
+TresorSession::TresorSession(ServiceInfo info_p, LoginFlow flow_p, oidc::TokenSet tokens_p,
+                             ServiceCredential credential_p)
     : info(std::move(info_p)), flow(flow_p), tokens(std::move(tokens_p)), issued_at(NowSeconds()),
-      client_secret(std::move(client_secret_p)) {
+      credential(std::move(credential_p)) {
 }
 
 string TresorSession::AccessToken(bool force) {
@@ -105,8 +110,16 @@ string TresorSession::AccessToken(bool force) {
 			break;
 		}
 	case LoginFlow::CLIENT_CREDENTIALS:
-		renewed = oidc::ClientCredentials(info.endpoints, info.client_id, client_secret, info.scope);
+	case LoginFlow::FEDERATED:
+	case LoginFlow::MANAGED_IDENTITY: {
+		// minted again from what the secret names: a key's or a token's file read now (a rotated one included)
+		std::map<std::string, std::string> extra;
+		if (info.audience_parameter && !info.audience.empty()) {
+			extra["audience"] = info.audience;
+		}
+		renewed = credential.Mint(info.endpoints, info.scope, extra);
 		break;
+	}
 	case LoginFlow::TOKEN:
 		throw InvalidInputException("tresor: the token of the tresor secret for %s has expired or was refused - "
 		                            "replace the secret and ATTACH again",
@@ -174,35 +187,52 @@ ServiceResponse TresorSession::Call(const string &method, const string &path, co
 }
 
 oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bool on_behalf_of, const string &scope) {
-	string secret;
+	ServiceCredential proof; // paths and ids: copied under the lock - the files are read and the IdP called outside it
 	{
 		lock_guard<mutex> guard(lock);
-		if (closed || flow != LoginFlow::CLIENT_CREDENTIALS) {
+		if (closed || (flow != LoginFlow::CLIENT_CREDENTIALS && flow != LoginFlow::FEDERATED)) {
 			oidc::TokenSet refused;
-			refused.error = closed ? "the session is closed" : "only a client_credentials login exchanges tokens";
+			refused.error =
+			    closed ? "the session is closed" : "only a client_credentials or federated login exchanges tokens";
 			return refused;
 		}
-		secret = client_secret;
+		proof = credential;
 	}
+	oidc::ClientAuth auth;
 	oidc::TokenSet out;
+	string why;
+	if (!proof.Auth(auth, why)) {
+		proof.Wipe();
+		out.error = why;
+		out.error_code = "invalid_client";
+		return out;
+	}
 	if (on_behalf_of) {
-		out = oidc::OnBehalfOf(info.endpoints, info.client_id, secret, subject_token, scope);
+		out = oidc::OnBehalfOf(info.endpoints, auth, subject_token, scope);
 	} else {
 		// asked with a refresh token (specs/010): Keycloak binds the exchanged token to the user's SSO session
 		// only then, and the service's own exchange for a downstream audience (a token for the user) needs that
 		// session. The refresh token itself is dropped at once - the node never renews a user's token
-		out =
-		    oidc::TokenExchange(info.endpoints, info.client_id, secret, subject_token, info.audience, scope, "", true);
+		out = oidc::TokenExchange(info.endpoints, auth, subject_token, info.audience, scope, "", true);
 		if (!out.Ok() && out.error_code != "invalid_client" && out.error_code != "invalid_grant") {
 			// an IdP that issues no refresh token by exchange, whatever it answers (its wording and code vary, and
 			// a strict RFC 8693 answer is refused as invalid_token_type): the plain exchange. A bad client or a
-			// dead subject token would fail that the same way
-			out = oidc::TokenExchange(info.endpoints, info.client_id, secret, subject_token, info.audience, scope);
+			// dead subject token would fail that the same way. The proof afresh: a federated assertion may be
+			// single-use at the IdP (a key signs anew anyway)
+			WipeAuth(auth);
+			if (proof.Auth(auth, why)) {
+				out = oidc::TokenExchange(info.endpoints, auth, subject_token, info.audience, scope);
+			} else {
+				out = oidc::TokenSet();
+				out.error = why;
+				out.error_code = "invalid_client";
+			}
 		}
 	}
 	std::fill(out.refresh_token.begin(), out.refresh_token.end(), '\0');
 	out.refresh_token.clear();
-	std::fill(secret.begin(), secret.end(), '\0');
+	WipeAuth(auth);
+	proof.Wipe();
 	return out;
 }
 
@@ -259,7 +289,7 @@ void TresorSession::Close() {
 	lock_guard<mutex> guard(lock);
 	closed = true;
 	tokens = oidc::TokenSet();
-	client_secret.clear();
+	credential.Wipe();
 }
 
 } // namespace tresor

@@ -163,7 +163,7 @@ Row Forget(ClientContext &context, const tresor::LoginKey &key,
 		if (service.empty()) {
 			endpoints = session.Info().endpoints;
 			service = entry.first;
-			login = tresor::LoginFlowName(session.Flow());
+			login = session.LoginName();
 		}
 		auto held = session.LogOff();
 		keep(held);
