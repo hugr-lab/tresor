@@ -22,7 +22,7 @@ ATTACH prefix works).
   | --- | --- | --- |
   | duckdb | submodule `duckdb/` | branch `v2.0-cyanoptera`, commit = duckdb-acl's |
   | extension-ci-tools | submodule `extension-ci-tools/` | `main`, commit = duckdb-acl's |
-  | duckdb-ext-common | submodule `duckdb-ext-common/` | tag `v0.7.0` (TRSA 1, specs/011); duckdb-acl follows |
+  | duckdb-ext-common | submodule `duckdb-ext-common/` | tag `v0.7.1` (TRSA 1, specs/011), = duckdb-acl's |
   | distribution | `.github/workflows/distribution.yml` | `@main`, `duckdb_version: v2.0-cyanoptera` |
   | duckdb-acl (tests only) | `ACL_COMMIT` in `scripts/ci/acl_checkout.sh` | a duckdb-acl commit whose duckdb is ours |
 
