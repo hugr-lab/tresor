@@ -25,7 +25,7 @@ It is **not meant for production**: one process, one encrypted file, no high ava
 - Delegation: grant exchange, the `Delegation` header, and actor policy (tresor specs/009: under a
   grant a server uses its own grants for the user, and passes management through only for admins).
 
-Dynamic secrets are implemented for one kind, a token for the caller (`token_exchange`, below); others (`capabilities.dynamic` is false). Issuers must be https unless they are on loopback: their signing keys are
+Dynamic secrets are implemented for one kind: a token for the caller (`token_exchange`, below). Issuers must be https unless they are on loopback: their signing keys are
 fetched from them.
 
 ## Run it
@@ -112,6 +112,16 @@ its own client), and serves it as a dynamic secret:
   exchange the service exchanges the user's token for each audience the server may use, with a
   refresh token kept with the grant in memory, and renews from it while the user's IdP session
   lives.
+
+- **Failures:** a lasting refusal is `403 mint_refused`, an outage `503`.
+- **An outage at the grant's exchange** does not spoil the session. The grant keeps the user's
+  token for this service until that token expires (minutes), and mints from it later, as it does
+  for a secret granted to the server after the session opened.
+- **A minted token is checked:** its `aud` must name the audience asked for, and never this service
+  itself. At PUT, an `audience` equal to this service's own is refused.
+- **Refresh tokens are dropped, not revoked at the IdP** (RFC 7009), when a grant ends. They stay
+  valid at the IdP until the user's SSO session ends, and renewing keeps that session from going
+  idle.
 
 The issuer names the service's client, whose secret comes from the environment:
 

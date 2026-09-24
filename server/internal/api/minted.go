@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -24,10 +25,15 @@ import (
 const (
 	tokenExchangeProvider = "token_exchange"
 	mintMargin            = 30 * time.Second // a minted token is renewed this long before it expires
+	mintNoExpiry          = 60 * time.Second // a minted token the IdP gave no expiry is reused this long
+	grantMintDeadline     = 10 * time.Second // all of a grant's exchanges, together
+	refreshTimeout        = 15 * time.Second
 )
 
 // tokenParam is where a minted token goes, per secret type; a type not listed cannot be minted.
 var tokenParam = map[string]string{"http": "bearer_token", "quack": "token"}
+
+var errNoExchange = errors.New("this service cannot mint tokens for the caller's issuer (no exchange client)")
 
 func isMinted(sec *store.Secret) bool { return sec.Provider == tokenExchangeProvider }
 
@@ -43,38 +49,98 @@ func mintTarget(params map[string]json.RawMessage) (audience, scope string) {
 	return str("audience"), str("scope")
 }
 
-// validMinted checks a token_exchange secret at PUT: a known type, an audience, no token of its own.
-func validMinted(typ string, params map[string]json.RawMessage) error {
+// validMinted checks a token_exchange secret at PUT: a known type, a text audience that is not this
+// service's own, a text scope if any, and no token of its own.
+func (s *Server) validMinted(typ string, params map[string]json.RawMessage) error {
 	param, ok := tokenParam[strings.ToLower(typ)]
 	if !ok {
 		return fmt.Errorf("a %s secret has no token parameter to mint (http, quack)", tokenExchangeProvider)
 	}
-	if audience, _ := mintTarget(params); audience == "" {
+	audience, scope := mintTarget(params)
+	if audience == "" {
 		return fmt.Errorf("a %s secret names its audience (a string parameter)", tokenExchangeProvider)
 	}
-	if _, has := params[param]; has {
-		return fmt.Errorf("a %s secret stores no %s: the service mints it", tokenExchangeProvider, param)
+	if raw, has := params["scope"]; has && scope == "" && string(raw) != `""` {
+		return fmt.Errorf("a %s secret's scope is a string", tokenExchangeProvider)
+	}
+	for _, is := range s.cfg.Issuers {
+		if audience == is.Audience {
+			// a user's token for this service, in a secret sent to another server, could be replayed here
+			return fmt.Errorf("a %s secret's audience is another service's, never this one's", tokenExchangeProvider)
+		}
+	}
+	for key := range params {
+		if strings.EqualFold(key, param) {
+			return fmt.Errorf("a %s secret stores no %s: the service mints it", tokenExchangeProvider, param)
+		}
 	}
 	return nil
 }
 
-// mintKey identifies a minted token: the audience and the scope.
+// mintKey identifies a minted token: the audience and the scope - all a token depends on.
 func mintKey(audience, scope string) string { return audience + "\x00" + scope }
 
-// grantTokens are a grant's minted tokens (in memory only, with the grant): the user's, per audience.
-type grantTokens struct {
+// mintEntry is one audience's token under a grant; its own lock serialises that audience's mints and
+// refreshes (refresh tokens rotate) without holding up the grant's other audiences.
+type mintEntry struct {
 	mu     sync.Mutex
-	tokens map[string]*mint.Token
-	failed map[string]string // audience -> why the grant's exchange for it failed (never a token)
+	token  *mint.Token
+	failed string // why minting for the user failed for good (the IdP refused), never a token
 }
 
-// direct caches the tokens minted for callers reading directly, until shortly before they expire.
+// grantTokens are a grant's minted tokens (in memory only, with the grant): the user's, per audience. The
+// grant's subject token is kept until it expires: a secret the IdP could not mint at the exchange (an outage)
+// or one granted to the server since is minted from it lazily, while it lives.
+type grantTokens struct {
+	mu         sync.Mutex
+	entries    map[string]*mintEntry
+	subject    string
+	subjectExp time.Time
+}
+
+func (g *grantTokens) entry(key string) *mintEntry {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	e := g.entries[key]
+	if e == nil {
+		e = &mintEntry{}
+		g.entries[key] = e
+	}
+	return e
+}
+
+// liveSubject is the grant's subject token while it lives; an expired one is dropped.
+func (g *grantTokens) liveSubject(now time.Time) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.subject != "" && now.Before(g.subjectExp) {
+		return g.subject
+	}
+	g.subject = ""
+	return ""
+}
+
+// directCache caches the tokens minted for callers reading directly, until shortly before they expire.
 type directCache struct {
 	mu     sync.Mutex
-	tokens map[string]*mint.Token // caller owner \x00 secret \x00 version -> token
+	tokens map[string]*mint.Token // caller owner \x00 audience \x00 scope -> token
 }
 
-func (s *Server) mintClient(ctx context.Context, issuer string) (*mint.Client, error) {
+// mintProblem is a minted secret's refusal: status, type and a detail with no token in it.
+type mintProblem struct {
+	status       int
+	kind, detail string
+}
+
+func refusedMint(detail string) *mintProblem {
+	return &mintProblem{http.StatusForbidden, "mint_refused", detail}
+}
+
+func unavailableMint(detail string) *mintProblem {
+	return &mintProblem{http.StatusServiceUnavailable, "service_unavailable", detail}
+}
+
+func (s *Server) mintClient(ctx context.Context, issuer string) (*mint.Client, *mintProblem) {
 	var ex *config.ExchangeClient
 	for i := range s.cfg.Issuers {
 		if config.IssuerKey(s.cfg.Issuers[i].Issuer) == config.IssuerKey(issuer) {
@@ -82,119 +148,209 @@ func (s *Server) mintClient(ctx context.Context, issuer string) (*mint.Client, e
 		}
 	}
 	if ex == nil {
-		return nil, errors.New("this service cannot mint tokens for the caller's issuer (no exchange client)")
+		return nil, &mintProblem{http.StatusUnprocessableEntity, "invalid_secret", errNoExchange.Error()}
 	}
-	url, err := s.verifier.TokenURL(ctx, issuer)
+	tokenURL, err := s.verifier.TokenURL(ctx, issuer)
 	if err != nil {
-		return nil, err
+		return nil, unavailableMint("the identity provider's token endpoint is not known yet")
 	}
-	return &mint.Client{TokenURL: url, ClientID: ex.ClientID, ClientSecret: ex.ClientSecret, Now: s.now}, nil
+	// the client secret goes there: https, or http only to this machine (as the issuers themselves)
+	if u, err := url.Parse(tokenURL); err != nil ||
+		!(u.Scheme == "https" || (u.Scheme == "http" && config.IsLoopback(u.Hostname()))) {
+		return nil, unavailableMint("the identity provider's token endpoint is not https")
+	}
+	return &mint.Client{TokenURL: tokenURL, ClientID: ex.ClientID, ClientSecret: ex.ClientSecret, Now: s.now}, nil
+}
+
+// checkMinted refuses a token not meant for the audience asked, or meant for this service itself: an IdP
+// that ignored the audience must not have a token for the service end up in a secret sent elsewhere.
+func (s *Server) checkMinted(token *mint.Token, audience string) error {
+	auds, isJWT := mint.Audiences(token.Access)
+	if !isJWT {
+		return nil // an opaque token: its audience is the IdP's word
+	}
+	if !slices.Contains(auds, audience) {
+		return errors.New("the identity provider minted a token not meant for " + audience)
+	}
+	for _, is := range s.cfg.Issuers {
+		if slices.Contains(auds, is.Audience) {
+			return errors.New("the identity provider minted a token meant for this service")
+		}
+	}
+	return nil
 }
 
 // mintAtGrant: at a grant's exchange, the user's token is exchanged - with a refresh token - for every
-// audience the actor may mint; the results stay with the grant.
+// audience the actor may mint, concurrently and under one deadline; the results stay with the grant. The
+// subject token is kept until it expires, for what could not be minted now.
 func (s *Server) mintAtGrant(ctx context.Context, gr *grant, subject string, actor *auth.Caller) {
-	gr.minted = &grantTokens{tokens: map[string]*mint.Token{}, failed: map[string]string{}}
-	var client *mint.Client
-	for _, sec := range s.store.List() {
-		if !isMinted(sec) || !slices.Contains(s.actorVerbs(actor.Client(), actor.Issuer), "use") ||
-			!usable(sec, actor.Principals) {
-			continue
-		}
-		audience, scope := mintTarget(sec.Params)
-		key := mintKey(audience, scope)
-		if _, done := gr.minted.tokens[key]; done {
-			continue
-		}
-		if client == nil {
-			var err error
-			if client, err = s.mintClient(ctx, gr.user.Issuer); err != nil {
-				gr.minted.failed[key] = err.Error()
-				continue
-			}
-		}
-		token, err := client.Exchange(ctx, subject, audience, scope, true)
-		if err != nil {
-			s.log.Warn("minting at a grant failed", "actor", actor.Client(), "user", gr.user.Owner(),
-				"audience", audience, "reason", err.Error())
-			gr.minted.failed[key] = err.Error()
-			continue
-		}
-		gr.minted.tokens[key] = token
+	gr.minted = &grantTokens{entries: map[string]*mintEntry{}, subject: subject, subjectExp: gr.user.ExpiresAt}
+	if !slices.Contains(s.actorVerbs(actor.Client(), actor.Issuer), "use") {
+		return
 	}
+	targets := map[string][2]string{}
+	for _, sec := range s.store.List() {
+		if isMinted(sec) && usable(sec, actor.Principals) {
+			audience, scope := mintTarget(sec.Params)
+			targets[mintKey(audience, scope)] = [2]string{audience, scope}
+		}
+	}
+	if len(targets) == 0 {
+		return
+	}
+	client, problem := s.mintClient(ctx, gr.user.Issuer)
+	if problem != nil {
+		return // minted lazily from the subject token, or refused at the read with the reason
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), grantMintDeadline)
+	defer cancel()
+	var wg sync.WaitGroup
+	for key, target := range targets {
+		entry := gr.minted.entry(key)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			token, err := client.Exchange(ctx, subject, target[0], target[1], true)
+			if err == nil {
+				err = s.checkMinted(token, target[0])
+			}
+			entry.mu.Lock()
+			defer entry.mu.Unlock()
+			switch {
+			case err == nil:
+				entry.token = token
+			case isRefusal(err):
+				entry.failed = err.Error() // the IdP's word, redacted; lazily retried only for outages
+				fallthrough
+			default:
+				s.log.Warn("minting at a grant failed", "actor", actor.Client(), "user", gr.user.Owner(),
+					"audience", target[0], "reason", err.Error())
+			}
+		}()
+	}
+	wg.Wait()
 }
 
-// mintedToken is the token a minted secret's material carries for this request's caller; an error is the
-// problem to answer (status, type, detail).
-func (s *Server) mintedToken(r *http.Request, c *auth.Caller, sec *store.Secret) (*mint.Token, int, string, string) {
+// isRefusal: the IdP answered no (a lasting refusal), as opposed to not answering (an outage).
+func isRefusal(err error) bool {
+	var e *mint.Error
+	return errors.As(err, &e) && !e.Transient()
+}
+
+// mintedToken is the token a minted secret's material carries for this request's caller, or the problem.
+func (s *Server) mintedToken(r *http.Request, c *auth.Caller, sec *store.Secret) (*mint.Token, *mintProblem) {
 	audience, scope := mintTarget(sec.Params)
 	key := mintKey(audience, scope)
 	now := s.now()
+	fresh := func(t *mint.Token) bool { return t != nil && t.Expiry.Sub(now) > mintMargin }
 	if gr := grantOf(r); gr != nil {
-		// under a grant: the grant's user's token - minted at the exchange, renewed from its refresh token
-		if gr.minted == nil {
-			return nil, http.StatusForbidden, "no_verb", "this grant carries no minted tokens"
-		}
-		gr.minted.mu.Lock()
-		defer gr.minted.mu.Unlock()
-		token := gr.minted.tokens[key]
-		if token == nil {
-			if why, failed := gr.minted.failed[key]; failed {
-				return nil, http.StatusForbidden, "no_verb", "minting for the user failed at the grant: " + why
-			}
-			return nil, http.StatusForbidden, "no_verb", "the grant predates this secret: a new session picks it up"
-		}
-		if token.Expiry.IsZero() || token.Expiry.Sub(now) > mintMargin {
-			return token, 0, "", ""
-		}
-		if token.Refresh == "" {
-			return nil, http.StatusForbidden, "no_verb", "the user's token expired and cannot be renewed"
-		}
-		client, err := s.mintClient(r.Context(), gr.user.Issuer)
-		if err == nil {
-			var fresh *mint.Token
-			if fresh, err = client.Refresh(r.Context(), token.Refresh); err == nil {
-				gr.minted.tokens[key] = fresh
-				return fresh, 0, "", ""
-			}
-		}
-		if mint.IsInvalidGrant(err) {
-			delete(gr.minted.tokens, key)
-			return nil, http.StatusForbidden, "no_verb", "the user's session at the identity provider has ended"
-		}
-		s.log.Warn("renewing a minted token failed", "user", gr.user.Owner(), "audience", audience, "reason", err.Error())
-		return nil, http.StatusServiceUnavailable, "service_unavailable", "the identity provider did not renew the token"
+		return s.mintedForGrant(r, gr, key, audience, scope, fresh)
 	}
-	// directly: the caller's own token, exchanged on demand; cached until shortly before it expires
-	cacheKey := c.Owner() + "\x00" + sec.Name + "\x00" + fmt.Sprint(sec.Version)
+	// directly: the caller's own token, exchanged on demand; cached per caller and audience until shortly
+	// before it expires
+	cacheKey := c.Owner() + "\x00" + key
 	s.direct.mu.Lock()
-	if token := s.direct.tokens[cacheKey]; token != nil && (token.Expiry.IsZero() || token.Expiry.Sub(now) > mintMargin) {
+	if token := s.direct.tokens[cacheKey]; fresh(token) {
 		s.direct.mu.Unlock()
-		return token, 0, "", ""
+		return token, nil
 	}
 	s.direct.mu.Unlock()
-	client, err := s.mintClient(r.Context(), c.Issuer)
-	if err != nil {
-		return nil, http.StatusUnprocessableEntity, "invalid_secret", err.Error()
+	client, problem := s.mintClient(r.Context(), c.Issuer)
+	if problem != nil {
+		return nil, problem
 	}
 	token, err := client.Exchange(r.Context(), bearerOf(r), audience, scope, false)
+	if err == nil {
+		err = s.checkMinted(token, audience)
+	}
 	if err != nil {
 		s.log.Warn("minting for the caller failed", "caller", c.Owner(), "audience", audience, "reason", err.Error())
-		return nil, http.StatusForbidden, "no_verb", "the identity provider refused to mint a token for the caller: " +
-			err.Error()
+		if isRefusal(err) || strings.Contains(err.Error(), "minted a token") {
+			return nil, refusedMint("the identity provider refused to mint a token for the caller: " + err.Error())
+		}
+		return nil, unavailableMint("the identity provider did not answer")
+	}
+	if token.Expiry.IsZero() {
+		token.Expiry = now.Add(mintNoExpiry)
 	}
 	s.direct.mu.Lock()
 	if s.direct.tokens == nil {
 		s.direct.tokens = map[string]*mint.Token{}
 	}
 	for k, t := range s.direct.tokens { // expired entries go: a bounded cache
-		if !t.Expiry.IsZero() && !t.Expiry.After(now) {
+		if !t.Expiry.After(now) {
 			delete(s.direct.tokens, k)
 		}
 	}
 	s.direct.tokens[cacheKey] = token
 	s.direct.mu.Unlock()
-	return token, 0, "", ""
+	return token, nil
+}
+
+// mintedForGrant: under a grant, the grant's user's token - minted at the exchange (or lazily from the
+// subject token while it lives), renewed from its refresh token.
+func (s *Server) mintedForGrant(r *http.Request, gr *grant, key, audience, scope string,
+	fresh func(*mint.Token) bool) (*mint.Token, *mintProblem) {
+	if gr.minted == nil {
+		return nil, refusedMint("this grant carries no minted tokens")
+	}
+	entry := gr.minted.entry(key)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	if fresh(entry.token) || (entry.token != nil && entry.token.Expiry.IsZero()) {
+		return entry.token, nil
+	}
+	client, problem := s.mintClient(r.Context(), gr.user.Issuer)
+	if problem != nil {
+		return nil, problem
+	}
+	// detached from the request: a refresh token the IdP rotated must not be lost with a dropped connection
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), refreshTimeout)
+	defer cancel()
+	if entry.token != nil && entry.token.Refresh != "" {
+		renewed, err := client.Refresh(ctx, entry.token.Refresh)
+		if err == nil {
+			if err = s.checkMinted(renewed, audience); err == nil {
+				entry.token = renewed
+				return renewed, nil
+			}
+		}
+		if mint.IsInvalidGrant(err) {
+			entry.token = nil
+			entry.failed = "the user's session at the identity provider has ended"
+			return nil, refusedMint(entry.failed)
+		}
+		s.log.Warn("renewing a minted token failed", "user", gr.user.Owner(), "audience", audience, "reason", err.Error())
+		if !isRefusal(err) {
+			return nil, unavailableMint("the identity provider did not renew the token")
+		}
+		entry.token, entry.failed = nil, err.Error()
+		return nil, refusedMint("renewing the user's token was refused: " + err.Error())
+	}
+	if entry.failed != "" {
+		return nil, refusedMint("minting for the user was refused: " + entry.failed)
+	}
+	// nothing minted yet (an outage at the exchange, or a secret granted to the server since): from the
+	// subject token, while it lives
+	subject := gr.minted.liveSubject(s.now())
+	if subject == "" {
+		return nil, refusedMint("the grant's user token has expired: a new session mints it")
+	}
+	token, err := client.Exchange(ctx, subject, audience, scope, true)
+	if err == nil {
+		err = s.checkMinted(token, audience)
+	}
+	if err != nil {
+		s.log.Warn("minting for the grant's user failed", "user", gr.user.Owner(), "audience", audience,
+			"reason", err.Error())
+		if isRefusal(err) || strings.Contains(err.Error(), "minted a token") {
+			entry.failed = err.Error()
+			return nil, refusedMint("minting for the user was refused: " + err.Error())
+		}
+		return nil, unavailableMint("the identity provider did not answer")
+	}
+	entry.token = token
+	return token, nil
 }
 
 // bearerOf is the raw bearer token of the request (verified already by authed).

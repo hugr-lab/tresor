@@ -158,8 +158,14 @@ type>", "value": <JSON>}`; a bare string is shorthand for `VARCHAR`. Nested valu
 A client caches the material until shortly before that time.
 
 A dynamic secret's material may depend on **the caller**, for example a token minted for them for a
-downstream server. Under a delegation grant, such material is the **grant's user's**, never the
-server's own. A client caches it per caller: tresor keeps each acl session's apart from the node's.
+downstream server:
+- Under a delegation grant, such material is the **grant's user's**, never the server's own.
+- A client MUST NOT serve material fetched for one caller to another: not across users, and not
+  between a server's own work and a user's session.
+- A service that cannot produce it answers `403 mint_refused` for a lasting refusal (the user's
+  session at the identity provider has ended; the IdP refused), and `503 service_unavailable` for
+  an outage. A client MUST fail the lookup that needs it with the service's detail, and MUST NOT go
+  on without it.
 
 ### Conditional writes
 
@@ -284,6 +290,7 @@ in the body:
 | `unauthenticated` | 401 | token missing, invalid or expired — refresh and retry once |
 | `no_verb` | 403 | the caller's roles do not hold the verb |
 | `actor_not_allowed` | 403 | the server may not act for users for this verb |
+| `mint_refused` | 403 | material minted for the caller could not be minted (the detail says why) |
 | `not_found` | 404 | no such secret (or not visible) |
 | `precondition_failed` | 412 | `If-None-Match` / `If-Match` not met |
 | `invalid_secret` | 422 | the secret does not validate |

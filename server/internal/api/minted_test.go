@@ -44,6 +44,9 @@ func TestMintedValidation(t *testing.T) {
 		"a token of its own":   `{"type":"http","provider":"token_exchange","params":{"audience":"x","bearer_token":"t"}}`,
 		"quack with its token": `{"type":"quack","provider":"token_exchange","params":{"audience":"x","token":"t"}}`,
 		"an audience not text": `{"type":"http","provider":"token_exchange","params":{"audience":{"type":"INTEGER","value":1}}}`,
+		"this service's own":   `{"type":"http","provider":"token_exchange","params":{"audience":"duckdb-secrets"}}`,
+		"a scope not text":     `{"type":"http","provider":"token_exchange","params":{"audience":"x","scope":{"type":"INTEGER","value":1}}}`,
+		"its token, any case":  `{"type":"http","provider":"token_exchange","params":{"audience":"x","BEARER_TOKEN":"t"}}`,
 	} {
 		if r := f.do("PUT", "/v1/secrets/m", f.admin, body); r.status != 422 {
 			t.Errorf("%s: %d %s", name, r.status, r.body)
@@ -120,18 +123,30 @@ func TestMintedUnderGrant(t *testing.T) {
 	// the user's IdP session ends: nothing more is minted for her
 	f.idp.Kill()
 	f.srv.now = func() time.Time { return time.Now().Add(590 * time.Second) }
-	if _, _, r := f.mintedMaterial(node, "Delegation", g); r.status != 403 ||
+	if _, _, r := f.mintedMaterial(node, "Delegation", g); r.status != 403 || r.problemType(t) != "mint_refused" ||
 		!strings.Contains(string(r.body), "session at the identity provider has ended") {
 		t.Fatalf("after the IdP session: %d %s", r.status, r.body)
 	}
+	if _, _, r := f.mintedMaterial(node, "Delegation", g); !strings.Contains(string(r.body), "session at the identity provider has ended") {
+		t.Fatalf("and it stays said: %d %s", r.status, r.body)
+	}
 	f.srv.now = time.Now
-	// a secret the node was granted after the grant was made: a new session picks it up
+	// a secret the node was granted after the grant was made: minted lazily from the grant's subject token
+	// while it lives (an outage at the exchange heals the same way); after it, a new session mints it
 	f.do("PUT", "/v1/secrets/later", f.admin, strings.Replace(mintedSecret, "echo-api", "later-api", 1))
 	f.do("PUT", "/v1/secrets/later/grants/n", f.admin, `{"principal":"role:nodes","verbs":["use"]}`)
-	if r := f.do("GET", "/v1/secrets/later", node, "", "Delegation", g); r.status != 403 ||
-		!strings.Contains(string(r.body), "a new session picks it up") {
-		t.Fatalf("a secret newer than the grant: %d %s", r.status, r.body)
+	if r := f.do("GET", "/v1/secrets/later", node, "", "Delegation", g); r.status != 200 ||
+		claimsOf(t, r.json(t)["params"].(map[string]any)["bearer_token"].(string))["sub"] != "alice-id" {
+		t.Fatalf("a secret newer than the grant, while its subject token lives: %d %s", r.status, r.body)
 	}
+	f.do("PUT", "/v1/secrets/later2", f.admin, strings.Replace(mintedSecret, "echo-api", "later2-api", 1))
+	f.do("PUT", "/v1/secrets/later2/grants/n", f.admin, `{"principal":"role:nodes","verbs":["use"]}`)
+	f.srv.now = func() time.Time { return time.Now().Add(6 * time.Minute) }
+	if r := f.do("GET", "/v1/secrets/later2", node, "", "Delegation", g); r.status != 403 ||
+		r.problemType(t) != "mint_refused" || !strings.Contains(string(r.body), "a new session mints it") {
+		t.Fatalf("after the subject token: %d %s", r.status, r.body)
+	}
+	f.srv.now = time.Now
 	// revocation drops the grant, and its tokens with it
 	f.do("DELETE", "/v1/delegations/"+g, node, "")
 	if r := f.do("GET", "/v1/secrets/echo", node, "", "Delegation", g); r.status != 401 {
@@ -153,6 +168,33 @@ func TestMintedRefused(t *testing.T) {
 	r := f.do("GET", "/v1/secrets/echo", f.alice, "")
 	if r.status != 403 || !strings.Contains(string(r.body), "invalid_client") || strings.Contains(string(r.body), f.alice) {
 		t.Fatalf("refused: %d %s", r.status, r.body)
+	}
+}
+
+// the direct cache is keyed by what a token depends on: a secret deleted and recreated for another audience
+// never serves the old audience's token
+func TestMintedRecreated(t *testing.T) {
+	f := newFixture(t, "")
+	f.do("PUT", "/v1/secrets/echo", f.admin, mintedSecret)
+	f.do("PUT", "/v1/secrets/echo/grants/a", f.admin, `{"principal":"role:analysts","verbs":["use"]}`)
+	first, _, _ := f.mintedMaterial(f.alice)
+	f.do("DELETE", "/v1/secrets/echo", f.admin, "")
+	f.do("PUT", "/v1/secrets/echo", f.admin, strings.Replace(mintedSecret, "echo-api", "other-api", 1))
+	f.do("PUT", "/v1/secrets/echo/grants/a", f.admin, `{"principal":"role:analysts","verbs":["use"]}`)
+	second, _, r := f.mintedMaterial(f.alice)
+	if second == "" || second == first || claimsOf(t, second)["aud"] != "other-api" {
+		t.Fatalf("the recreated secret's own audience: %d %s", r.status, r.body)
+	}
+}
+
+// an IdP that ignores the audience: a token not meant for it is never served
+func TestMintedAudienceChecked(t *testing.T) {
+	f := newFixture(t, "")
+	f.do("PUT", "/v1/secrets/echo", f.admin, strings.Replace(mintedSecret, "echo-api", "ignored-api", 1))
+	f.do("PUT", "/v1/secrets/echo/grants/a", f.admin, `{"principal":"role:analysts","verbs":["use"]}`)
+	r := f.do("GET", "/v1/secrets/echo", f.alice, "")
+	if r.status != 403 || r.problemType(t) != "mint_refused" || !strings.Contains(string(r.body), "not meant for ignored-api") {
+		t.Fatalf("a token for another audience: %d %s", r.status, r.body)
 	}
 }
 

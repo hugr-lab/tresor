@@ -428,6 +428,10 @@ class Handler(BaseHTTPRequestHandler):
                           "params": {"key_id": "NODE"}, "redact_keys": []},
             "shared_lake": {"type": "s3", "scope": ["s3://shared"], "permissions": ["use"],
                             "params": {"key_id": "NODE-SHARED"}, "redact_keys": []},
+            # a token for the caller the IdP refuses to mint (specs/010): its material is 403 mint_refused
+            "refused_mint": {"type": "http", "provider": "token_exchange", "scope": ["https://refused.example"],
+                             "permissions": ["use"], "dynamic": True, "params": {"audience": "refused-api"},
+                             "redact_keys": [], "mint_refused": True},
             "stats": {"type": "http", "scope": ["https://stats.invalid"], "permissions": [], "comment": stats,
                       "params": {}, "redact_keys": []},
         }
@@ -443,6 +447,10 @@ class Handler(BaseHTTPRequestHandler):
         name = urllib.parse.unquote(rest[len("/v1/secrets/"):]) if rest.startswith("/v1/secrets/") else None
         if name not in listing or "use" not in listing[name]["permissions"]:
             self.problem(404, "not_found", "no secret")
+            return
+        if listing[name].get("mint_refused"):
+            self.problem(403, "mint_refused", "the identity provider refused to mint a token for the caller: "
+                                              "invalid_grant: the user's session has ended")
             return
         sec = listing[name]
         self.send(200, dict(descriptor(name, sec), params=sec["params"], redact_keys=[], expires_at=None))

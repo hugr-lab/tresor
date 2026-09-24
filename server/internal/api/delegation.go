@@ -84,6 +84,14 @@ func (g *grants) purge(now time.Time, force bool) {
 	}
 }
 
+// full: no room for another grant (after purging the expired ones).
+func (g *grants) full(now time.Time) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.purge(now, true)
+	return len(g.byID) >= maxGrants
+}
+
 func (g *grants) get(id string, now time.Time) *grant {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -193,8 +201,15 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request) {
 	expires := s.now().Add(ttl)
 	gr := &grant{actorOwner: actor.Owner(), actorClient: client, actorIssuer: actor.Issuer, user: *user,
 		expires: expires}
+	if s.grants.full(s.now()) { // before any exchange at the IdP
+		problem(w, http.StatusServiceUnavailable, "service_unavailable", "too many delegation grants")
+		return
+	}
 	// the user's tokens for what the server may mint (specs/010): now, while the subject token lives
 	s.mintAtGrant(r.Context(), gr, body.SubjectToken, actor)
+	if r.Context().Err() != nil {
+		return // the server gave up waiting: no grant nobody holds, with its refresh tokens
+	}
 	id, err := s.grants.put(gr, s.now())
 	if err != nil {
 		problem(w, http.StatusServiceUnavailable, "service_unavailable", "too many delegation grants")

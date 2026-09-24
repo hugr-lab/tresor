@@ -396,9 +396,9 @@ func (s *Server) getSecret(w http.ResponseWriter, r *http.Request) {
 	body["expires_at"] = nil
 	if isMinted(sec) {
 		// a token for the caller (specs/010): the caller's own, or under a grant the grant's user's
-		token, status, kind, detail := s.mintedToken(r, c, sec)
-		if token == nil {
-			problem(w, status, kind, detail)
+		token, refusal := s.mintedToken(r, c, sec)
+		if refusal != nil {
+			problem(w, refusal.status, refusal.kind, refusal.detail)
 			return
 		}
 		param := tokenParam[strings.ToLower(sec.Type)]
@@ -475,7 +475,7 @@ func (s *Server) putSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Provider == tokenExchangeProvider {
-		if err := validMinted(body.Type, body.Params); err != nil {
+		if err := s.validMinted(body.Type, body.Params); err != nil {
 			problem(w, http.StatusUnprocessableEntity, "invalid_secret", err.Error())
 			return
 		}

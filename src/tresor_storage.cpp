@@ -308,6 +308,12 @@ Value FromJson(const LogicalType &type, yyjson_val *value) {
 	throw InvalidInputException("needs a JSON scalar");
 }
 
+//! The `type` of a problem+json body, or "".
+string ProblemType(const string &body) {
+	JsonDoc doc(body);
+	return Str(doc.Root(), "type");
+}
+
 } // namespace
 
 Value ProtocolValue(const string &secret, const string &key, const string &type, yyjson_val *value,
@@ -620,6 +626,12 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &calle
 			throw;
 		}
 		return nullptr; // the service refused the session's grant (marked by the call): a lookup finds nothing
+	}
+	if (response.status == 403 && ProblemType(response.body) == "mint_refused") {
+		// a token for the caller the IdP would not mint (specs/010): the lookup fails with the reason, rather
+		// than going on without the credential the path needs
+		throw IOException("tresor: the secret %s of %s: %s", d.name, caller.session->Info().host,
+		                  DescribeProblem(response.status, response.body));
 	}
 	if (response.status == 404 || response.status == 403) {
 		// gone, or no longer ours to use, since the list was fetched: not a match - and the list is stale

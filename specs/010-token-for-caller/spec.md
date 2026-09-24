@@ -57,7 +57,7 @@ PUT /v1/secrets/corp_duck      (an administrator)
 
 - **`GET /v1/secrets/{name}` with `use`, and no grant:** the caller's own bearer token is exchanged
   (RFC 8693, as the service's own client at the token's issuer) for `audience` (and `scope`). The
-  result is cached per (caller, secret) until 30 s before `exp`.
+  result is cached per (caller, audience, scope) until 30 s before `exp`.
 - **Under a grant:**
   - `use` is the server's (spec 009);
   - the token is the **grant's user's**. At `POST /v1/delegations` the service finds the audiences of
@@ -67,8 +67,10 @@ PUT /v1/secrets/corp_duck      (an administrator)
     grant; that secret's material is then refused with the reason;
   - a read serves the access token while it has 30 s left, and otherwise refreshes it (keeping a
     rotated refresh token). A refused refresh (`invalid_grant`: the user's IdP session is over) is
-    `403 no_verb`, "the user's session at the identity provider has ended". A secret the node was
-    granted after the grant was made is `403 no_verb`, "a new session picks it up";
+    `403 mint_refused`, "the user's session at the identity provider has ended";
+  - the grant keeps the subject token (the user's token for this service) until it expires. A
+    secret the exchange could not mint (an outage), or one granted to the node since, is minted from
+    it lazily. After it expires, "a new session mints it";
   - the grant's revocation or expiry drops its tokens.
 
 ### The service's identity at the IdP
@@ -92,8 +94,8 @@ issuers:
 - on the node's client: the same refresh attribute. tresor asks for a refresh token at its own
   exchange (`with_refresh`, duckdb-ext-common v0.5.0) and drops it at once. Keycloak binds an
   exchanged token to the user's SSO session only when a refresh token is asked for, and the
-  service's own exchange with refresh needs that session. An IdP that answers "requested_token_type
-  unsupported" is asked again without it.
+  service's own exchange with refresh needs that session. An IdP that refuses the request is asked
+  again without it.
 
 Checked live on Keycloak 26.4 (2026-09-23). Without the node's refresh request, the service's
 exchange with refresh is refused ("creating a new session is needed"). With it, the service gets an
@@ -102,9 +104,10 @@ access token (`aud` = the downstream audience, `azp` = the service's client) and
 
 ### tresor
 
-- **The node's exchange** (`TresorSession::ExchangeForService`) asks for `with_refresh`, falls back
-  to a plain exchange on "requested_token_type unsupported", and wipes the refresh token either
-  way.
+- **The node's exchange** (`TresorSession::ExchangeForService`) asks for `with_refresh`. On any
+  refusal but `invalid_client` and `invalid_grant` it falls back to a plain exchange, and it wipes
+  the refresh token either way.
+- **A `403 mint_refused` on material** fails the lookup with the service's detail.
 - **Nothing else.** A minted secret is a dynamic secret. The cache honours `expires_at`, and under a
   session every lookup goes through the grant (spec 008).
 
@@ -116,6 +119,37 @@ Normative changes to `website/docs/protocol.md`:
 
 `provider: token_exchange` is the reference server's convention, documented in
 `reference-server.md`; the protocol keeps providers opaque.
+
+## The review's findings (applied)
+
+- **HIGH: the direct cache was keyed by the secret's name and version.** A secret deleted and
+  recreated for another audience started again at version 1, so alice got the old audience's token
+  (reproduced). The cache is now keyed by what a token depends on: the caller, the audience and the
+  scope.
+- **Mint failures were `403 no_verb`,** which tresor dropped silently. There is now
+  `403 mint_refused` for a lasting refusal, which tresor turns into an error carrying the reason,
+  and `503` for an outage. The protocol says so, normatively.
+- **An IdP outage at the grant's exchange spoiled the whole session.** The grant now keeps the
+  user's token for the service until it expires, and mints from it lazily, as for a secret granted
+  since.
+- **Grant creation.** The exchanges now run concurrently under one 10 s deadline. Capacity is
+  checked before any of them, and no grant is stored once the node has given up waiting.
+- **tresor's fallback was too narrow.** Now any refusal but `invalid_client` and `invalid_grant`
+  (including a strict RFC 8693 answer) falls back to the plain exchange.
+- **The minted token's audience was not checked.** Now its `aud` must name the audience asked for,
+  and never this service; such an `audience` is refused at PUT.
+- **Smaller fixes:**
+  - a lock per audience, so one refresh does not block the others;
+  - the refresh is detached from the request, so a rotated refresh token is never lost;
+  - "session ended" is remembered;
+  - a missing exchange client is 422 on both paths, and an unknown token endpoint is 503;
+  - a token with no expiry is reused for 60 s;
+  - one shared HTTP client;
+  - the scope and the token parameter's case are checked;
+  - an https-or-loopback check on the token endpoint;
+  - config tests;
+  - discovery's `dynamic` is true now;
+  - the docs say refresh tokens are dropped, not revoked at the IdP.
 
 ## Enforcement & security
 

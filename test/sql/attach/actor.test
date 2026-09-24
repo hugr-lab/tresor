@@ -98,6 +98,7 @@ query I
 SELECT name FROM corp.secrets() ORDER BY name;
 ----
 node_lake
+refused_mint
 shared_lake
 stats
 
@@ -115,6 +116,13 @@ query I
 SELECT DISTINCT tresor_secret_param('shared_lake', 'key_id');
 ----
 VARCHAR NODE-SHARED
+
+# a token for the caller the identity provider will not mint (specs/010): the lookup fails with the reason,
+# rather than going on without the credential
+statement error
+SELECT tresor_secret_param('refused_mint', 'bearer_token');
+----
+mint_refused: the identity provider refused to mint a token for the caller
 
 # writes under a session go through the grant: management passes only for an admin, if the actor policy lets it
 # (specs/009) - here it does not

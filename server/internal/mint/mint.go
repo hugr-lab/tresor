@@ -4,6 +4,7 @@ package mint
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,9 @@ import (
 	"strings"
 	"time"
 )
+
+// sharedHTTP is every mint's client: one connection pool, bounded requests.
+var sharedHTTP = &http.Client{Timeout: timeout}
 
 const (
 	accessTokenType  = "urn:ietf:params:oauth:token-type:access_token"
@@ -41,7 +45,11 @@ type Token struct {
 type Error struct {
 	Code        string
 	Description string
+	Status      int // the HTTP status; 0 when the IdP did not answer (Code "unreachable")
 }
+
+// Transient: the IdP did not answer, or failed (5xx) - worth another try, unlike a refusal.
+func (e *Error) Transient() bool { return e.Status == 0 || e.Status >= 500 }
 
 func (e *Error) Error() string {
 	if e.Description == "" {
@@ -100,7 +108,7 @@ func (c *Client) post(ctx context.Context, form url.Values, presented string, ke
 	form.Set("client_secret", c.ClientSecret) // client_secret_post, as every tresor flow
 	httpClient := c.HTTP
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: timeout}
+		httpClient = sharedHTTP
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.TokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -110,7 +118,8 @@ func (c *Client) post(ctx context.Context, form url.Values, presented string, ke
 	req.Header.Set("Accept", "application/json")
 	res, err := httpClient.Do(req)
 	if err != nil {
-		return nil, errors.New("the identity provider is not reachable") // the error could name the URL only
+		// the transport's error could name the URL only: a fixed text
+		return nil, &Error{Code: "unreachable", Description: "the identity provider is not reachable"}
 	}
 	defer res.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
@@ -130,7 +139,8 @@ func (c *Client) post(ctx context.Context, form url.Values, presented string, ke
 			code = fmt.Sprintf("http_%d", res.StatusCode)
 		}
 		// redacted before it is cut: a cut must not leave part of the token behind
-		return nil, &Error{Code: bounded(code, 64), Description: bounded(redact(answer.ErrorDesc, presented), 300)}
+		return nil, &Error{Code: bounded(code, 64), Description: bounded(redact(answer.ErrorDesc, presented), 300),
+			Status: res.StatusCode}
 	}
 	// only an access token is taken for one: RFC 8693's strict shape (a refresh token in access_token,
 	// token_type N_A), or any other issued type, is refused
@@ -138,7 +148,8 @@ func (c *Client) post(ctx context.Context, form url.Values, presented string, ke
 		(keepRefresh && answer.IssuedTokenType == refreshTokenType && answer.RefreshToken != "" &&
 			answer.RefreshToken != answer.AccessToken)
 	if answer.AccessToken == "" || !typeOK || strings.EqualFold(answer.TokenType, "N_A") {
-		return nil, &Error{Code: "invalid_token_type", Description: "the identity provider answered with no access token"}
+		return nil, &Error{Code: "invalid_token_type", Description: "the identity provider answered with no access token",
+			Status: res.StatusCode}
 	}
 	now := time.Now
 	if c.Now != nil {
@@ -178,4 +189,34 @@ func redact(text, presented string) string {
 		return text
 	}
 	return strings.ReplaceAll(text, presented, "<redacted>")
+}
+
+// Audiences reads a JWT's `aud` without verifying it (the token came from the IdP over its own channel) - to
+// check where a minted token is meant to go; isJWT false for an opaque token.
+func Audiences(token string) (auds []string, isJWT bool) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil, false
+	}
+	data, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, false
+	}
+	var claims struct {
+		Aud any `json:"aud"`
+	}
+	if json.Unmarshal(data, &claims) != nil {
+		return nil, false
+	}
+	switch aud := claims.Aud.(type) {
+	case string:
+		return []string{aud}, true
+	case []any:
+		for _, a := range aud {
+			if s, ok := a.(string); ok {
+				auds = append(auds, s)
+			}
+		}
+	}
+	return auds, true
 }

@@ -159,7 +159,11 @@ func (idp *IdP) token(w http.ResponseWriter, r *http.Request) {
 			deny("invalid_grant", "the subject token "+subject+" is not valid")
 			return
 		}
-		claims = Claims{"sub": payload["sub"], "aud": r.PostForm.Get("audience"), "azp": ExchangeClient,
+		aud := r.PostForm.Get("audience")
+		if aud == "ignored-api" { // an IdP that ignores the audience asked for
+			aud = "somewhere-else"
+		}
+		claims = Claims{"sub": payload["sub"], "aud": aud, "azp": ExchangeClient,
 			"realm_access": payload["realm_access"]}
 		withRefresh = r.PostForm.Get("requested_token_type") == "urn:ietf:params:oauth:token-type:refresh_token"
 		idp.Exchanges++
