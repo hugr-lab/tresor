@@ -107,6 +107,8 @@ export TRESOR_CONFORMANCE_HOST=127.0.0.1:$server_port TRESOR_CONFORMANCE_INSECUR
 export TRESOR_CONFORMANCE_ISSUER="$issuer" TRESOR_CONFORMANCE_CLIENT_ID=etl TRESOR_CONFORMANCE_CLIENT_SECRET=etl-secret
 export TRESOR_CONFORMANCE_PERSON=1 TRESOR_KC_HOST=127.0.0.1:$server_port TRESOR_KC_ISSUER="$issuer"
 export BROWSER="$root/test/keycloak/browser.py" TRESOR_KC_USER=alice TRESOR_KC_PASS=alice-pass
+# a person's login is remembered in this instance's memory only (specs/012): the suite never touches the OS keychain
+export TRESOR_KEYCHAIN=memory
 cd "$root"
 # a user's token as a duckdb-acl node receives it (specs/008): alice through the acl-door client, whose
 # tokens are meant for acl-node only - the actor test exchanges it at Keycloak for one meant for the service.
@@ -202,6 +204,37 @@ if [ -n "${TRESOR_ACL_EXTENSION:-}" ]; then
 		# may quote a statement with alice's token or the handle in it
 		grep -E '^check:|Error' "$work/acl.log" |
 			sed -E -e 's/eyJ[A-Za-z0-9._-]*/<token>/g' -e 's/[0-9A-Fa-f]{32}/<handle>/g' >&2 || true
+		status=1
+	fi
+fi
+# a person's login remembered in the OS keychain, across DuckDB processes (specs/012) - only where a store
+# answers and the run asks for it (TRESOR_KC_KEYCHAIN=1; CI: gnome-keyring on the step's session bus)
+if [ "${TRESOR_KC_KEYCHAIN:-0}" = "1" ]; then
+	cli="${TRESOR_CLI:-$(dirname "$unittest")/../duckdb}"
+	ext="$(dirname "$unittest")/../extension/tresor/tresor.duckdb_extension"
+	attach="ATTACH 'tresor:127.0.0.1:$server_port' AS k (INSECURE_HTTP true, LOGIN 'browser', LOGIN_TIMEOUT 15)"
+	person() { # $1: the browser, $2: what to run after the ATTACH; the OS store, whatever the suite's default
+		printf "LOAD '%s';\n%s;\n%s\n" "$ext" "$attach" "$2" |
+			TRESOR_KEYCHAIN=auto BROWSER="$1" "$cli" -unsigned -list -noheader 2>&1 || true
+	}
+	kc_ok=1
+	# 1. alice logs in through the browser: remembered
+	person "$BROWSER" "SELECT 'kc:' || login FROM k.whoami();" | grep -q '^kc:browser$' ||
+		{ echo "test_keycloak: keychain: the first login did not happen" >&2; kc_ok=0; }
+	# 2. another process, and no browser at all ('false' would fail the login): the remembered login
+	person false "SELECT 'kc:' || login || '|' || subject FROM k.whoami();" | grep -Eq '^kc:remembered\|[0-9a-f-]{36}$' ||
+		{ echo "test_keycloak: keychain: a second process was not logged in by the remembered login" >&2; kc_ok=0; }
+	# 3. logoff: removed, and revoked at Keycloak (RFC 7009)
+	person false "SELECT 'kc:' || removed || '|' || revoked FROM tresor_logoff('k');" | grep -q '^kc:true|true$' ||
+		{ echo "test_keycloak: keychain: tresor_logoff did not remove and revoke" >&2; kc_ok=0; }
+	# 4. forgotten: without a browser there is no login any more
+	if person false "SELECT 'kc:' || login FROM k.whoami();" | grep -q '^kc:'; then
+		echo "test_keycloak: keychain: a login survived tresor_logoff" >&2
+		kc_ok=0
+	fi
+	if [ "$kc_ok" = 1 ]; then
+		echo "test_keycloak: keychain: a second process logged in without a browser; tresor_logoff removed and revoked it"
+	else
 		status=1
 	fi
 fi

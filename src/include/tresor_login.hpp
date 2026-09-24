@@ -33,6 +33,9 @@ struct AttachRequest {
 	string exchange_scope;
 	string exchange_audience; // EXCHANGE_AUDIENCE: pinned on the node, not taken from the service
 	int64_t grant_wait_seconds = 10;
+	// a person's login remembered in the OS keychain (specs/012)
+	bool remember = true;
+	bool remember_given = false;
 };
 
 AttachRequest ParseAttach(const string &path, const unordered_map<string, Value> &options);

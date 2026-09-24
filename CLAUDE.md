@@ -22,7 +22,7 @@ ATTACH prefix works).
   | --- | --- | --- |
   | duckdb | submodule `duckdb/` | branch `v2.0-cyanoptera`, commit = duckdb-acl's |
   | extension-ci-tools | submodule `extension-ci-tools/` | `main`, commit = duckdb-acl's |
-  | duckdb-ext-common | submodule `duckdb-ext-common/` | tag `v0.7.1` (TRSA 1, specs/011), = duckdb-acl's |
+  | duckdb-ext-common | submodule `duckdb-ext-common/` | tag `v0.8.0` (keychain/, specs/012); duckdb-acl on `v0.7.1` - the same contract stamps |
   | distribution | `.github/workflows/distribution.yml` | `@main`, `duckdb_version: v2.0-cyanoptera` |
   | duckdb-acl (tests only) | `ACL_COMMIT` in `scripts/ci/acl_checkout.sh` | a duckdb-acl commit whose duckdb is ours |
 
@@ -92,7 +92,11 @@ pointers, braces always, short comments. 2.0 API drift to expect: `ScalarFunctio
 - **The ATTACH path has no scheme** (`tresor:host[:port][/base]`, https implied): an `https://` path
   makes duckdb require httpfs and force READ_ONLY before it looks at the type. A test pins this.
 - **Never** write secret material to disk, log or emit material / tokens / session handles /
-  delegation grant ids, or send an IdP token to anyone but its audience.
+  delegation grant ids, or send an IdP token to anyone but its audience. The one exception
+  (specs/012, the owner's decision of 2026-09-24): a **person's refresh token** is kept in the **OS
+  credential store** (duckdb-ext-common `keychain/`). It is never kept in a file, and never with an
+  access token, a grant or material. Tests never touch that store (`TRESOR_KEYCHAIN=memory` in the
+  test scripts).
 - **Login directly with the IdP**, never through the secrets service.
 - **Admins manage, roles use** (specs/009): only administrators create secrets and grant `use`, to
   roles and groups; an admin role implies no `use`. **Under a delegation grant** a server uses its own

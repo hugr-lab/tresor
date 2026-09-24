@@ -7,6 +7,10 @@ require-env TRESOR_TEST_PORT
 statement ok
 LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
 
+# the flows themselves are tested here: no login is remembered (specs/012 - remember.test covers that)
+statement ok
+SET tresor_keychain = 'off';
+
 # the browser flow: scripts/ci/test_attach.sh sets BROWSER to a script that follows the fake IdP's
 # auto-approval back to the loopback receiver
 statement ok

@@ -137,7 +137,7 @@ jobs:
         run: |
           set -o pipefail   # a failing script must fail the step, whatever the summary line says
           scripts/ci/test_attach.sh 2>&1 | tee attach.log
-          scripts/ci/assert_ran.sh attach.log 8 380 'require-env TRESOR_TEST_PORT|require httpfs|require acl_stub'
+          scripts/ci/assert_ran.sh attach.log 9 520 'require-env TRESOR_TEST_PORT|require httpfs|require acl_stub'
 
       # the reference server next to a real Keycloak (specs/003): the conformance suite, a real
       # browser login (PKCE, Keycloak's redirect checks) and a real client-credentials grant
@@ -146,13 +146,19 @@ jobs:
           go-version-file: server/go.mod
           cache-dependency-path: server/go.sum
       # ... and tresor acting for a real duckdb-acl session (specs/008): the acl built above, a real token exchange
+      # ... and a person's login remembered in a real OS store across processes (specs/012): gnome-keyring on a
+      # session bus of the step's own
       - name: Keycloak end to end
         run: |
           set -o pipefail   # a failing script must fail the step, whatever the summary line says
-          TRESOR_ACL_EXTENSION="$PWD/build/release/extension/acl/acl.duckdb_extension" \
-            scripts/ci/test_keycloak.sh 2>&1 | tee keycloak.log
+          sudo apt-get install -y -qq libsecret-1-0 gnome-keyring dbus-x11 >/dev/null
+          dbus-run-session -- bash -c '
+            echo -n ci | gnome-keyring-daemon --unlock --components=secrets >/dev/null
+            TRESOR_KC_KEYCHAIN=1 TRESOR_ACL_EXTENSION="$PWD/build/release/extension/acl/acl.duckdb_extension" \
+              scripts/ci/test_keycloak.sh' 2>&1 | tee keycloak.log
           scripts/ci/assert_ran.sh keycloak.log 4 45 'require-env TRESOR_CONFORMANCE'
           grep -q "with duckdb-acl, a session's statements ran as its user" keycloak.log
+          grep -q "keychain: a second process logged in without a browser" keycloak.log
 
       - name: Upload extension artifact
         if: github.event_name != 'pull_request'
@@ -221,7 +227,7 @@ jobs:
         run: |
           set -o pipefail   # a failing script must fail the step, whatever the summary line says
           scripts/ci/test_attach.sh 2>&1 | tee attach.log
-          scripts/ci/assert_ran.sh attach.log 8 380 'require-env TRESOR_TEST_PORT|require httpfs|require acl_stub'
+          scripts/ci/assert_ran.sh attach.log 9 520 'require-env TRESOR_TEST_PORT|require httpfs|require acl_stub'
 
       - name: Upload extension artifact
         uses: actions/upload-artifact@v7

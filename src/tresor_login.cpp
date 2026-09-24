@@ -1,4 +1,6 @@
 #include "tresor_login.hpp"
+#include "tresor_actor.hpp"
+#include "tresor_remember.hpp"
 
 #include <algorithm>
 
@@ -346,6 +348,54 @@ oidc::TokenSet PersonLogin(ClientContext &context, const AttachRequest &request,
 	return tokens;
 }
 
+//! A remembered login (specs/012): the refresh token kept for this service's (issuer, public client, host),
+//! refreshed for this service's scope. True with `tokens` set; false when there is none, or it is dead (then
+//! forgotten), or the IdP would not mint for this scope - a login runs then. A transport failure is an error: no
+//! browser opens for a passing outage.
+bool RememberedLogin(ClientContext &context, const AttachRequest &request, const ServiceInfo &info,
+                     oidc::TokenSet &tokens, string &started_from) {
+	auto store = RememberedLogins::Get(*context.db);
+	string why;
+	if (!store->Usable(why)) {
+		return false;
+	}
+	LoginKey key {info.issuer, info.client_id, info.host};
+	while (!key.issuer.empty() && key.issuer.back() == '/') {
+		key.issuer.pop_back();
+	}
+	// one refresh of this chain at a time here: another attachment may be rotating it
+	lock_guard<mutex> chain(store->KeyLock(key));
+	auto mode = store->Mode();
+	string subject;
+	string refresh;
+	if (!store->Load(key, mode, subject, refresh)) {
+		return false;
+	}
+	auto renewed = oidc::RefreshGrant(info.endpoints, info.client_id, "", refresh, info.scope);
+	if (renewed.Ok()) {
+		if (renewed.refresh_token.empty()) {
+			renewed.refresh_token = refresh; // RFC 6749 §6: the IdP may keep the old one
+		} else if (renewed.refresh_token != refresh) {
+			store->Store(key, subject, renewed.refresh_token, mode); // rotated: the old one is dead already
+		}
+		Wipe(refresh);
+		tokens = std::move(renewed);
+		started_from = tokens.refresh_token; // what the store holds now, for Remember to compare against
+		return true;
+	}
+	if (renewed.error_code == "invalid_grant") {
+		store->Remove(key, mode,
+		              refresh); // dead: forgotten (unless another attachment stored a newer one), a login runs
+		Wipe(refresh);
+		return false;
+	}
+	Wipe(refresh);
+	if (renewed.error_code.empty()) {
+		throw IOException("tresor: the remembered login to %s could not be renewed: %s", request.host, renewed.error);
+	}
+	return false; // e.g. invalid_scope: a login runs
+}
+
 } // namespace
 
 JsonDoc::JsonDoc(const string &body, yyjson_read_flag flags) {
@@ -416,6 +466,9 @@ AttachRequest ParseAttach(const string &path, const unordered_map<string, Value>
 			if (request.timeout_seconds <= 0) {
 				throw InvalidInputException("tresor: LOGIN_TIMEOUT is a positive number of seconds");
 			}
+		} else if (key == "remember") {
+			request.remember_given = true;
+			request.remember = BooleanValue::Get(value.DefaultCastAs(LogicalType::BOOLEAN));
 		} else if (key == "act_for_sessions") {
 			request.act_for_sessions = BooleanValue::Get(value.DefaultCastAs(LogicalType::BOOLEAN));
 		} else if (key == "exchange") {
@@ -439,10 +492,11 @@ AttachRequest ParseAttach(const string &path, const unordered_map<string, Value>
 				throw InvalidInputException("tresor: SESSION_GRANT_WAIT is 0 to 600 seconds");
 			}
 		} else {
-			throw InvalidInputException("tresor: unknown ATTACH option '%s' (known: LOGIN, ISSUER, SECRET, "
-			                            "INSECURE_HTTP, LOGIN_TIMEOUT, ACT_FOR_SESSIONS, EXCHANGE, EXCHANGE_SCOPE, "
-			                            "EXCHANGE_AUDIENCE, SESSION_GRANT_WAIT)",
-			                            option.first);
+			throw InvalidInputException(
+			    "tresor: unknown ATTACH option '%s' (known: LOGIN, ISSUER, SECRET, "
+			    "INSECURE_HTTP, LOGIN_TIMEOUT, REMEMBER, ACT_FOR_SESSIONS, EXCHANGE, EXCHANGE_SCOPE, "
+			    "EXCHANGE_AUDIENCE, SESSION_GRANT_WAIT)",
+			    option.first);
 		}
 	}
 	if (!request.act_for_sessions && actor_option_given) {
@@ -554,6 +608,14 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 		throw InvalidInputException("tresor: ACT_FOR_SESSIONS needs a service login - a SECRET of flow "
 		                            "client_credentials");
 	}
+	if (service_secret && request.remember_given && request.remember) {
+		throw InvalidInputException("tresor: REMEMBER is for a person's login - a service logs in again from its "
+		                            "secret, and nothing of it is kept");
+	}
+	// a person's login is remembered in the OS keychain (specs/012), unless asked not to
+	bool remember = !service_secret && request.remember;
+	std::function<oidc::TokenSet(LoginFlow &)> interactive; // a person's login, for a remembered one refused
+	string started_from; // the stored token a remembered login began with (specs/012); empty for a fresh login
 	LoginFlow flow;
 	oidc::TokenSet tokens;
 	string client_secret;
@@ -583,7 +645,7 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 			                  info.endpoints.error);
 		}
 		for (auto *endpoint : {&info.endpoints.token_endpoint, &info.endpoints.authorization_endpoint,
-		                       &info.endpoints.device_authorization_endpoint}) {
+		                       &info.endpoints.device_authorization_endpoint, &info.endpoints.revocation_endpoint}) {
 			if (!endpoint->empty()) {
 				CheckTransport(request, "identity provider endpoint", *endpoint);
 			}
@@ -616,7 +678,30 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 				throw IOException("tresor: %s names no client_id for people to log in with", request.host);
 			}
 			info.scope = StringUtil::Join(issuer.scopes, " ");
-			tokens = PersonLogin(context, request, info, issuer, flow);
+			auto chosen = &issuer;
+			interactive = [&context, &request, &info, chosen](LoginFlow &person_flow) {
+				return PersonLogin(context, request, info, *chosen, person_flow);
+			};
+			if (remember && RememberedLogin(context, request, info, tokens, started_from)) {
+				flow = LoginFlow::REMEMBERED;
+				// does it reach this service? One plain whoami, no renew-and-retry: a service that refuses it
+				// (another audience, a scope the IdP would not widen) gets the person's login instead, and that
+				// is the one remembered from now on. An outage is an error, as a login's would be.
+				auto probe = oidc::HttpSend(
+				    "GET", info.api + "/v1/whoami",
+				    {{"Authorization", "Bearer " + tokens.access_token}, {"Accept", "application/json"}}, "", "", 30);
+				if (!probe.error.empty()) {
+					throw IOException("tresor: %s did not answer: %s", request.host, probe.error);
+				}
+				if (probe.status == 401) {
+					Wipe(tokens.access_token);
+					Wipe(tokens.refresh_token);
+					Wipe(started_from); // a fresh login: it replaces the entry
+					tokens = interactive(flow);
+				}
+			} else {
+				tokens = interactive(flow);
+			}
 		}
 	}
 
@@ -675,6 +760,16 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 			session->SetSubject(std::move(sub));
 		}
 	}
+	if (remember) {
+		// the service accepted it: this login is remembered for the next ATTACH of this service (specs/012) - what
+		// the session holds now, and its rotations from here on
+		auto store = RememberedLogins::Get(*context.db);
+		string why;
+		if (store->Usable(why)) {
+			session->Remember(store, started_from);
+		}
+	}
+	Wipe(started_from);
 	return session;
 }
 

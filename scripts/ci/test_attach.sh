@@ -16,6 +16,8 @@ for _ in $(seq 50); do [ -s "$work/port" ] && break; sleep 0.1; done
 [ -s "$work/port" ] || { echo "test_attach: the fake service did not start" >&2; exit 1; }
 export TRESOR_TEST_PORT="$(cat "$work/port")"
 export BROWSER="$root/test/fake/browser.sh"
+# a person's login is remembered in this instance's memory only (specs/012): a test never touches the OS keychain
+export TRESOR_KEYCHAIN=memory
 echo "test_attach: fake service on 127.0.0.1:$TRESOR_TEST_PORT"
 cd "$root"
 # the runner skips a test whose error mentions "HTTP" or "Unable to connect" (a network flake guard);

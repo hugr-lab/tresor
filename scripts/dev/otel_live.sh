@@ -21,6 +21,7 @@ kc_port="${KEYCLOAK_PORT:-18481}"
 server_port="${TRESOR_SERVER_PORT:-18444}"
 issuer="http://127.0.0.1:$kc_port/realms/tresor"
 service="tresor-live-$$"
+export TRESOR_KEYCHAIN=memory # the bench never touches the OS keychain (specs/012)
 work="$(mktemp -d)"
 compose=(docker compose -p tresor-kc-live -f "$root/server/docker-compose.yml")
 

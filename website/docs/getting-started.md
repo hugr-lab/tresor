@@ -45,8 +45,39 @@ If the service accepts more than one identity provider, name yours:
 ATTACH 'tresor:secrets.corp.example' AS corp (ISSUER 'https://login.corp.example/realms/main');
 ```
 
-The login lasts for the session and refreshes by itself. The tokens stay in memory and are never
-written to disk, so a new DuckDB process logs in again.
+The login lasts for the session and refreshes by itself. Access tokens stay in memory.
+
+**One login, remembered.** Your refresh token is kept in the operating system's credential store: the
+macOS Keychain, the Windows Credential Manager, or the Secret Service on Linux (GNOME Keyring,
+KWallet). It is never kept in a file.
+- The next ATTACH of the same service needs no browser, in this DuckDB process or a later one.
+- A login is kept for the service it was made for. Another service behind the same identity provider
+  gets a login of its own: one browser round, which takes a click while the provider's own session
+  lives. A service never receives a token that was refreshed for another service.
+
+```sql
+ATTACH 'tresor:secrets.corp.example' AS corp;               -- the browser, once
+-- ... a new DuckDB process, the next day:
+ATTACH 'tresor:secrets.corp.example' AS corp;               -- no browser
+CALL tresor_logoff();                                       -- forget it, revoke it at the IdP
+```
+
+- `REMEMBER false` on an ATTACH neither reads nor writes the store.
+- `SET tresor_keychain = 'off'` turns remembering off for the whole instance; `'memory'` keeps it
+  within this process.
+- The environment variable `TRESOR_KEYCHAIN` sets the setting's default. Use `off` on a shared
+  account such as a CI runner or a jump host.
+- Where no store answers (a server, a container), the browser simply runs each time.
+- `tresor_logoff()` forgets every remembered login attached here. `tresor_logoff('corp')` forgets
+  one attachment's login. For a service that is not attached, name all three:
+  `tresor_logoff(service := 'secrets.corp.example', issuer := '…', client_id := '…')`.
+- Either way the login is revoked at the identity provider when it supports RFC 7009, and the
+  attachment running on it must be attached again. A `REMEMBER false` attachment is not touched.
+- **To log in as someone else**, call `tresor_logoff` first or attach with `REMEMBER false`. An
+  explicit `LOGIN 'browser'` still uses the remembered login.
+- `tresor_logoff` is refused for a statement run under a duckdb-acl session.
+
+A service's login (a tresor secret) is never remembered: it logs in again from its secret.
 
 ```sql
 FROM corp.whoami();      -- service, issuer, subject, roles, token expiry, what you may create, login flow
