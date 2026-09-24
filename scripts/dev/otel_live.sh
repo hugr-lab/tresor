@@ -28,6 +28,12 @@ for f in "$duckdb" "$tresor_ext" "$acl_ext" "$otel_ext"; do
 	[ -f "$f" ] || { echo "otel_live: missing $f" >&2; exit 1; }
 done
 curl -sf -o /dev/null "$tempo/ready" || { echo "otel_live: Tempo not at $tempo - start the local stack" >&2; exit 1; }
+for port in "$kc_port" "$server_port"; do
+	if curl -s -o /dev/null "http://127.0.0.1:$port/"; then
+		echo "otel_live: 127.0.0.1:$port is taken - set KEYCLOAK_PORT / TRESOR_SERVER_PORT" >&2
+		exit 1
+	fi
+done
 
 cleanup() {
 	[ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null || true
@@ -37,8 +43,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-KEYCLOAK_PORT="$kc_port" "${compose[@]}" up -d >/dev/null 2>&1
+KEYCLOAK_PORT="$kc_port" "${compose[@]}" up -d
 for _ in $(seq 120); do curl -sf "$issuer/.well-known/openid-configuration" >/dev/null && break; sleep 2; done
+curl -sf "$issuer/.well-known/openid-configuration" >/dev/null || {
+	"${compose[@]}" logs --tail 50 >&2
+	echo "otel_live: Keycloak did not come up" >&2
+	exit 1
+}
 (cd "$root/server" && GOWORK=off go build -o "$work/tresor-server" ./cmd/tresor-server)
 sed -e "s/127.0.0.1:18480/127.0.0.1:$kc_port/g" -e "s/127.0.0.1:18443/127.0.0.1:$server_port/g" \
 	"$root/server/testdata/keycloak/server.yaml" >"$work/server.yaml"
@@ -49,6 +60,11 @@ echo_pid=$!
 for _ in $(seq 50); do [ -s "$work/echo.port" ] && break; sleep 0.1; done
 echo_host="127.0.0.1:$(cat "$work/echo.port")"
 for _ in $(seq 50); do curl -sf "http://127.0.0.1:$server_port/.well-known/duckdb-secrets" >/dev/null && break; sleep 0.2; done
+if ! kill -0 "$server_pid" 2>/dev/null || ! curl -sf "http://127.0.0.1:$server_port/.well-known/duckdb-secrets" >/dev/null; then
+	cat "$work/server.log" >&2
+	echo "otel_live: tresor-server did not come up" >&2
+	exit 1
+fi
 
 token() { # client, then user/password or nothing (client credentials)
 	if [ $# -eq 3 ]; then
@@ -68,6 +84,8 @@ curl -sf -o /dev/null -X PUT "$api/live_echo/grants/nodes" -H "Authorization: Be
 	-H 'Content-Type: application/json' -d '{"principal":"role:nodes","verbs":["use"]}'
 alice="$(token acl-door alice alice-pass)"
 jwks="$(curl -sf "$issuer/protocol/openid-connect/certs")"
+q="'"
+jwks="${jwks//$q/$q$q}" # a SQL string literal below
 
 trace_id="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
 span_id="$(python3 -c 'import secrets; print(secrets.token_hex(8))')"
@@ -121,7 +139,9 @@ SQL
 
 echo "otel_live: trace $trace_id, service $service"
 # the acl_stub linked into the test CLI must not mark acl's hooks: the real duckdb-acl does (ACLC 2)
-ACL_STUB_NO_MARK=1 "$duckdb" -unsigned <"$work/live.sql" 2>&1 | sed -E 's/eyJ[A-Za-z0-9._-]*/<token>/g'  | sed 's/^/  duckdb: /'
+# a failed statement does not end the bench: what reached the service, Tempo and Loki is the diagnosis
+(ACL_STUB_NO_MARK=1 "$duckdb" -unsigned <"$work/live.sql" 2>&1 || true) | sed -E 's/eyJ[A-Za-z0-9._-]*/<token>/g' |
+	sed 's/^/  duckdb: /'
 echo "otel_live: the reference server's line for the traced request:"
 grep -F "$trace_id" "$work/server.log" | sed 's/^/  server: /' || echo "  server: (none)"
 

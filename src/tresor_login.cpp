@@ -662,7 +662,8 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 		JsonDoc doc(whoami.body);
 		auto root = doc.Root();
 		// the principal as the protocol spells one (`subject:<issuer>|<sub>`), as the audit's `user` is: whoami
-		// answers the bare `sub` and its issuer; a subject that already names its kind is kept
+		// answers the bare `sub` and its issuer. A subject that already names its kind is kept: tests' fake
+		// service answers `client:<id>` for its services, which a conforming service never does
 		auto subject = root && yyjson_is_obj(root) ? yyjson_obj_get(root, "subject") : nullptr;
 		auto issuer = root && yyjson_is_obj(root) ? yyjson_obj_get(root, "issuer") : nullptr;
 		if (subject && yyjson_is_str(subject)) {

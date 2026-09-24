@@ -75,7 +75,8 @@ that caused them.
 | session_grant | the actor | `detail`: obtained / failed / revoked / rejected / expired |
 
 - **Who.**
-  - `principal` is the login's subject from the ATTACH's whoami.
+  - `principal` is the login's subject from the ATTACH's whoami, as the protocol spells a principal:
+    `subject:<issuer>|<sub>`.
   - `user` is the acl session's user (`subject:<issuer>|<sub>`).
   - `acl_session`, `correlation_id` and `traceparent` come from acl's `AclSessionView`. Only a
     well-formed `traceparent` (version 00, lower-case hex, non-zero ids) is carried or sent.
