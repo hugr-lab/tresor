@@ -283,6 +283,20 @@ in the body:
     answers `{"revoked": n}`.
   - A grant is a bearer credential: never logged.
 
+## Tracing
+
+A client may send the W3C Trace Context header `traceparent` (version `00`) with any request. It
+carries the trace of the work that made the call: on a duckdb-acl node, the trace of the statement
+a session ran. tresor sends it only when that statement has one and it is well-formed.
+
+- A service **SHOULD** continue that trace: its own spans for the request, children of the
+  `traceparent`, and its own telemetry (OpenTelemetry) under them. A service that does not trace
+  ignores the header.
+- A service **MUST NOT** trust the header for anything but correlation. It says nothing about who
+  calls, and it is never a reason to allow or refuse.
+- A malformed `traceparent` is ignored: never an error, never logged as it came.
+- No other trace header (`tracestate`, `baggage`) is defined.
+
 ## Errors
 
 | `type` | Status | Meaning |

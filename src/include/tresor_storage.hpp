@@ -5,9 +5,11 @@
 #pragma once
 
 #include "tresor_actor.hpp"
+#include "tresor_events.hpp"
 #include "tresor_session.hpp"
 
 #include "duckdb/common/mutex.hpp"
+#include "duckdb/common/unordered_set.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/main/secret/secret.hpp"
 #include "duckdb/main/secret/secret_storage.hpp"
@@ -44,7 +46,7 @@ vector<Descriptor> FetchDescriptors(const Caller &caller);
 //! (TresorCatalog::Initialize) and deactivated when that catalog goes (DETACH, or a rolled-back ATTACH).
 class TresorSecretStorage : public SecretStorage {
 public:
-	TresorSecretStorage(const string &name, int64_t offset);
+	TresorSecretStorage(const string &name, int64_t offset, weak_ptr<TresorAudit> audit);
 
 	//! Serve this session, starting from the list the ATTACH fetched; `actor` (may be null) acts for
 	//! duckdb-acl's sessions (specs/008).
@@ -84,6 +86,12 @@ public:
 	//! Fresh material for a listed secret, bypassing the cache (the tresor provider: httpfs's REFRESH auto).
 	unique_ptr<const BaseSecret> RefreshMaterial(const string &name, optional_ptr<CatalogTransaction> transaction);
 
+	//! An audited operation of this storage's service, as `caller` (specs/011).
+	Audited Audit(const string &kind, const Caller &caller, optional_ptr<ClientContext> context);
+	weak_ptr<TresorAudit> AuditOf() const {
+		return audit;
+	}
+
 	//! The service's own spelling of a secret's name: DuckDB compares names case-insensitively, the
 	//! service exactly - a listed secret is addressed as the service lists it, a new one in lower case.
 	string ServiceName(const Caller &caller, const string &name);
@@ -111,13 +119,19 @@ private:
 	//! list authoritative and backs off.
 	vector<Descriptor> Snapshot(const Caller &caller, shared_ptr<View> &view_out);
 	//! The material of a listed secret, from the view's cache or the service; null when the service no
-	//! longer has it for this caller (404/403). No lock held across the network.
+	//! longer has it for this caller (404/403). No lock held across the network. Audited as `kind` (lookup,
+	//! refresh) when it calls the service; a cache hit is counted, not emitted.
 	unique_ptr<const BaseSecret> MaterialOf(const Caller &caller, View &view, const Descriptor &descriptor,
-	                                        optional_ptr<CatalogTransaction> transaction);
+	                                        optional_ptr<CatalogTransaction> transaction,
+	                                        const string &kind = "lookup");
 	SecretEntry EntryOf(unique_ptr<const BaseSecret> secret);
+	//! Is this the first refused lookup of the acl session here (the audit tells it once)?
+	bool FirstRefusal(const string &acl_session);
 	Caller CallerOf(optional_ptr<CatalogTransaction> transaction);
 
-	mutex lock; // the state below, and every view's list and materials
+	weak_ptr<TresorAudit> audit;         // the instance's: it goes with the ObjectCache, before this storage
+	mutex lock;                          // the state below, and every view's list and materials
+	unordered_set<string> refusals_told; // acl sessions whose lookup refusal was audited (once each)
 	shared_ptr<TresorSession> session;
 	shared_ptr<TresorActor> actor;
 	shared_ptr<View> node;

@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "tresor_events.hpp"
 #include "tresor_session.hpp"
 
 #include "duckdb/common/mutex.hpp"
@@ -40,6 +41,8 @@ struct ActorOptions {
 	string scope;              // EXCHANGE_SCOPE
 	string audience;           // the audience an exchanged token must carry (RFC 8693; pinned at ATTACH)
 	int64_t grant_wait_seconds = 10;
+	string service;              // the attached catalog's name, for the audit
+	weak_ptr<TresorAudit> audit; // the instance's (specs/011)
 };
 
 //! Whom a service call made for a statement goes as: the node, or an acl session through its grant,
@@ -49,6 +52,9 @@ struct Caller {
 	string acl_session;                // the acl session's ops id; empty: the node itself
 	string grant;                      // the Delegation header's value, for an acl session
 	string refused;                    // non-empty: this statement may not reach the service
+	string user;                       // the acl session's user (`subject:<issuer>|<sub>`), for the audit
+	string correlation_id;             // the statement's, as acl publishes it
+	string traceparent;                // the statement's W3C trace context (well-formed, or empty)
 	std::function<void()> rejected;    // the service refused the grant (401): the session gets nothing more
 
 	bool IsNode() const {
@@ -88,7 +94,8 @@ public:
 	void OnSessionGone(std::function<void(const string &)> callback);
 
 	// acl's observer calls, through a small adapter (tresor_actor.cpp)
-	void Opened(const string &acl_session, const string &token_issuer, int64_t expires_at, const string &token);
+	void Opened(const string &acl_session, const string &user, const string &token_issuer, int64_t expires_at,
+	            const string &token);
 	void Closed(const string &acl_session);
 
 private:
@@ -100,10 +107,12 @@ private:
 		string grant;
 		int64_t grant_expires_at = 0;
 		string why;
+		string user; // the session's user (`subject:<issuer>|<sub>`), for the audit
 	};
 	struct Job {
 		bool revoke = false;
 		string acl_session;
+		string user;
 		string token; // exchange: the session's token (wiped when done); revoke: the grant
 		string issuer;
 		int64_t expires_at = 0;
@@ -112,7 +121,13 @@ private:
 	void Work();
 	void Exchange(Job &job);
 	void Revoke(Job &job);
-	void Fail(const string &acl_session, const string &why);
+	//! The session's grant is not to be had (`detail`: failed, rejected), with the reason - audited.
+	void Fail(const string &acl_session, const string &why, const string &code = "other",
+	          const string &detail = "failed");
+	//! A session_grant event (specs/011): what happened to an acl session's grant. Never the grant itself.
+	void Tell(const string &acl_session, const string &user, const string &detail, const string &outcome,
+	          const string &code, const string &reason, optional_ptr<ClientContext> context = nullptr,
+	          int64_t duration_us = -1);
 	bool RevokeAllowed(); // while stopping: within Stop's deadline, and no revocation has failed yet
 
 	shared_ptr<TresorSession> session;
