@@ -27,3 +27,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | [007](007-delegation-rules/spec.md) | delegation — rules, grants, acting for a user (the service side and the rules' SQL) | superseded by 009 |
 | [008](008-delegation-actor/spec.md) | tresor as the actor — a duckdb-acl session's secrets are its user's (exchange, grant, revoke) | implemented |
 | [009](009-permissions-v2/spec.md) | permissions, simply — admins manage, roles use, a grant acts with the server's own rights | implemented |
+| [010](010-token-for-caller/spec.md) | a token for the caller — secrets the service mints per caller, a session's user included | implemented |

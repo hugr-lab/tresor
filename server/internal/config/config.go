@@ -49,6 +49,17 @@ type Issuer struct {
 	// it every caller of the issuer is a person: no claim is a service marker by convention (RFC 9068
 	// puts client_id into every access token, a person's included).
 	Service *ServiceRule `yaml:"service"`
+	// Exchange is the service's own confidential client at this issuer (specs/010): with it the service
+	// mints `token_exchange` secrets - a token for the caller - by RFC 8693 token exchange.
+	Exchange *ExchangeClient `yaml:"exchange"`
+}
+
+// ExchangeClient names the service's client at an issuer; its secret comes from the environment, never
+// from the file.
+type ExchangeClient struct {
+	ClientID        string `yaml:"client_id"`
+	ClientSecretEnv string `yaml:"client_secret_env"`
+	ClientSecret    string `yaml:"-"` // read from ClientSecretEnv at load
 }
 
 // ServiceRule marks a token as a service's: Claim is present (and equals Equals, when set); the
@@ -175,6 +186,14 @@ func (c *Config) validate() error {
 			}
 			if is.Service.ClientClaim == "" {
 				is.Service.ClientClaim = "azp"
+			}
+		}
+		if ex := is.Exchange; ex != nil {
+			if ex.ClientID == "" || ex.ClientSecretEnv == "" {
+				return fmt.Errorf("issuer %q: exchange needs client_id and client_secret_env", is.Issuer)
+			}
+			if ex.ClientSecret = os.Getenv(ex.ClientSecretEnv); ex.ClientSecret == "" {
+				return fmt.Errorf("issuer %q: exchange: the environment variable %s is empty", is.Issuer, ex.ClientSecretEnv)
 			}
 		}
 		if len(is.Algorithms) == 0 {

@@ -31,8 +31,18 @@ type fixture struct {
 }
 
 func newFixture(t *testing.T, basePath string) *fixture {
+	return newFixtureWith(t, basePath, true)
+}
+
+// newFixtureWith: withExchange configures the service's exchange client at the test IdP (specs/010).
+func newFixtureWith(t *testing.T, basePath string, withExchange bool) *fixture {
 	t.Helper()
 	idp := testidp.New(t)
+	exchange := ""
+	if withExchange {
+		t.Setenv("TRESOR_TEST_EXCHANGE", testidp.ExchangeSecret)
+		exchange = "\n    exchange: {client_id: " + testidp.ExchangeClient + ", client_secret_env: TRESOR_TEST_EXCHANGE}"
+	}
 	f := &fixture{t: t, idp: idp, logs: &bytes.Buffer{}}
 	f.server = httptest.NewUnstartedServer(nil)
 	f.base = "http://" + f.server.Listener.Addr().String() + basePath
@@ -46,7 +56,7 @@ issuers:
     scopes: [openid, duckdb-secrets]
     human_flows: [authorization_code]
     roles_claim: realm_access.roles
-    service: {claim: client_id}
+    service: {claim: client_id}` + exchange + `
 policy:
   admins: [role:secrets_admin, client:etl]
   actors:

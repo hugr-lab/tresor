@@ -145,9 +145,24 @@ oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bo
 		}
 		secret = client_secret;
 	}
-	auto out = on_behalf_of
-	               ? oidc::OnBehalfOf(info.endpoints, info.client_id, secret, subject_token, scope)
-	               : oidc::TokenExchange(info.endpoints, info.client_id, secret, subject_token, info.audience, scope);
+	oidc::TokenSet out;
+	if (on_behalf_of) {
+		out = oidc::OnBehalfOf(info.endpoints, info.client_id, secret, subject_token, scope);
+	} else {
+		// asked with a refresh token (specs/010): Keycloak binds the exchanged token to the user's SSO session
+		// only then, and the service's own exchange for a downstream audience (a token for the user) needs that
+		// session. The refresh token itself is dropped at once - the node never renews a user's token
+		out =
+		    oidc::TokenExchange(info.endpoints, info.client_id, secret, subject_token, info.audience, scope, "", true);
+		if (!out.Ok() && out.error_code != "invalid_client" && out.error_code != "invalid_grant") {
+			// an IdP that issues no refresh token by exchange, whatever it answers (its wording and code vary, and
+			// a strict RFC 8693 answer is refused as invalid_token_type): the plain exchange. A bad client or a
+			// dead subject token would fail that the same way
+			out = oidc::TokenExchange(info.endpoints, info.client_id, secret, subject_token, info.audience, scope);
+		}
+	}
+	std::fill(out.refresh_token.begin(), out.refresh_token.end(), '\0');
+	out.refresh_token.clear();
 	std::fill(secret.begin(), secret.end(), '\0');
 	return out;
 }

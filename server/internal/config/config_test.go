@@ -59,3 +59,23 @@ func TestCreateGone(t *testing.T) {
 		t.Fatalf("a config with policy.create: %v", err)
 	}
 }
+
+func TestExchangeClient(t *testing.T) {
+	with := strings.Replace(good, "audience: duckdb-secrets",
+		"audience: duckdb-secrets\n    exchange: {client_id: duckdb-secrets, client_secret_env: TRESOR_TEST_EX}", 1)
+	t.Setenv("TRESOR_TEST_EX", "")
+	if _, err := Parse([]byte(with)); err == nil || !strings.Contains(err.Error(), "TRESOR_TEST_EX is empty") {
+		t.Fatalf("an empty secret env: %v", err)
+	}
+	t.Setenv("TRESOR_TEST_EX", "s3cr3t")
+	cfg, err := Parse([]byte(with))
+	if err != nil || cfg.Issuers[0].Exchange.ClientSecret != "s3cr3t" {
+		t.Fatalf("the secret from the env: %v", err)
+	}
+	if _, err := Parse([]byte(strings.Replace(with, "client_id: duckdb-secrets, ", "", 1))); err == nil {
+		t.Fatal("an exchange without client_id")
+	}
+	if _, err := Parse([]byte(strings.Replace(with, "client_secret_env: TRESOR_TEST_EX", "client_secret: x", 1))); err == nil {
+		t.Fatal("a client secret in the file")
+	}
+}

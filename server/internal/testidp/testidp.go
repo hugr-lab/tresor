@@ -5,9 +5,14 @@ package testidp
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,7 +26,21 @@ type IdP struct {
 	Issuer string
 	Key    *rsa.PrivateKey
 	server *httptest.Server
+	t      *testing.T
+
+	// the token endpoint (specs/010): RFC 8693 exchange and refresh, for ExchangeClient/ExchangeSecret
+	mu        sync.Mutex
+	refreshes map[string]Claims // refresh token -> the claims its tokens carry
+	Exchanges int               // exchanges answered
+	Refreshed int               // refreshes answered
+	LastForm  url.Values        // the last token request (tests read the parameters)
 }
+
+// The service's exchange client at this IdP (specs/010).
+const (
+	ExchangeClient = "duckdb-secrets"
+	ExchangeSecret = "svc-secret"
+)
 
 // New starts an issuer; it stops with the test.
 func New(t *testing.T) *IdP { return start(t, "") }
@@ -35,7 +54,7 @@ func start(t *testing.T, suffix string) *IdP {
 	if err != nil {
 		t.Fatal(err)
 	}
-	idp := &IdP{Key: key}
+	idp := &IdP{Key: key, t: t, refreshes: map[string]Claims{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -51,6 +70,7 @@ func start(t *testing.T, suffix string) *IdP {
 			{Key: &key.PublicKey, KeyID: "k1", Algorithm: "RS256", Use: "sig"},
 		}})
 	})
+	mux.HandleFunc("/token", idp.token)
 	idp.server = httptest.NewServer(mux)
 	idp.URL = idp.server.URL
 	idp.Issuer = idp.URL + suffix
@@ -110,4 +130,83 @@ func Sign(t *testing.T, key any, kid string, alg jose.SignatureAlgorithm, claims
 		t.Fatal(err)
 	}
 	return raw
+}
+
+// token answers the service's exchanges and refreshes: the minted token keeps the subject's sub and roles,
+// with aud = the requested audience; a refresh token is issued when asked for. "dead-refresh" and a subject
+// token "refused" are the IdP's refusals.
+func (idp *IdP) token(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	deny := func(code, desc string) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": code, "error_description": desc})
+	}
+	idp.mu.Lock()
+	defer idp.mu.Unlock()
+	idp.LastForm = r.PostForm
+	if r.PostForm.Get("client_id") != ExchangeClient || r.PostForm.Get("client_secret") != ExchangeSecret {
+		deny("invalid_client", "bad client")
+		return
+	}
+	var claims Claims
+	withRefresh := false
+	switch r.PostForm.Get("grant_type") {
+	case "urn:ietf:params:oauth:grant-type:token-exchange":
+		subject := r.PostForm.Get("subject_token")
+		payload, ok := unverifiedClaims(subject)
+		if !ok || subject == "refused" {
+			deny("invalid_grant", "the subject token "+subject+" is not valid")
+			return
+		}
+		aud := r.PostForm.Get("audience")
+		if aud == "ignored-api" { // an IdP that ignores the audience asked for
+			aud = "somewhere-else"
+		}
+		claims = Claims{"sub": payload["sub"], "aud": aud, "azp": ExchangeClient,
+			"realm_access": payload["realm_access"]}
+		withRefresh = r.PostForm.Get("requested_token_type") == "urn:ietf:params:oauth:token-type:refresh_token"
+		idp.Exchanges++
+	case "refresh_token":
+		stored, ok := idp.refreshes[r.PostForm.Get("refresh_token")]
+		if !ok {
+			deny("invalid_grant", "refresh token not active")
+			return
+		}
+		claims, withRefresh = stored, true
+		idp.Refreshed++
+	default:
+		deny("unsupported_grant_type", "")
+		return
+	}
+	answer := map[string]any{"access_token": idp.Token(idp.t, claims), "token_type": "Bearer", "expires_in": 300,
+		"issued_token_type": "urn:ietf:params:oauth:token-type:access_token"}
+	if withRefresh {
+		refresh := fmt.Sprintf("rt-%d-%d", time.Now().UnixNano(), len(idp.refreshes))
+		idp.refreshes[refresh] = claims
+		answer["refresh_token"] = refresh
+		answer["issued_token_type"] = "urn:ietf:params:oauth:token-type:refresh_token"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(answer)
+}
+
+// Kill ends every refresh token: the users' IdP sessions are over.
+func (idp *IdP) Kill() {
+	idp.mu.Lock()
+	defer idp.mu.Unlock()
+	idp.refreshes = map[string]Claims{}
+}
+
+func unverifiedClaims(raw string) (map[string]any, bool) {
+	parts := strings.Split(raw, ".")
+	if len(parts) != 3 {
+		return nil, false
+	}
+	data, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, false
+	}
+	var out map[string]any
+	return out, json.Unmarshal(data, &out) == nil
 }

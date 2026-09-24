@@ -72,6 +72,7 @@ type issuer struct {
 	cfg        config.Issuer
 	mu         sync.Mutex
 	verifier   *oidc.IDTokenVerifier
+	tokenURL   string    // the issuer's token endpoint, from the same discovery (specs/010: exchanges)
 	failedAt   time.Time // the last failed discovery: retried after retryAfter, not on every request
 	lastFailed error
 }
@@ -111,6 +112,7 @@ func (is *issuer) get(ctx context.Context, now func() time.Time) (*oidc.IDTokenV
 		is.failedAt, is.lastFailed = now(), fmt.Errorf("issuer %s not reachable yet: %w", is.cfg.Issuer, err)
 		return nil, is.lastFailed
 	}
+	is.tokenURL = provider.Endpoint().TokenURL
 	// the JWKS is fetched later, by Verify, under the same bounded client (go-oidc keeps the client
 	// of this context, not its deadline)
 	is.verifier = provider.Verifier(&oidc.Config{
@@ -121,6 +123,23 @@ func (is *issuer) get(ctx context.Context, now func() time.Time) (*oidc.IDTokenV
 		Now:                  now,
 	})
 	return is.verifier, nil
+}
+
+// TokenURL is the token endpoint of a configured issuer (by a token's iss), from its discovery.
+func (v *Verifier) TokenURL(ctx context.Context, iss string) (string, error) {
+	is, ok := v.issuers[config.IssuerKey(iss)]
+	if !ok {
+		return "", fmt.Errorf("issuer %q is not configured", iss)
+	}
+	if _, err := is.get(ctx, v.Now); err != nil {
+		return "", err
+	}
+	is.mu.Lock()
+	defer is.mu.Unlock()
+	if is.tokenURL == "" {
+		return "", fmt.Errorf("issuer %q names no token endpoint", iss)
+	}
+	return is.tokenURL, nil
 }
 
 // Verify checks a raw bearer token and returns its caller. Every failure wraps ErrUnauthenticated.

@@ -54,6 +54,21 @@ for them. Through it:
 - **an administrator can manage through the server:** only a user who is an administrator, and only
   what the service's policy lets that server pass on.
 
+### A token for the caller
+
+Some secrets are a token rather than a stored credential. Examples are an http API that authorises
+per user, or another acl node through quack:
+
+```sql
+ATTACH 'tresor:secrets.example' AS corp;
+ATTACH 'quack:corp.duck' AS remote (TYPE quack);   -- its secret comes from corp, with your own token
+```
+
+An administrator stores such a secret with the service's `token_exchange` provider and the
+downstream audience. You then get a fresh token of **your own** for it, minted by the identity
+provider. Through a node acting for your session, you still get a token of your own, never the
+node's. tresor caches it until shortly before it expires.
+
 ### On a duckdb-acl node
 
 A node running [duckdb-acl](https://github.com/hugr-lab/duckdb-acl) attaches the service **as

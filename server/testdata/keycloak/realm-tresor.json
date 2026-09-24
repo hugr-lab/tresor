@@ -82,13 +82,29 @@
     },
     {
       "clientId": "duckdb-secrets",
-      "name": "The secrets service, as an audience a token exchange can target (specs/008)",
+      "name": "The secrets service: an audience, and the exchanger that mints a caller's tokens (specs/008, 010)",
       "publicClient": false,
-      "secret": "not-a-login",
+      "secret": "svc-secret",
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
-      "implicitFlowEnabled": false
+      "implicitFlowEnabled": false,
+      "attributes": {
+        "standard.token.exchange.enabled": "true",
+        "standard.token.exchange.enableRefreshRequestedTokenType": "SAME_SESSION"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience echo-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "echo-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
     },
     {
       "clientId": "acl-node",
@@ -99,7 +115,8 @@
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "attributes": {
-        "standard.token.exchange.enabled": "true"
+        "standard.token.exchange.enabled": "true",
+        "standard.token.exchange.enableRefreshRequestedTokenType": "SAME_SESSION"
       },
       "protocolMappers": [
         {
@@ -144,6 +161,16 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "echo-api",
+      "name": "A downstream http API a minted token is for (specs/010)",
+      "publicClient": false,
+      "secret": "not-a-login",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "implicitFlowEnabled": false
     }
   ],
   "users": [

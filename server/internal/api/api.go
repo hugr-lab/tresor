@@ -40,6 +40,7 @@ type Server struct {
 	log      *slog.Logger
 	now      func() time.Time
 	grants   grants
+	direct   directCache // tokens minted for callers reading directly (specs/010)
 }
 
 // New wires a server; the verifier and the store are the caller's.
@@ -145,13 +146,14 @@ func (s *Server) authed(next http.HandlerFunc) http.HandlerFunc {
 		}
 		if r.Header.Get("Delegation") != "" {
 			// a server acting for a user: its own token proved who it is, the grant says for whom
-			user, err := s.delegated(r, caller)
+			user, gr, err := s.delegated(r, caller)
 			if err != nil {
 				s.log.Warn("delegation refused", "actor", caller.Owner(), "reason", err.Error())
 				problem(w, http.StatusUnauthorized, "unauthenticated", "the delegation grant is not valid for this caller")
 				return
 			}
 			caller = user
+			r = r.WithContext(context.WithValue(r.Context(), grantKey{}, gr))
 		}
 		if holder, ok := r.Context().Value(loggedCallerKey{}).(*auth.Caller); ok {
 			subject := caller.Owner() // never the grant id
@@ -350,7 +352,7 @@ func descriptor(sec *store.Secret, verbs []string) map[string]any {
 		"created_at":  sec.CreatedAt.UTC().Format(time.RFC3339),
 		"updated_at":  sec.UpdatedAt.UTC().Format(time.RFC3339),
 		"version":     strconv.FormatInt(sec.Version, 10),
-		"dynamic":     false,
+		"dynamic":     isMinted(sec), // a token minted per caller (specs/010)
 		"permissions": verbs,
 	}
 }
@@ -392,6 +394,25 @@ func (s *Server) getSecret(w http.ResponseWriter, r *http.Request) {
 	body["params"] = params
 	body["redact_keys"] = redact
 	body["expires_at"] = nil
+	if isMinted(sec) {
+		// a token for the caller (specs/010): the caller's own, or under a grant the grant's user's
+		token, refusal := s.mintedToken(r, c, sec)
+		if refusal != nil {
+			problem(w, refusal.status, refusal.kind, refusal.detail)
+			return
+		}
+		param := tokenParam[strings.ToLower(sec.Type)]
+		minted := make(map[string]json.RawMessage, len(params)+1)
+		for k, v := range params {
+			minted[k] = v
+		}
+		minted[param], _ = json.Marshal(token.Access)
+		body["params"] = minted
+		body["redact_keys"] = append(slices.Clone(redact), param)
+		if !token.Expiry.IsZero() {
+			body["expires_at"] = token.Expiry.UTC().Format(time.RFC3339)
+		}
+	}
 	w.Header().Set("ETag", strconv.Quote(strconv.FormatInt(sec.Version, 10)))
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, body)
@@ -452,6 +473,12 @@ func (s *Server) putSecret(w http.ResponseWriter, r *http.Request) {
 	if err := validParams(body.Params, body.RedactKeys); err != nil {
 		problem(w, http.StatusUnprocessableEntity, "invalid_secret", err.Error())
 		return
+	}
+	if body.Provider == tokenExchangeProvider {
+		if err := s.validMinted(body.Type, body.Params); err != nil {
+			problem(w, http.StatusUnprocessableEntity, "invalid_secret", err.Error())
+			return
+		}
 	}
 	// If-None-Match: "*" (CREATE) fails on any existing secret; with an ETag, on that version only
 	ifNoneMatch := strings.TrimSpace(r.Header.Get("If-None-Match"))

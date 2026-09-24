@@ -25,7 +25,7 @@ It is **not meant for production**: one process, one encrypted file, no high ava
 - Delegation: grant exchange, the `Delegation` header, and actor policy (tresor specs/009: under a
   grant a server uses its own grants for the user, and passes management through only for admins).
 
-Dynamic secrets are not implemented (`capabilities.dynamic` is false). Issuers must be https unless they are on loopback: their signing keys are
+Dynamic secrets are implemented for one kind: a token for the caller (`token_exchange`, below). Issuers must be https unless they are on loopback: their signing keys are
 fetched from them.
 
 ## Run it
@@ -95,6 +95,48 @@ policy:
   - a management verb (or `create`) passes only for a user who is an admin, and only if the actor's
     `verbs` list it;
   - everything else is `403 actor_not_allowed`.
+
+## A token for the caller (`token_exchange`)
+
+An administrator stores a secret without a token: `provider: token_exchange` and the downstream
+`audience` (and `scope`), for an `http` (`bearer_token`) or `quack` (`token`) secret:
+
+```json
+{"type": "quack", "provider": "token_exchange", "scope": ["quack:corp.duck"], "params": {"audience": "acl-node"}}
+```
+
+On every read, the service mints a token **for the caller** at the identity provider (RFC 8693, as
+its own client), and serves it as a dynamic secret:
+- **a caller reading directly** gets a token exchanged from the one it called with;
+- **under a delegation grant**, the grant's **user** gets a token, never the server. At the grant's
+  exchange the service exchanges the user's token for each audience the server may use, with a
+  refresh token kept with the grant in memory, and renews from it while the user's IdP session
+  lives.
+
+- **Failures:** a lasting refusal is `403 mint_refused`, an outage `503`.
+- **An outage at the grant's exchange** does not spoil the session. The grant keeps the user's
+  token for this service until that token expires (minutes), and mints from it later, as it does
+  for a secret granted to the server after the session opened.
+- **A minted token is checked:** its `aud` must name the audience asked for, and never this service
+  itself. At PUT, an `audience` equal to this service's own is refused.
+- **Refresh tokens are dropped, not revoked at the IdP** (RFC 7009), when a grant ends. They stay
+  valid at the IdP until the user's SSO session ends, and renewing keeps that session from going
+  idle.
+
+The issuer names the service's client, whose secret comes from the environment:
+
+```yaml
+issuers:
+  - issuer: https://idp.example/realms/corp
+    exchange: {client_id: duckdb-secrets, client_secret_env: TRESOR_EXCHANGE_SECRET}
+```
+
+Keycloak (standard token exchange):
+- **the service's client:** `standard.token.exchange.enabled`,
+  `standard.token.exchange.enableRefreshRequestedTokenType: SAME_SESSION`, and an audience mapper
+  per downstream audience;
+- **the node's client:** the same refresh attribute, because tresor's exchange asks for a refresh
+  token so that Keycloak binds the token to the user's session. The test realm has both.
 
 ### Upgrading from before tresor specs/009
 

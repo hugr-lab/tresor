@@ -33,6 +33,15 @@ type grant struct {
 	actorIssuer string
 	user        auth.Caller
 	expires     time.Time
+	minted      *grantTokens // the user's tokens minted at the exchange (specs/010), in memory with the grant
+}
+
+type grantKey struct{}
+
+// grantOf is the delegation grant the request was made under, or nil.
+func grantOf(r *http.Request) *grant {
+	gr, _ := r.Context().Value(grantKey{}).(*grant)
+	return gr
 }
 
 type grants struct {
@@ -73,6 +82,14 @@ func (g *grants) purge(now time.Time, force bool) {
 			delete(g.byID, key)
 		}
 	}
+}
+
+// full: no room for another grant (after purging the expired ones).
+func (g *grants) full(now time.Time) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.purge(now, true)
+	return len(g.byID) >= maxGrants
 }
 
 func (g *grants) get(id string, now time.Time) *grant {
@@ -125,14 +142,14 @@ func (s *Server) actorAllowed(client, issuer string) bool {
 // delegated resolves the Delegation header: the effective caller - the user's identity, with Actor set and
 // the actor's own principals for every permission check - or an error that is always unauthenticated to the
 // client: a grant presented by anyone but its actor is no grant.
-func (s *Server) delegated(r *http.Request, actor *auth.Caller) (*auth.Caller, error) {
+func (s *Server) delegated(r *http.Request, actor *auth.Caller) (*auth.Caller, *grant, error) {
 	id := strings.TrimSpace(r.Header.Get("Delegation"))
 	gr := s.grants.get(id, s.now())
 	if gr == nil {
-		return nil, errors.New("no such delegation grant (or expired)")
+		return nil, nil, errors.New("no such delegation grant (or expired)")
 	}
 	if gr.actorOwner != actor.Owner() {
-		return nil, errors.New("a delegation grant presented by another actor")
+		return nil, nil, errors.New("a delegation grant presented by another actor")
 	}
 	user := gr.user
 	user.Principals = slices.Clone(gr.user.Principals)
@@ -140,7 +157,7 @@ func (s *Server) delegated(r *http.Request, actor *auth.Caller) (*auth.Caller, e
 	user.ActorIssuer = gr.actorIssuer
 	user.ActorPrincipals = slices.Clone(actor.Principals)
 	user.ExpiresAt = gr.expires
-	return &user, nil
+	return &user, gr, nil
 }
 
 // --- grants ------------------------------------------------------------------------------------------
@@ -182,8 +199,18 @@ func (s *Server) exchange(w http.ResponseWriter, r *http.Request) {
 		ttl = maxGrantTTL
 	}
 	expires := s.now().Add(ttl)
-	id, err := s.grants.put(&grant{actorOwner: actor.Owner(), actorClient: client, actorIssuer: actor.Issuer,
-		user: *user, expires: expires}, s.now())
+	gr := &grant{actorOwner: actor.Owner(), actorClient: client, actorIssuer: actor.Issuer, user: *user,
+		expires: expires}
+	if s.grants.full(s.now()) { // before any exchange at the IdP
+		problem(w, http.StatusServiceUnavailable, "service_unavailable", "too many delegation grants")
+		return
+	}
+	// the user's tokens for what the server may mint (specs/010): now, while the subject token lives
+	s.mintAtGrant(r.Context(), gr, body.SubjectToken, actor)
+	if r.Context().Err() != nil {
+		return // the server gave up waiting: no grant nobody holds, with its refresh tokens
+	}
+	id, err := s.grants.put(gr, s.now())
 	if err != nil {
 		problem(w, http.StatusServiceUnavailable, "service_unavailable", "too many delegation grants")
 		return

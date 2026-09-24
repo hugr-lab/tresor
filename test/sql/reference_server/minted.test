@@ -1,0 +1,70 @@
+# name: test/sql/reference_server/minted.test
+# description: A token for the caller (specs/010): Keycloak mints it for the node, for a session's user through the grant, for a user directly
+# group: [reference_server]
+
+# set by scripts/ci/test_keycloak.sh: the echo API answers whom a bearer token was minted for; kc_echo is a
+# token_exchange secret scoped to it, which the node's role and the analysts may use
+require-env TRESOR_KC_HOST
+
+require-env TRESOR_KC_ISSUER
+
+require-env TRESOR_KC_DOOR_TOKEN
+
+require-env TRESOR_KC_ECHO
+
+require acl_stub
+
+require httpfs
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+CREATE SECRET node (TYPE tresor, SCOPE 'tresor:elsewhere', FLOW 'client_credentials', CLIENT_ID 'acl-node',
+    CLIENT_SECRET 'node-secret', ISSUER '{TRESOR_KC_ISSUER}');
+
+statement ok
+ATTACH 'tresor:{TRESOR_KC_HOST}' AS node (INSECURE_HTTP true, SECRET node, ACT_FOR_SESSIONS true);
+
+query II
+SELECT dynamic, provider FROM node.secrets() WHERE name = 'kc_echo';
+----
+true	token_exchange
+
+# the node reading as itself: a token of its own
+query I
+SELECT trim(content) FROM read_text('http://{TRESOR_KC_ECHO}/who');
+----
+aud=echo-api user=service-account-acl-node
+
+# alice's session: through the grant, a token minted for HER - never the node's
+query I
+SELECT acl_stub_open('m-1', '{TRESOR_KC_DOOR_TOKEN}', '{TRESOR_KC_ISSUER}', 300);
+----
+1
+
+statement ok
+SET acl_stub_session = 'm-1';
+
+query I
+SELECT trim(content) FROM read_text('http://{TRESOR_KC_ECHO}/who');
+----
+aud=echo-api user=alice
+
+statement ok
+SET acl_stub_session = '';
+
+statement ok
+SELECT acl_stub_close('m-1', 'client');
+
+statement ok
+DETACH node;
+
+# alice reading directly, with her own login: a token minted for her, from the token she called with
+statement ok
+ATTACH 'tresor:{TRESOR_KC_HOST}' AS alice (INSECURE_HTTP true, LOGIN 'browser', LOGIN_TIMEOUT 60);
+
+query I
+SELECT trim(content) FROM read_text('http://{TRESOR_KC_ECHO}/who');
+----
+aud=echo-api user=alice
