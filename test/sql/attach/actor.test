@@ -47,6 +47,20 @@ ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS corp (INSECURE_HTTP true,
 ----
 configure ACT_FOR_SESSIONS
 
+# nothing publishes acl sessions (no duckdb-acl, or one older than ACLC 2): refused, before any login
+query I
+SELECT acl_stub_publisher('');
+----
+acl_stub (ACLC 2)
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS corp (INSECURE_HTTP true, ACT_FOR_SESSIONS true);
+----
+nothing publishes acl sessions in this instance
+
+statement ok
+SELECT acl_stub_publisher('acl_stub (ACLC 2)');
+
 statement ok
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS corp (INSECURE_HTTP true, ACT_FOR_SESSIONS true, SESSION_GRANT_WAIT 5);
 
@@ -118,7 +132,7 @@ actor_not_allowed
 query I
 SELECT acl_stub_stamp(99);
 ----
-1
+2
 
 statement error
 SELECT * FROM corp.whoami();
@@ -131,7 +145,7 @@ SELECT count(*) FROM which_secret('s3://acting/x.parquet', 's3') WHERE storage =
 0
 
 query I
-SELECT acl_stub_stamp(1);
+SELECT acl_stub_stamp(2);
 ----
 99
 

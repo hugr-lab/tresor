@@ -43,6 +43,11 @@ unique_ptr<Catalog> TresorAttach(optional_ptr<StorageExtensionInfo> storage_info
 	// the secret storage of this name, registered (inactive) before any login: a name duckdb's secret
 	// manager already uses (memory, local_file, ...) is refused up front (specs/004)
 	auto &storage = tresor::StorageFor(context, name);
+	if (request.act_for_sessions) {
+		// acting for duckdb-acl's sessions (specs/008): refused before any login if nothing publishes acl sessions
+		// here, or acl speaks another contract
+		tresor::TresorActor::CheckHooks(db.GetDatabase());
+	}
 	auto session = tresor::Login(context, request);
 	// the list the storage starts from: a service that cannot list its secrets is not attached
 	tresor::Caller node;
@@ -50,8 +55,6 @@ unique_ptr<Catalog> TresorAttach(optional_ptr<StorageExtensionInfo> storage_info
 	auto initial = tresor::FetchDescriptors(node);
 	shared_ptr<tresor::TresorActor> actor;
 	if (request.act_for_sessions) {
-		// acting for duckdb-acl's sessions (specs/008): refused now if acl speaks another contract
-		tresor::TresorActor::CheckHooks(db.GetDatabase());
 		tresor::ActorOptions actor_options;
 		actor_options.on_behalf_of = request.on_behalf_of;
 		actor_options.scope = request.exchange_scope;

@@ -6,7 +6,7 @@
 #
 #   scripts/ci/acl_checkout.sh <dir>
 set -euo pipefail
-ACL_COMMIT=3a5fdb30cda0cbb5b7d6a35fcddb12e0c11ecada # duckdb-acl main, spec 078 (acl_connection, ACLC 1)
+ACL_COMMIT=8739e765a44af7477e33a18b59e3dda0ed0b757b # duckdb-acl main: secrets through the ACL, under the session (specs 082, 083), ACLC 2
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 dest="${1:?usage: acl_checkout.sh <dir>}"
 
@@ -31,6 +31,13 @@ theirs="$(git -C "$dest" ls-tree HEAD duckdb | awk '{print $3}')"
 ours="$(git -C "$root" ls-tree HEAD duckdb | awk '{print $3}')" # the pin, not whatever is checked out
 if [ "$theirs" != "$ours" ]; then
 	echo "acl_checkout: duckdb-acl $ACL_COMMIT pins duckdb $theirs, tresor $ours - move ACL_COMMIT with the pins" >&2
+	exit 1
+fi
+theirs_common="$(git -C "$dest" ls-tree HEAD duckdb-ext-common | awk '{print $3}')"
+ours_common="$(git -C "$root" ls-tree HEAD duckdb-ext-common | awk '{print $3}')"
+if [ "$theirs_common" != "$ours_common" ]; then
+	echo "acl_checkout: duckdb-acl $ACL_COMMIT pins duckdb-ext-common $theirs_common, tresor $ours_common - the" \
+		"acl_connection contract would not match; move the pins together" >&2
 	exit 1
 fi
 # the shared repository at acl's own pin; duckdb is ours (the same commit), linked rather than cloned again
