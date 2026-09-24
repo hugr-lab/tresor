@@ -238,6 +238,35 @@ if [ "${TRESOR_KC_KEYCHAIN:-0}" = "1" ]; then
 		status=1
 	fi
 fi
+# a node that proves itself with a key (specs/013): a key and certificate made for this run, registered on Keycloak's
+# keynode client (client-jwt) through the admin API, then a login from a DuckDB process with PRIVATE_KEY_FILE
+kc_admin="$(curl -sf -d grant_type=password -d client_id=admin-cli -d username=admin -d password=admin \
+	"http://127.0.0.1:$kc_port/realms/master/protocol/openid-connect/token" |
+	python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' || true)"
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keynode.pem" 2>/dev/null
+chmod 600 "$work/keynode.pem"
+openssl req -x509 -new -key "$work/keynode.pem" -subj /CN=keynode -days 1 -out "$work/keynode.crt" 2>/dev/null
+cert="$(openssl x509 -in "$work/keynode.crt" -outform der | base64 | tr -d '\n')"
+admin_api="http://127.0.0.1:$kc_port/admin/realms/tresor/clients"
+keynode_uuid="$(curl -sf -H "Authorization: Bearer $kc_admin" "$admin_api?clientId=keynode" |
+	python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])' || true)"
+key_ok=0
+if [ -n "$keynode_uuid" ] && curl -sf -o /dev/null -X PUT -H "Authorization: Bearer $kc_admin" \
+	-H 'Content-Type: application/json' "$admin_api/$keynode_uuid" \
+	-d '{"clientId":"keynode","clientAuthenticatorType":"client-jwt","attributes":{"jwt.credential.certificate":"'"$cert"'","use.jwks.url":"false"}}'; then
+	cli="${TRESOR_CLI:-$(dirname "$unittest")/../duckdb}"
+	printf "LOAD '%s';\nCREATE SECRET kn (TYPE tresor, SCOPE 'tresor:127.0.0.1:%s', FLOW 'client_credentials', CLIENT_ID 'keynode', ISSUER '%s', PRIVATE_KEY_FILE '%s');\nATTACH 'tresor:127.0.0.1:%s' AS kn (INSECURE_HTTP true, SECRET kn);\nSELECT 'key:' || login || '|' || subject FROM kn.whoami();\n" \
+		"$(dirname "$unittest")/../extension/tresor/tresor.duckdb_extension" "$server_port" "$issuer" \
+		"$work/keynode.pem" "$server_port" | "$cli" -unsigned -list -noheader >"$work/key.log" 2>&1 || true
+	grep -Eq '^key:client_credentials\|' "$work/key.log" && key_ok=1
+fi
+if [ "$key_ok" = 1 ]; then
+	echo "test_keycloak: private_key_jwt: a node logged in to Keycloak with its key, no secret"
+else
+	sed -E 's/eyJ[A-Za-z0-9._-]*/<token>/g' "$work/key.log" 2>/dev/null >&2 || true
+	echo "test_keycloak: private_key_jwt: the node's key login did not happen" >&2
+	status=1
+fi
 "$unittest" --skip-error-messages '' 'test/sql/conformance/*' || status=1
 if [ "$status" != 0 ]; then
 	echo "--- tresor-server log ---" >&2

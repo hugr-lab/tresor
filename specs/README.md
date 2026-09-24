@@ -30,3 +30,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | [010](010-token-for-caller/spec.md) | a token for the caller — secrets the service mints per caller, a session's user included | implemented |
 | [011](011-audit/spec.md) | audit and traces — what tresor did, for DuckDB's log and for OpenTelemetry (`TRSA` 1) | implemented |
 | [012](012-keychain-sso/spec.md) | one login for a person — the refresh token in the OS keychain, per service | implemented |
+| [013](013-service-identities/spec.md) | a service logs in without a shared secret — private_key_jwt, federated assertions, Azure managed identity; Auth0's audience | implemented |

@@ -8,6 +8,7 @@
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/unordered_map.hpp"
 #include "oidc_core.hpp"
+#include "tresor_credentials.hpp"
 #include "tresor_remember.hpp"
 
 #include <functional>
@@ -16,7 +17,7 @@ namespace duckdb {
 namespace tresor {
 
 //! How the session logged in; `browser` and `device` are people, the rest services.
-enum class LoginFlow : uint8_t { BROWSER, DEVICE, CLIENT_CREDENTIALS, TOKEN, REMEMBERED };
+enum class LoginFlow : uint8_t { BROWSER, DEVICE, CLIENT_CREDENTIALS, TOKEN, REMEMBERED, FEDERATED, MANAGED_IDENTITY };
 
 string LoginFlowName(LoginFlow flow);
 
@@ -29,6 +30,7 @@ struct ServiceInfo {
 	string client_id; // the public client of people, or the service's own
 	string scope;     // what the login asked for
 	string audience;  // the chosen issuer's `audience` in the discovery: what an exchange asks for (specs/008)
+	bool audience_parameter = false; // the discovery asks for `audience=` on the IdP's requests (Auth0; specs/013)
 	bool insecure_http = false;
 	unordered_map<string, bool> capabilities; // discovery's `capabilities` (write, annotate, dynamic, delegation)
 	oidc::Endpoints endpoints;
@@ -46,7 +48,7 @@ struct ServiceResponse {
 //! many users' sessions through one login (specs/008).
 class TresorSession {
 public:
-	TresorSession(ServiceInfo info, LoginFlow flow, oidc::TokenSet tokens, string client_secret);
+	TresorSession(ServiceInfo info, LoginFlow flow, oidc::TokenSet tokens, ServiceCredential credential);
 
 	const ServiceInfo &Info() const {
 		return info;
@@ -101,8 +103,8 @@ private:
 	string subject;
 	mutex lock;
 	oidc::TokenSet tokens;
-	int64_t issued_at = 0; // when `tokens` arrived: the renewal margin is at most half their life
-	string client_secret;  // client_credentials only: the re-mint needs it
+	int64_t issued_at = 0;        // when `tokens` arrived: the renewal margin is at most half their life
+	ServiceCredential credential; // a service's login: what re-mints it (a secret, or paths - never read content)
 	bool closed = false;
 	bool logged_out = false;                        // the IdP ended the login (invalid_grant): only a new ATTACH helps
 	weak_ptr<RememberedLogins> remember;            // specs/012: where a rotated refresh token goes

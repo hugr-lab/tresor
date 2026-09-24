@@ -42,9 +42,12 @@ type Issuer struct {
 	Scopes       []string `yaml:"scopes"`
 	HumanFlows   []string `yaml:"human_flows"`
 	ServiceFlows []string `yaml:"service_flows"`
-	RolesClaim   string   `yaml:"roles_claim"`
-	GroupsClaim  string   `yaml:"groups_claim"`
-	Algorithms   []string `yaml:"algorithms"`
+	// AudienceParameter asks clients to send `audience=<audience>` on the IdP's requests: an IdP that picks a
+	// token's audience from that parameter rather than its configuration (Auth0; tresor specs/013).
+	AudienceParameter bool     `yaml:"audience_parameter"`
+	RolesClaim        string   `yaml:"roles_claim"`
+	GroupsClaim       string   `yaml:"groups_claim"`
+	Algorithms        []string `yaml:"algorithms"`
 	// Service says how this issuer's client-credentials tokens are told apart from people's. Without
 	// it every caller of the issuer is a person: no claim is a service marker by convention (RFC 9068
 	// puts client_id into every access token, a person's included).

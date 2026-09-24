@@ -146,6 +146,9 @@ func TestDiscoveryAndWhoami(t *testing.T) {
 		if _, ok := issuer["service_flows"]; ok {
 			t.Fatal("an unconfigured flow list is absent, not empty (empty means none)")
 		}
+		if _, ok := issuer["audience_parameter"]; ok {
+			t.Fatal("audience_parameter is absent unless configured (specs/013)")
+		}
 
 		w := f.do("GET", "/v1/whoami", f.alice, "").json(t)
 		if w["subject"] != "alice-id" || w["issuer"] != f.idp.URL {

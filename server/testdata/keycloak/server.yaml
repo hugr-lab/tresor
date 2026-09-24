@@ -7,7 +7,7 @@ issuers:
     client_id: duckdb
     scopes: [openid]
     human_flows: [authorization_code, device_code]
-    service_flows: [client_credentials]
+    service_flows: [client_credentials, private_key_jwt]
     roles_claim: realm_access.roles
     # a client-credentials token carries Keycloak's client_id session note (the service_account scope)
     service: {claim: client_id}

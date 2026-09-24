@@ -103,6 +103,7 @@ struct Discovered {
 		string issuer;
 		string client_id;
 		string audience;
+		bool audience_parameter = false; // send `audience=` on the IdP's requests (Auth0; specs/013)
 		vector<string> scopes;
 		vector<string> human_flows; // when present (even empty), a client attempts no others (protocol)
 		vector<string> service_flows;
@@ -162,6 +163,8 @@ Discovered Discover(const AttachRequest &request, string &discovery_url) {
 			issuer.issuer = StripSlashes(Str(item, "issuer"));
 			issuer.client_id = Str(item, "client_id");
 			issuer.audience = Str(item, "audience");
+			auto audience_parameter = yyjson_obj_get(item, "audience_parameter");
+			issuer.audience_parameter = audience_parameter && yyjson_is_true(audience_parameter);
 			issuer.scopes = StrList(item, "scopes");
 			issuer.human_flows = StrList(item, "human_flows", &issuer.has_human_flows);
 			issuer.service_flows = StrList(item, "service_flows", &issuer.has_service_flows);
@@ -314,6 +317,12 @@ oidc::TokenSet PersonLogin(ClientContext &context, const AttachRequest &request,
 		return context.IsInterrupted();
 	};
 	oidc::TokenSet tokens;
+	// an IdP that picks the token's audience from a request parameter (Auth0) is asked for the service's, when the
+	// discovery says so (specs/013)
+	std::map<std::string, std::string> extra;
+	if (info.audience_parameter && !info.audience.empty()) {
+		extra["audience"] = info.audience;
+	}
 	if (flow == LoginFlow::BROWSER) {
 		tokens = oidc::AuthorizationCodeLogin(
 		    info.endpoints, info.client_id, info.scope,
@@ -323,9 +332,9 @@ oidc::TokenSet PersonLogin(ClientContext &context, const AttachRequest &request,
 			                                                    url);
 			    OpenBrowser(url);
 		    },
-		    deadline, cancelled);
+		    deadline, cancelled, extra);
 	} else {
-		auto begun = oidc::DeviceBegin(info.endpoints, info.client_id, info.scope);
+		auto begun = oidc::DeviceBegin(info.endpoints, info.client_id, info.scope, extra);
 		if (!begun.Ok()) {
 			throw IOException("tresor: the device login to %s could not start: %s", request.host, begun.error);
 		}
@@ -602,11 +611,15 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 
 	// a LOGIN given is a person asking to log in as themselves: no secret is looked up for them
 	auto service_secret = request.mode_given ? nullptr : FindServiceSecret(context, request);
-	if (request.act_for_sessions &&
-	    (!service_secret || StringUtil::Lower(SecretString(*service_secret, "flow")) != "client_credentials")) {
-		// refused before any login: a headless node must not sit in a browser or device flow first
-		throw InvalidInputException("tresor: ACT_FOR_SESSIONS needs a service login - a SECRET of flow "
-		                            "client_credentials");
+	auto secret_flow = service_secret ? StringUtil::Lower(SecretString(*service_secret, "flow")) : string();
+	if (request.act_for_sessions && secret_flow != "client_credentials" && secret_flow != "federated") {
+		// refused before any login: a headless node must not sit in a browser or device flow first; and a managed
+		// identity is no client at the IdP, so it has nothing to exchange a session's token as (specs/013)
+		throw InvalidInputException(
+		    secret_flow == "managed_identity"
+		        ? "tresor: ACT_FOR_SESSIONS needs a client at the identity provider to exchange tokens as - a "
+		          "managed identity is none (use FLOW 'client_credentials' with a key, or 'federated')"
+		        : "tresor: ACT_FOR_SESSIONS needs a service login - a SECRET of flow client_credentials or federated");
 	}
 	if (service_secret && request.remember_given && request.remember) {
 		throw InvalidInputException("tresor: REMEMBER is for a person's login - a service logs in again from its "
@@ -618,8 +631,8 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 	string started_from; // the stored token a remembered login began with (specs/012); empty for a fresh login
 	LoginFlow flow;
 	oidc::TokenSet tokens;
-	string client_secret;
-	if (service_secret && StringUtil::Lower(SecretString(*service_secret, "flow")) == "token") {
+	ServiceCredential credential;
+	if (service_secret && secret_flow == "token") {
 		// a token already held: no identity provider is involved, the service alone judges it
 		flow = LoginFlow::TOKEN;
 		tokens.access_token = SecretString(*service_secret, "token");
@@ -639,6 +652,7 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 		CheckTransport(request, "issuer", issuer.issuer);
 		info.issuer = issuer.issuer;
 		info.audience = issuer.audience;
+		info.audience_parameter = issuer.audience_parameter;
 		info.endpoints = oidc::Discover(issuer.issuer);
 		if (!info.endpoints.Ok()) {
 			throw IOException("tresor: the identity provider %s of %s: %s", issuer.issuer, request.host,
@@ -651,11 +665,38 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 			}
 		}
 		if (service_secret) {
-			flow = LoginFlow::CLIENT_CREDENTIALS;
-			if (!issuer.OffersService("client_credentials")) {
-				throw InvalidInputException("tresor: %s does not accept client_credentials logins", request.host);
+			// how the service proves itself (specs/013): what the secret names - a secret, or paths
+			credential.client_id = SecretString(*service_secret, "client_id");
+			const char *listed;
+			if (secret_flow == "managed_identity") {
+				flow = LoginFlow::MANAGED_IDENTITY;
+				credential.kind = ServiceCredential::Kind::MANAGED_IDENTITY;
+				listed = "managed_identity";
+			} else if (secret_flow == "federated") {
+				flow = LoginFlow::FEDERATED;
+				credential.assertion_file = SecretString(*service_secret, "assertion_file");
+				credential.assertion_audience = SecretString(*service_secret, "assertion_audience");
+				credential.kind = credential.assertion_file.empty() ? ServiceCredential::Kind::GITHUB_ACTIONS
+				                                                    : ServiceCredential::Kind::ASSERTION_FILE;
+				listed = "federated";
+			} else {
+				flow = LoginFlow::CLIENT_CREDENTIALS;
+				credential.private_key_file = SecretString(*service_secret, "private_key_file");
+				if (credential.private_key_file.empty()) {
+					credential.kind = ServiceCredential::Kind::SECRET;
+					credential.client_secret = SecretString(*service_secret, "client_secret");
+					listed = "client_credentials";
+				} else {
+					credential.kind = ServiceCredential::Kind::PRIVATE_KEY;
+					credential.key_id = SecretString(*service_secret, "key_id");
+					credential.certificate_file = SecretString(*service_secret, "certificate_file");
+					listed = "private_key_jwt";
+				}
 			}
-			info.client_id = SecretString(*service_secret, "client_id");
+			if (!issuer.OffersService(listed)) {
+				throw InvalidInputException("tresor: %s does not accept %s logins", request.host, listed);
+			}
+			info.client_id = credential.client_id;
 			info.scope = SecretString(*service_secret, "oauth_scope");
 			if (info.scope.empty()) {
 				vector<string> scopes;
@@ -666,10 +707,13 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 				}
 				info.scope = StringUtil::Join(scopes, " ");
 			}
-			client_secret = SecretString(*service_secret, "client_secret");
-			tokens = oidc::ClientCredentials(info.endpoints, info.client_id, client_secret, info.scope);
+			std::map<std::string, std::string> extra;
+			if (info.audience_parameter && !info.audience.empty()) {
+				extra["audience"] = info.audience;
+			}
+			tokens = credential.Mint(info.endpoints, info.scope, extra, info.audience);
 			if (!tokens.Ok()) {
-				throw InvalidInputException("tresor: the client_credentials login to %s failed: %s", request.host,
+				throw InvalidInputException("tresor: the %s login to %s failed: %s", LoginFlowName(flow), request.host,
 				                            tokens.error);
 			}
 		} else {
@@ -706,10 +750,10 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 	}
 
 	if (request.act_for_sessions) {
-		// the exchange is made as the node's own client: only a client_credentials login has one
-		if (flow != LoginFlow::CLIENT_CREDENTIALS) {
+		// the exchange is made as the node's own client: a client_credentials or federated login has one
+		if (flow != LoginFlow::CLIENT_CREDENTIALS && flow != LoginFlow::FEDERATED) {
 			throw InvalidInputException("tresor: ACT_FOR_SESSIONS needs a service login - a SECRET of flow "
-			                            "client_credentials");
+			                            "client_credentials or federated");
 		}
 		// the audience users' tokens are exchanged for is the node's to decide, not the service's: pinned by
 		// EXCHANGE_AUDIENCE, or the discovery's - only when the node's own token, which the IdP issued for this
@@ -735,7 +779,7 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 			                            request.host);
 		}
 	}
-	auto session = make_shared_ptr<TresorSession>(std::move(info), flow, std::move(tokens), std::move(client_secret));
+	auto session = make_shared_ptr<TresorSession>(std::move(info), flow, std::move(tokens), std::move(credential));
 	// the login is proven only when the service accepts it: fail closed at ATTACH, not at first use
 	auto whoami = session->Call("GET", "/v1/whoami");
 	if (whoami.status != 200) {

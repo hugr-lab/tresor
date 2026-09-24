@@ -81,6 +81,40 @@
       ]
     },
     {
+      "clientId": "keynode",
+      "name": "A node that proves itself with a key (tresor specs/013): its certificate is set at test time",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-jwt",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "attributes": {"use.jwks.url": "false"},
+      "protocolMappers": [
+        {
+          "name": "audience duckdb-secrets",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "duckdb-secrets",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "client_id (as the service_account scope adds it)",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usersessionmodel-note-mapper",
+          "config": {
+            "user.session.note": "client_id",
+            "claim.name": "client_id",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
       "clientId": "duckdb-secrets",
       "name": "The secrets service: an audience, and the exchanger that mints a caller's tokens (specs/008, 010)",
       "publicClient": false,

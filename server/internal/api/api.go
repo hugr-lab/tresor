@@ -324,6 +324,9 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 		if is.ServiceFlows != nil {
 			entry["service_flows"] = is.ServiceFlows
 		}
+		if is.AudienceParameter {
+			entry["audience_parameter"] = true
+		}
 		issuers = append(issuers, entry)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

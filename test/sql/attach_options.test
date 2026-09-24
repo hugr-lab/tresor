@@ -35,12 +35,12 @@ FLOW is required
 statement error
 CREATE SECRET s (TYPE tresor, FLOW 'password', CLIENT_ID 'x');
 ----
-FLOW is 'client_credentials' or 'token'
+FLOW is 'client_credentials', 'federated', 'managed_identity' or 'token'
 
 statement error
 CREATE SECRET s (TYPE tresor, SCOPE 'tresor:x', FLOW 'client_credentials', CLIENT_ID 'x');
 ----
-needs CLIENT_SECRET
+needs ISSUER
 
 statement error
 CREATE SECRET s (TYPE tresor, SCOPE 'tresor:x', FLOW 'token', TOKEN 't', CLIENT_SECRET 'x');

@@ -109,11 +109,46 @@ own identity provider, whatever the secrets service's discovery says. `LOGIN 'br
 `LOGIN 'device'` always logs you in as yourself, even when a service secret covers the host.
 
 `FLOW 'token', TOKEN '…'` uses an access token the process already holds. It is not renewed: when it
-expires, replace the secret and attach again. Private-key JWTs and federated workload identities
-(Kubernetes, GitHub, Azure) are planned.
+expires, replace the secret and attach again.
 
-A `PERSISTENT` secret is written to DuckDB's local secret directory like any other. Keep service
-credentials in a temporary secret when the process can create them from its environment.
+**Without a shared secret.** A server should not carry a `CLIENT_SECRET`. These ways prove the
+service to its identity provider instead:
+
+```sql
+-- its own key (private_key_jwt): the identity provider holds the public key or the certificate
+CREATE SECRET node (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'client_credentials',
+    CLIENT_ID 'acl-node', ISSUER 'https://login.microsoftonline.com/<tenant>/v2.0',
+    PRIVATE_KEY_FILE '/var/run/secrets/node/key.pem',
+    CERTIFICATE_FILE '/var/run/secrets/node/cert.pem');   -- Entra matches the certificate; KEY_ID for a kid
+
+-- a token its platform issued (a Kubernetes service-account token, Azure workload identity)
+CREATE SECRET node (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'federated',
+    CLIENT_ID 'acl-node', ISSUER '…', ASSERTION_FILE '/var/run/secrets/azure/tokens/azure-identity-token');
+
+-- in a GitHub Actions job (permissions: id-token: write)
+CREATE SECRET ci (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'federated',
+    CLIENT_ID 'ci', ISSUER '…', ASSERTION_SOURCE 'github_actions',
+    ASSERTION_AUDIENCE 'api://AzureADTokenExchange');
+
+-- on Azure: the platform's managed identity, nothing secret at all (CLIENT_ID for a user-assigned one)
+CREATE SECRET node (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'managed_identity',
+    ISSUER 'https://login.microsoftonline.com/<tenant>/v2.0');
+```
+
+- **The secret holds paths, never a key or a token.**
+  - Files are read when a login needs them, at ATTACH and at each renewal, so rotated files are
+    picked up.
+  - A key file must be readable by its owner only (`chmod 600`; Kubernetes: `defaultMode: 0400`).
+  - Keys are RSA (2048 bits or more, RS256) or P-256 (ES256), unencrypted PEM.
+- **A node acting for duckdb-acl sessions** (`ACT_FOR_SESSIONS`) may log in with a key or
+  federated. A managed identity cannot: it is no client at the identity provider, so it has
+  nothing to exchange a session's token as.
+- **An identity provider that takes the audience from a request parameter** (Auth0) gets it when
+  the service's discovery sets `audience_parameter`. Nothing to configure on the client.
+
+A `PERSISTENT` secret is written to DuckDB's local secret directory like any other. A
+`CLIENT_SECRET` in it is written too; the flows above write only paths and ids. Keep a secret's
+credential in a temporary secret when the process can create it from its environment.
 
 ## Development against a local service
 

@@ -50,7 +50,7 @@ fixes only what a client sees.
       "scopes": ["openid", "offline_access"],
       "audience": "duckdb-secrets",
       "human_flows": ["authorization_code", "device_code"],
-      "service_flows": ["client_credentials", "private_key_jwt", "token_exchange", "federated"]
+      "service_flows": ["client_credentials", "private_key_jwt", "token_exchange", "federated", "managed_identity"]
     }
   ],
   "capabilities": {"write": true, "annotate": true, "dynamic": true, "delegation": false}
@@ -65,12 +65,23 @@ fixes only what a client sees.
   issuers, the **user names one**. A client does not pick one by list order, since that would choose
   an identity for them.
 - `human_flows` / `service_flows` — the login flows the service expects clients to use with this
-  issuer. When present, a client attempts no others.
+  issuer. When present, a client attempts no others. The service flows are:
+  - `client_credentials` (a client secret);
+  - `private_key_jwt` (client credentials, the client proving itself with a signed assertion,
+    RFC 7523);
+  - `federated` (client credentials with an assertion its platform issued: a Kubernetes
+    service-account token, GitHub Actions' OIDC token);
+  - `managed_identity` (a token from the Azure platform's own identity endpoint, for `audience`);
+  - `token_exchange` (a server acting for users, [Delegation](#delegation)).
 - `scopes` — what a person's login requests. A service's client-credentials login requests them
   without `openid` and `offline_access`, unless it is configured with its own.
 - `audience` — the `aud` the service requires. Making the issuer put it into tokens requested with
   `scopes` is identity-provider configuration (a client scope, an application ID URI). Clients do not
-  send it.
+  send it, unless `audience_parameter` is true.
+- `audience_parameter` — optional, `false` when absent. When `true`, a client sends
+  `audience=<audience>` on the authorization, device and client credentials requests to this issuer.
+  Some identity providers (Auth0) choose a token's audience from that parameter, not from their
+  configuration.
 - `client_id` — a **public** client for people (authorization code with PKCE, loopback redirect).
 - `capabilities.delegation` — whether the optional [delegation](#delegation) resources exist.
   Grants are not optional in version 1.

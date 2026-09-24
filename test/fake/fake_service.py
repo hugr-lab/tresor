@@ -34,7 +34,10 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import secrets
+import subprocess
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -51,7 +54,7 @@ SERVICE = {"subject": "client:etl", "roles": ["role:etl"], "create": True}
 CLIENTS = {"etl": "s3cr3t"}
 STATIC_TOKENS = {"static-token": {"subject": "client:static", "roles": [], "create": False}}
 REALMS = {"", "multi", "wrong", "expiring", "revoking", "noflows", "broken", "nolist", "acting", "shifty", "picky",
-          "second"}
+          "second", "auth0"}
 ISSUERS = {"idp", "idp2", "idp-revoking"}
 FIRST_USES = 2  # expiring/revoking: how many whoami calls a token as first issued survives
 
@@ -148,7 +151,86 @@ GRANTS = {}  # grant id -> {"actor": subject, "user": identity, "expires": epoch
 STATS = {"exchanges": 0, "grants": 0, "revoked": 0, "refresh_asked": 0}
 # the IdP's side of a person's remembered login (specs/012): browser visits, refreshes (and the scope asked),
 # revocations - read by the tests at GET /_stats
-IDP_STATS = {"authorize": 0, "refresh": 0, "refresh_scope": "", "revoked_tokens": 0}
+IDP_STATS = {"authorize": 0, "refresh": 0, "refresh_scope": "", "revoked_tokens": 0,
+             # specs/013: what the audience parameter, the platform endpoints and the assertions carried
+             "authorize_audience": "", "cc_audience": "", "mi_resource": "", "gh_audience": "", "assertions": 0}
+# specs/013: services that prove themselves without a secret - public keys from the test script's key directory
+KEYS = os.environ.get("TRESOR_TEST_KEYS", "")
+KEY_CLIENTS = {"keynode": "keynode.pub", "eckeynode": "eckeynode.pub"}
+FEDERATED = {"fednode": {"platform-jwt", "github-jwt"}}
+SEEN_JTI = set()
+
+
+def b64url_decode(text):
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def der_ecdsa(raw):
+    """JWS r||s to the DER ECDSA-Sig-Value openssl verifies."""
+    def integer(value):
+        value = value.lstrip(b"\x00") or b"\x00"
+        if value[0] & 0x80:
+            value = b"\x00" + value
+        return b"\x02" + bytes([len(value)]) + value
+    body = integer(raw[:32]) + integer(raw[32:])
+    return b"\x30" + bytes([len(body)]) + body
+
+
+def verify_assertion(client, jwt, token_endpoint):
+    """A private_key_jwt client assertion (RFC 7523): its signature against the client's public key (openssl),
+    iss = sub = the client, aud = the token endpoint, a live exp, a jti never seen."""
+    if client not in KEY_CLIENTS or not KEYS:
+        return False
+    try:
+        head, body, signature = jwt.split(".")
+        header = json.loads(b64url_decode(head))
+        claims = json.loads(b64url_decode(body))
+        raw = b64url_decode(signature)
+    except Exception:
+        return False
+    if claims.get("iss") != client or claims.get("sub") != client or claims.get("aud") != token_endpoint:
+        return False
+    if not (time.time() < claims.get("exp", 0) <= time.time() + 330):
+        return False
+    alg = header.get("alg")
+    if alg == "ES256":
+        raw = der_ecdsa(raw)
+    elif alg != "RS256":
+        return False
+    with tempfile.TemporaryDirectory() as work:
+        data, sig = os.path.join(work, "data"), os.path.join(work, "sig")
+        with open(data, "wb") as out:
+            out.write((head + "." + body).encode())
+        with open(sig, "wb") as out:
+            out.write(raw)
+        verified = subprocess.run(["openssl", "dgst", "-sha256", "-verify", os.path.join(KEYS, KEY_CLIENTS[client]),
+                                   "-signature", sig, data], capture_output=True).returncode == 0
+    jti = claims.get("jti")
+    if not verified or not jti or jti in SEEN_JTI:
+        return False
+    SEEN_JTI.add(jti)
+    return True
+
+
+def client_ok(form, token_endpoint):
+    """A confidential client's proof: its secret, a signed assertion, or a federated one (specs/013)."""
+    client = form.get("client_id")
+    assertion = form.get("client_assertion")
+    if assertion is not None:
+        if form.get("client_assertion_type") != "urn:ietf:params:oauth:client-assertion-type:jwt-bearer":
+            return False
+        IDP_STATS["assertions"] += 1
+        if client in FEDERATED:
+            return assertion in FEDERATED[client]
+        return verify_assertion(client, assertion, token_endpoint)
+    return client in CLIENTS and CLIENTS.get(client) == form.get("client_secret")
+
+
+def service_identity(client):
+    """Who a service login is: etl is the ordinary service; the new ones are nodes (specs/013)."""
+    if client == "etl":
+        return SERVICE
+    return {"subject": "client:" + client, "roles": ["role:nodes"], "create": False}
 
 
 def descriptor(name, sec):
@@ -276,6 +358,28 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 self.send(200, dict(IDP_STATS))
             return
+        if url.path == "/msi/token":  # specs/013: Azure's App Service identity endpoint (IDENTITY_ENDPOINT)
+            query = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+            if self.headers.get("X-IDENTITY-HEADER") != "test-mi" or query.get("api-version") != "2019-08-01":
+                self.send(401, {"error": "unauthorized", "error_description": "no identity header"})
+                return
+            resource = query.get("resource", "")
+            with LOCK:
+                IDP_STATS["mi_resource"] = resource
+                # a user-assigned identity called "mismatch" gets a token for another audience: never sent on
+                token = jwt_shaped("other" if query.get("client_id") == "mismatch" else resource)
+                TOKENS[token] = {"identity": service_identity("mi"), "uses": 0, "renewed": False}
+            self.send(200, {"access_token": token, "expires_in": "300", "resource": resource})
+            return
+        if url.path == "/gh":  # specs/013: GitHub Actions' OIDC token service (ACTIONS_ID_TOKEN_REQUEST_URL)
+            query = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+            if self.headers.get("Authorization") != "bearer test-gh":
+                self.send(401, {"message": "bad token"})
+                return
+            with LOCK:
+                IDP_STATS["gh_audience"] = query.get("audience", "")
+            self.send(200, {"count": 1, "value": "github-jwt"})
+            return
         if url.path == "/_forget":  # specs/012: the IdP forgets every refresh token (a session ended there)
             with LOCK:
                 REFRESH.clear()
@@ -305,6 +409,7 @@ class Handler(BaseHTTPRequestHandler):
                 with LOCK:
                     CODES[code] = (query.get("code_challenge"), query.get("redirect_uri"), PERSON)
                     IDP_STATS["authorize"] += 1
+                    IDP_STATS["authorize_audience"] = query.get("audience", "")
                 target = query["redirect_uri"] + "?" + urllib.parse.urlencode(
                     {"code": code, "state": query.get("state", "")})
                 self.send(302, b"", "text/plain", {"Location": target})
@@ -320,8 +425,10 @@ class Handler(BaseHTTPRequestHandler):
                 "scopes": ["openid", "offline_access", "duckdb-secrets"],
                 "audience": "payroll-api" if realm == "shifty" else "duckdb-secrets",
                 "human_flows": ["authorization_code", "device_code"],
-                "service_flows": ["client_credentials"],
+                "service_flows": ["client_credentials", "private_key_jwt", "federated", "managed_identity"],
             }
+            if realm == "auth0":  # specs/013: an IdP that takes the audience from a request parameter
+                issuer = dict(issuer, audience="https://api.auth0.example", audience_parameter=True)
             if realm == "noflows":
                 issuer = dict(issuer, human_flows=[], service_flows=[])
             issuers = [issuer] + ([dict(issuer, issuer=base + "/idp2")] if realm == "multi" else [])
@@ -701,15 +808,16 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.send(200, issue(identity, False, renewed=True))  # no rotation: keep the old one
             elif grant == "client_credentials":
-                if CLIENTS.get(form.get("client_id")) != form.get("client_secret"):
-                    self.send(401, {"error": "invalid_client", "error_description": "bad client secret"})
+                IDP_STATS["cc_audience"] = form.get("audience", "")
+                if not client_ok(form, self.base() + "/" + realm + "/token"):
+                    self.send(401, {"error": "invalid_client", "error_description": "bad client credentials"})
                 else:
-                    self.send(200, issue(SERVICE, False))
+                    self.send(200, issue(service_identity(form.get("client_id")), False))
             elif grant == "urn:ietf:params:oauth:grant-type:token-exchange":
                 at = "urn:ietf:params:oauth:token-type:access_token"
                 subject = form.get("subject_token")
-                if CLIENTS.get(form.get("client_id")) != form.get("client_secret"):
-                    self.send(401, {"error": "invalid_client", "error_description": "bad client secret"})
+                if not client_ok(form, self.base() + "/" + realm + "/token"):
+                    self.send(401, {"error": "invalid_client", "error_description": "bad client credentials"})
                 elif form.get("audience") != "duckdb-secrets" or form.get("subject_token_type") != at:
                     self.send(400, {"error": "invalid_target", "error_description": "not an audience of this IdP"})
                 elif subject not in NODE_TOKENS:

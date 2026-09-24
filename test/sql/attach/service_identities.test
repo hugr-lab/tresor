@@ -1,0 +1,302 @@
+# name: test/sql/attach/service_identities.test
+# description: a service logs in without a shared secret - private_key_jwt, federated assertions, Azure managed identity - and Auth0's audience parameter (specs/013)
+# group: [attach]
+
+require-env TRESOR_TEST_PORT
+
+require-env TRESOR_TEST_KEYS
+
+require httpfs
+
+require acl_stub
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+CREATE MACRO idp(what) AS (SELECT regexp_extract(content, '"' || what || '": ([^,}]*)', 1) FROM read_text('http://127.0.0.1:{TRESOR_TEST_PORT}/_stats'));
+
+# --- what each flow takes ---------------------------------------------------------------------------------------
+
+statement error
+CREATE SECRET two_ways (TYPE tresor, SCOPE 'tresor:x', FLOW 'client_credentials', CLIENT_ID 'keynode', ISSUER 'http://i',
+    CLIENT_SECRET 's', PRIVATE_KEY_FILE '/k.pem');
+----
+needs exactly one of CLIENT_SECRET, PRIVATE_KEY_FILE
+
+statement error
+CREATE SECRET lonely (TYPE tresor, SCOPE 'tresor:x', FLOW 'client_credentials', CLIENT_ID 'keynode', ISSUER 'http://i',
+    CLIENT_SECRET 's', KEY_ID 'k1');
+----
+KEY_ID and CERTIFICATE_FILE go with PRIVATE_KEY_FILE
+
+statement error
+CREATE SECRET gh (TYPE tresor, SCOPE 'tresor:x', FLOW 'federated', CLIENT_ID 'fednode', ISSUER 'http://i',
+    ASSERTION_SOURCE 'github_actions');
+----
+needs ASSERTION_AUDIENCE
+
+statement error
+CREATE SECRET gh (TYPE tresor, SCOPE 'tresor:x', FLOW 'federated', CLIENT_ID 'fednode', ISSUER 'http://i',
+    ASSERTION_SOURCE 'gitlab', ASSERTION_AUDIENCE 'a');
+----
+ASSERTION_SOURCE is 'github_actions'
+
+statement error
+CREATE SECRET mi (TYPE tresor, SCOPE 'tresor:x', FLOW 'managed_identity', ISSUER 'http://i', CLIENT_SECRET 's');
+----
+does not take CLIENT_SECRET
+
+# --- private_key_jwt: RSA, EC, with kid and a certificate ---------------------------------------------------------
+
+statement ok
+CREATE SECRET keyed (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'client_credentials',
+    CLIENT_ID 'keynode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp',
+    PRIVATE_KEY_FILE '{TRESOR_TEST_KEYS}/keynode.pem');
+
+# the secret holds a path, never the key
+query I
+SELECT count(*) FROM duckdb_secrets() WHERE name = 'keyed' AND secret_string LIKE '%BEGIN%';
+----
+0
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS k (INSECURE_HTTP true, SECRET keyed);
+
+query II
+SELECT subject, login FROM k.whoami();
+----
+client:keynode	client_credentials
+
+statement ok
+DETACH k;
+
+statement ok
+CREATE OR REPLACE SECRET keyed (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'client_credentials',
+    CLIENT_ID 'eckeynode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp',
+    PRIVATE_KEY_FILE '{TRESOR_TEST_KEYS}/eckeynode.pem');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS k (INSECURE_HTTP true, SECRET keyed);
+
+query I
+SELECT subject FROM k.whoami();
+----
+client:eckeynode
+
+statement ok
+DETACH k;
+
+statement ok
+CREATE OR REPLACE SECRET keyed (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'client_credentials',
+    CLIENT_ID 'keynode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp',
+    PRIVATE_KEY_FILE '{TRESOR_TEST_KEYS}/keynode.pem', KEY_ID 'k1', CERTIFICATE_FILE '{TRESOR_TEST_KEYS}/keynode.crt');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS k (INSECURE_HTTP true, SECRET keyed);
+
+statement ok
+DETACH k;
+
+# a key others may read is no key only this service holds (the SSH rule); a missing one is said so
+statement ok
+CREATE OR REPLACE SECRET keyed (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'client_credentials',
+    CLIENT_ID 'keynode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp',
+    PRIVATE_KEY_FILE '{TRESOR_TEST_KEYS}/keynode-open.pem');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS k (INSECURE_HTTP true, SECRET keyed);
+----
+may be read by others than its owner
+
+statement ok
+CREATE OR REPLACE SECRET keyed (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'client_credentials',
+    CLIENT_ID 'keynode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp',
+    PRIVATE_KEY_FILE '{TRESOR_TEST_KEYS}/nowhere.pem');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS k (INSECURE_HTTP true, SECRET keyed);
+----
+cannot read
+
+# another client's key: the IdP refuses the signature
+statement ok
+CREATE OR REPLACE SECRET keyed (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'client_credentials',
+    CLIENT_ID 'keynode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp',
+    PRIVATE_KEY_FILE '{TRESOR_TEST_KEYS}/eckeynode.pem');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS k (INSECURE_HTTP true, SECRET keyed);
+----
+invalid_client
+
+statement ok
+DROP SECRET keyed;
+
+# a service whose discovery lists no service flows is not logged in to with a key
+statement ok
+CREATE SECRET keyed_noflows (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/noflows', FLOW 'client_credentials',
+    CLIENT_ID 'keynode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp',
+    PRIVATE_KEY_FILE '{TRESOR_TEST_KEYS}/keynode.pem');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/noflows' AS k (INSECURE_HTTP true, SECRET keyed_noflows);
+----
+does not accept private_key_jwt logins
+
+statement ok
+DROP SECRET keyed_noflows;
+
+# --- federated: a token file, and GitHub Actions' token ---------------------------------------------------------
+
+statement ok
+CREATE SECRET fed (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'federated', CLIENT_ID 'fednode',
+    ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_FILE '{TRESOR_TEST_KEYS}/fed.token');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS f (INSECURE_HTTP true, SECRET fed);
+
+query II
+SELECT subject, login FROM f.whoami();
+----
+client:fednode	federated
+
+statement ok
+DETACH f;
+
+statement ok
+CREATE OR REPLACE SECRET fed (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'federated',
+    CLIENT_ID 'fednode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_SOURCE 'github_actions',
+    ASSERTION_AUDIENCE 'api://AzureADTokenExchange');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS f (INSECURE_HTTP true, SECRET fed);
+
+query II
+SELECT login, idp('gh_audience') FROM f.whoami();
+----
+federated	"api://AzureADTokenExchange"
+
+statement ok
+DETACH f;
+
+statement ok
+DROP SECRET fed;
+
+# --- Azure managed identity: nothing secret at all, a token for the service's audience ---------------------------
+
+statement ok
+CREATE SECRET mi (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'managed_identity',
+    ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS m (INSECURE_HTTP true, SECRET mi);
+
+query III
+SELECT subject, login, idp('mi_resource') FROM m.whoami();
+----
+client:mi	managed_identity	"duckdb-secrets"
+
+statement ok
+DETACH m;
+
+# a token the platform minted for another audience never goes to the service
+statement ok
+CREATE OR REPLACE SECRET mi (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'managed_identity',
+    ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', CLIENT_ID 'mismatch');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS m (INSECURE_HTTP true, SECRET mi);
+----
+not meant for duckdb-secrets
+
+# a managed identity is no client at the IdP: it cannot exchange a session's token
+statement ok
+CREATE SECRET mi_acting (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting', FLOW 'managed_identity',
+    ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS m (INSECURE_HTTP true, SECRET mi_acting, ACT_FOR_SESSIONS true);
+----
+a managed identity is none
+
+statement ok
+DROP SECRET mi;
+
+statement ok
+DROP SECRET mi_acting;
+
+# --- acting for a duckdb-acl session with a key (the exchange signs its own assertion) ----------------------------
+
+statement ok
+CREATE SECRET keyed_node (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting', FLOW 'client_credentials',
+    CLIENT_ID 'keynode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp',
+    PRIVATE_KEY_FILE '{TRESOR_TEST_KEYS}/keynode.pem');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS node (INSECURE_HTTP true, SECRET keyed_node, ACT_FOR_SESSIONS true, SESSION_GRANT_WAIT 5);
+
+query I
+SELECT acl_stub_open('key-s1', 'node-token-alice', 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', 300);
+----
+1
+
+statement ok
+SET acl_stub_session = 'key-s1';
+
+query II
+SELECT subject, actor FROM node.whoami();
+----
+alice	client:keynode
+
+statement ok
+SET acl_stub_session = '';
+
+statement ok
+SELECT acl_stub_close('key-s1', 'client');
+
+statement ok
+DETACH node;
+
+# --- Auth0's audience parameter: sent on the requests when the discovery asks -----------------------------------
+
+statement ok
+CREATE SECRET etl_auth0 (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/auth0', FLOW 'client_credentials',
+    CLIENT_ID 'etl', CLIENT_SECRET 's3cr3t', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/auth0' AS a (INSECURE_HTTP true, SECRET etl_auth0);
+
+query I
+SELECT idp('cc_audience');
+----
+"https://api.auth0.example"
+
+statement ok
+DETACH a;
+
+statement ok
+SET tresor_keychain = 'off';
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/auth0' AS p (INSECURE_HTTP true, LOGIN 'browser');
+
+query I
+SELECT idp('authorize_audience');
+----
+"https://api.auth0.example"
+
+statement ok
+DETACH p;
+
+# ... and not where it does not
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS q (INSECURE_HTTP true, LOGIN 'browser');
+
+query I
+SELECT idp('authorize_audience');
+----
+""
+
+statement ok
+DETACH q;

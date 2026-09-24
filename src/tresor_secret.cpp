@@ -14,43 +14,100 @@ namespace duckdb {
 
 namespace {
 
-//! Which parameters each flow takes: a flow refuses the others' parameters, so a secret never carries
-//! a credential it does not use.
-const vector<string> &FlowParameters(const string &flow) {
-	// ISSUER binds the client secret to its identity provider: the service's discovery never decides where
-	// a service's credential is sent
-	static const vector<string> client_credentials {"client_id", "client_secret", "issuer"};
-	static const vector<string> token {"token"};
+//! Which parameters each flow takes (specs/002, 013): a flow refuses the others' parameters, so a secret never
+//! carries a credential it does not use. ISSUER binds the credential to its identity provider: the service's
+//! discovery never decides where a service's credential is sent.
+struct FlowRule {
+	vector<string> required;
+	vector<vector<string>> one_of; // exactly one of each group
+	vector<string> optional;
+};
+
+const FlowRule &RuleOf(const string &flow) {
+	static const FlowRule client_credentials {{"client_id", "issuer"},
+	                                          {{"client_secret", "private_key_file"}},
+	                                          {"oauth_scope", "key_id", "certificate_file"}};
+	static const FlowRule federated {
+	    {"client_id", "issuer"}, {{"assertion_file", "assertion_source"}}, {"oauth_scope", "assertion_audience"}};
+	static const FlowRule managed_identity {{"issuer"}, {}, {"client_id"}};
+	static const FlowRule token {{"token"}, {}, {}};
 	if (flow == "client_credentials") {
 		return client_credentials;
+	}
+	if (flow == "federated") {
+		return federated;
+	}
+	if (flow == "managed_identity") {
+		return managed_identity;
 	}
 	if (flow == "token") {
 		return token;
 	}
-	throw InvalidInputException("tresor secret: FLOW is 'client_credentials' or 'token', not '%s'", flow);
+	throw InvalidInputException("tresor secret: FLOW is 'client_credentials', 'federated', 'managed_identity' or "
+	                            "'token', not '%s'",
+	                            flow);
 }
 
 unique_ptr<BaseSecret> CreateTresorSecret(ClientContext &context, CreateSecretInput &input) {
 	auto flow_entry = input.options.find("flow");
 	if (flow_entry == input.options.end()) {
-		throw InvalidInputException("tresor secret: FLOW is required ('client_credentials' or 'token')");
+		throw InvalidInputException("tresor secret: FLOW is required ('client_credentials', 'federated', "
+		                            "'managed_identity' or 'token')");
 	}
 	auto flow = StringUtil::Lower(flow_entry->second.ToString());
-	auto &required = FlowParameters(flow);
-	for (auto &name : required) {
+	auto &rule = RuleOf(flow);
+	auto given = [&](const string &name) {
 		auto entry = input.options.find(name);
-		if (entry == input.options.end() || entry->second.IsNull() || entry->second.ToString().empty()) {
+		return entry != input.options.end() && !entry->second.IsNull() && !entry->second.ToString().empty();
+	};
+	auto value = [&](const string &name) {
+		return given(name) ? input.options.find(name)->second.ToString() : string();
+	};
+	for (auto &name : rule.required) {
+		if (!given(name)) {
 			throw InvalidInputException("tresor secret: FLOW '%s' needs %s", flow, StringUtil::Upper(name));
+		}
+	}
+	for (auto &group : rule.one_of) {
+		idx_t count = 0;
+		for (auto &name : group) {
+			count += given(name) ? 1 : 0;
+		}
+		if (count != 1) {
+			throw InvalidInputException("tresor secret: FLOW '%s' needs exactly one of %s", flow,
+			                            StringUtil::Upper(StringUtil::Join(group, ", ")));
 		}
 	}
 	for (auto &option : input.options) {
 		auto key = StringUtil::Lower(option.first);
-		auto shared = key == "flow" || (key == "oauth_scope" && flow == "client_credentials");
-		auto own = std::find(required.begin(), required.end(), key) != required.end();
-		if (!shared && !own) {
+		auto listed = [&](const vector<string> &names) {
+			return std::find(names.begin(), names.end(), key) != names.end();
+		};
+		bool known = key == "flow" || listed(rule.required) || listed(rule.optional);
+		for (auto &group : rule.one_of) {
+			known = known || listed(group);
+		}
+		if (!known) {
 			throw InvalidInputException("tresor secret: FLOW '%s' does not take %s", flow,
 			                            StringUtil::Upper(option.first));
 		}
+	}
+	// a key's companions come with the key only; GitHub's token needs the audience the federation expects
+	if ((given("key_id") || given("certificate_file")) && !given("private_key_file")) {
+		throw InvalidInputException("tresor secret: KEY_ID and CERTIFICATE_FILE go with PRIVATE_KEY_FILE");
+	}
+	if (given("assertion_source")) {
+		if (StringUtil::Lower(value("assertion_source")) != "github_actions") {
+			throw InvalidInputException("tresor secret: ASSERTION_SOURCE is 'github_actions', not '%s'",
+			                            value("assertion_source"));
+		}
+		if (!given("assertion_audience")) {
+			throw InvalidInputException("tresor secret: ASSERTION_SOURCE 'github_actions' needs ASSERTION_AUDIENCE "
+			                            "(what the identity provider's federation expects, e.g. "
+			                            "api://AzureADTokenExchange)");
+		}
+	} else if (given("assertion_audience")) {
+		throw InvalidInputException("tresor secret: ASSERTION_AUDIENCE goes with ASSERTION_SOURCE");
 	}
 
 	// a SCOPE is the service this credential is for: without one duckdb's lookup would offer it to every
@@ -129,7 +186,8 @@ void RegisterTresorSecret(ExtensionLoader &loader) {
 	function.secret_type = "tresor";
 	function.provider = Identifier("config");
 	function.function = CreateTresorSecret;
-	for (auto name : {"flow", "client_id", "client_secret", "token", "oauth_scope", "issuer"}) {
+	for (auto name : {"flow", "client_id", "client_secret", "token", "oauth_scope", "issuer", "private_key_file",
+	                  "key_id", "certificate_file", "assertion_file", "assertion_source", "assertion_audience"}) {
 		function.named_parameters[name] = LogicalType::VARCHAR;
 	}
 	loader.RegisterFunction(function);
