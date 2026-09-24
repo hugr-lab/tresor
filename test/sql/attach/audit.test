@@ -249,6 +249,18 @@ drop	none	NULL	true
 statement ok
 DETACH adm;
 
+# a person's login: the principal as the protocol spells one, from whoami's issuer and bare subject
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS me (INSECURE_HTTP true, LOGIN 'browser');
+
+query I
+SELECT principal FROM duckdb_logs_parsed('tresor') WHERE kind = 'login' AND service = 'me';
+----
+subject:http://127.0.0.1:{TRESOR_TEST_PORT}/idp|alice
+
+statement ok
+DETACH me;
+
 # nothing tresor logged carries a credential: the client secret, the session's token, a grant id
 query I
 SELECT count(*) FROM duckdb_logs WHERE type = 'tresor'
