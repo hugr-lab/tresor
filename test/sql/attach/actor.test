@@ -102,6 +102,7 @@ refused_mint
 shared_lake
 stats
 traced
+vanishing
 
 query II
 SELECT name, storage FROM which_secret('s3://acting/x.parquet', 's3');

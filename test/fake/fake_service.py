@@ -434,6 +434,9 @@ class Handler(BaseHTTPRequestHandler):
                              "redact_keys": [], "mint_refused": True},
             "stats": {"type": "http", "scope": ["https://stats.invalid"], "permissions": [], "comment": stats,
                       "params": {}, "redact_keys": []},
+            # listed, but gone by the time its material is asked for: 404 with a detail that quotes it
+            "vanishing": {"type": "http", "scope": ["https://vanishing.example"], "permissions": ["use"],
+                          "params": {}, "redact_keys": [], "gone": True},
             # the trace context this very request came with (specs/011): dynamic, so never served from cache
             "traced": {"type": "http", "scope": ["https://traced.example"], "permissions": ["use"], "dynamic": True,
                        "params": {"trace_seen": self.headers.get("traceparent", "none")}, "redact_keys": []},
@@ -448,7 +451,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, [])
             return
         name = urllib.parse.unquote(rest[len("/v1/secrets/"):]) if rest.startswith("/v1/secrets/") else None
-        if name not in listing or "use" not in listing[name]["permissions"]:
+        if name not in listing or "use" not in listing[name]["permissions"] or listing[name].get("gone"):
             self.problem(404, "not_found", "no secret")
             return
         if listing[name].get("mint_refused"):

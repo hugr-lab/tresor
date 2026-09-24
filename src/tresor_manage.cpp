@@ -216,13 +216,15 @@ void ManageScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 	if (data.action != Action::ANNOTATE) {
 		audited.Target(data.argument);
 	}
-	data.audited = &audited;
+	data.audited = &audited; // data is this call's own copy: the pointer never outlives `audited`
 	try {
 		Change(data, state, storage, path, output);
 	} catch (std::exception &ex) {
+		data.audited = nullptr;
 		audited.Failed(ex);
 		throw;
 	}
+	data.audited = nullptr;
 	audited.Ok();
 }
 

@@ -60,6 +60,7 @@ that caused them.
   numbered under the lock around the push, so the sinks see the numbers in order. It is logged, and
   queued for the sinks. It never throws.
 - **Cache hits** (a lookup served from memory) are counted, not emitted: a scan asks once per file.
+  They are counted only while a sink listens, outside the storage's lock.
 
 ### What is emitted
 
@@ -67,9 +68,9 @@ that caused them.
 | --- | --- | --- |
 | login | ATTACH: discovery, login, whoami, the first list | ok / error (`transport`, `invalid`, …) |
 | logout | the catalog's end (DETACH, or the instance going) | ok |
-| lookup | a service call for material (`LookupSecret`, `GetSecretByName`) | ok; denied (404/403 since the list, `mint_refused`); error; denied `no_grant` for a statement under an acl session this node cannot act for |
+| lookup | a service call for material (`LookupSecret`, `GetSecretByName`) | ok; denied (404/403 since the list, `mint_refused`); error; denied `no_grant`, once per acl session, for a session this node cannot act for |
 | refresh | `RefreshMaterial` (httpfs's REFRESH auto) | as lookup |
-| write / drop | `CREATE [OR REPLACE] PERSISTENT SECRET … IN corp`, `DROP` | the service's answer |
+| write / drop | `CREATE [OR REPLACE] PERSISTENT SECRET … IN corp`, `DROP` | the service's answer; `none` for an IF [NOT] EXISTS that changed nothing |
 | annotate / grant / revoke | the management functions (`grants()` reads, not audited) | the service's answer; `target` = the role:/group: |
 | session_grant | the actor | `detail`: obtained / failed / revoked / rejected / expired |
 
@@ -88,8 +89,9 @@ that caused them.
 
 ### DuckDB's log
 
-- **`tresor_audit_level`** (GLOBAL): `off` (default), `denied` (denied and error), or `all`. Any
-  other value is refused.
+- **`tresor_audit_level`** (GLOBAL): `off` (default), `denied` (denied and error), or `all`.
+  - Any other value is refused, and so is `SET SESSION`: the level is the instance's.
+  - A value given before LOAD, as a config option, is applied at LOAD.
 - **Where rows go.**
   - A row is written on the statement's own logger when there is a connection, so `duckdb_logs`
     names the connection and the query. It is written on the instance's logger for the actor's
@@ -148,6 +150,38 @@ that caused them.
 
 Go: `TestTraceIDs` checks the reference server's parsing: a valid header, and malformed or forged
 ones refused.
+
+## The review's findings (applied)
+
+- **HIGH: a lookup refused with 404/403 put the service's problem text in `reason`.** It is now
+  "the service answered HTTP <status>", and a test pins it (a listed secret whose material is gone,
+  with a detail quoting it).
+- **The cache-hit path paid for a counter under the storage's lock, with nobody listening.** It now
+  counts only while a sink listens, outside the lock.
+- **`SET SESSION` changed every connection, and a value set before LOAD was shown but not applied.**
+  `SET SESSION` is refused, and a value set before LOAD is applied at LOAD.
+- **A `no_grant` refusal was emitted for every file a session read.** It is emitted once per session.
+- **IF [NOT] EXISTS no-ops were errors.** They are `none` now, the outcome the contract defined and
+  nothing emitted.
+- **Smaller fixes:**
+  - only traceparent version `00` is sent, as the reference server reads it;
+  - write and drop are timed when their call throws;
+  - an obtained grant is timed;
+  - a revocation skipped at DETACH is told;
+  - the pointer to the operation in the management call's data is cleared;
+  - `principal` is bounded;
+  - the contract says a sink must not reach the ObjectCache;
+  - the test recorder is kept per instance.
+- **New tests:**
+  - write/none, grant, revoke, drop/none;
+  - `SET SESSION` refused;
+  - a non-00 traceparent;
+  - the 404 reason.
+- **Not taken:**
+  - login failures are still classified by exception class: a refused list at ATTACH reads
+    `transport`, now worded "failed, or could not be reached";
+  - the logout at DETACH is on the instance's logger;
+  - the ext-common pin moves to `v0.7.0` before merge (and CLAUDE.md's pin table with it).
 
 ## Follow-ups
 

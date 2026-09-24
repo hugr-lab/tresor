@@ -101,6 +101,10 @@ AuditLevel ParseLevel(const string &text) {
 }
 
 void SetAuditLevel(ClientContext &context, SetScope scope, Value &parameter) {
+	// one level per instance: a session's own value would be shown to it alone, yet apply to every connection
+	if (scope == SetScope::SESSION || scope == SetScope::LOCAL) {
+		throw InvalidInputException("tresor_audit_level is set for the whole instance: SET GLOBAL (or plain SET)");
+	}
 	auto level = ParseLevel(parameter.IsNull() ? string("off") : parameter.ToString());
 	TresorAudit::Get(*context.db)->SetLevel(level);
 }
@@ -157,6 +161,11 @@ void TresorAudit::Register(DatabaseInstance &db) {
 	                          "tresor: what tresor writes to duckdb's log (type 'tresor'): off, denied (refusals and "
 	                          "failures) or all",
 	                          LogicalType::VARCHAR, Value("off"), SetAuditLevel, SetScope::GLOBAL);
+	// a value given before LOAD (a config option) is taken over by duckdb without the callback: applied here
+	Value given;
+	if (config.TryGetCurrentSetting(Identifier("tresor_audit_level"), given) && !given.IsNull()) {
+		Get(db)->SetLevel(ParseLevel(given.ToString()));
+	}
 }
 
 void TresorAudit::SetLevel(AuditLevel level_p) {
@@ -214,7 +223,8 @@ void TresorAudit::Emit(TresorAuditEvent event, optional_ptr<ClientContext> conte
 }
 
 void TresorAudit::Count(const string &kind, const string &outcome, bool cached) {
-	if (hooks) {
+	// counted only while someone listens: a laptop without acl-otel pays nothing on a cache hit
+	if (hooks && hooks->HasSinks()) {
 		hooks->GetCounters().Add("tresor.events",
 		                         {{"kind", kind}, {"outcome", outcome}, {"cached", cached ? "true" : "false"}});
 	}
@@ -245,7 +255,7 @@ Audited &Audited::For(const Caller &caller, const string &service) {
 		auto &info = caller.session->Info();
 		event.host = info.host;
 		event.login = LoginFlowName(caller.session->Flow());
-		event.principal = caller.session->Subject();
+		event.principal = caller.session->Subject().substr(0, 512); // the service's whoami: bounded
 	}
 	event.user = caller.user;
 	event.acl_session = caller.acl_session;
@@ -328,7 +338,7 @@ void Audited::Failed(const std::exception &ex) {
 	if (type == ExceptionType::PERMISSION) {
 		Finish("denied", "no_grant", "this caller may not reach the service (no usable delegation grant)");
 	} else if (type == ExceptionType::IO || type == ExceptionType::HTTP || type == ExceptionType::CONNECTION) {
-		Finish("error", "transport", "the service or the identity provider could not be reached");
+		Finish("error", "transport", "the service or the identity provider failed, or could not be reached");
 	} else if (type == ExceptionType::INVALID_INPUT) {
 		Finish("error", "invalid", "refused as invalid");
 	} else {
@@ -393,15 +403,14 @@ string OwnWords(const string &text) {
 }
 
 string ValidTraceparent(const string &text) {
-	// version "00": 00-<32 hex trace id>-<16 hex span id>-<2 hex flags>, lower case (W3C Trace Context)
-	if (text.size() != 55 || text[2] != '-' || text[35] != '-' || text[52] != '-') {
+	// version "00" only: 00-<32 hex trace id>-<16 hex span id>-<2 hex flags>, lower case (W3C Trace Context)
+	if (text.size() != 55 || text[0] != '0' || text[1] != '0' || text[2] != '-' || text[35] != '-' || text[52] != '-') {
 		return string();
 	}
 	if (!IsLowerHex(text, 0, 2) || !IsLowerHex(text, 3, 32) || !IsLowerHex(text, 36, 16) || !IsLowerHex(text, 53, 2)) {
 		return string();
 	}
-	if (text.compare(0, 2, "ff") == 0 || text.compare(3, 32, string(32, '0')) == 0 ||
-	    text.compare(36, 16, string(16, '0')) == 0) {
+	if (text.compare(3, 32, string(32, '0')) == 0 || text.compare(36, 16, string(16, '0')) == 0) {
 		return string(); // an invalid version, or an all-zero id
 	}
 	return text;

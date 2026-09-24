@@ -21,6 +21,12 @@ SET tresor_audit_level = 'loud';
 ----
 tresor_audit_level is off, denied or all
 
+# one level per instance: a session's own would be shown to it alone, yet apply everywhere
+statement error
+SET SESSION tresor_audit_level = 'all';
+----
+set for the whole instance
+
 statement ok
 CALL enable_logging('tresor');
 
@@ -95,6 +101,17 @@ SELECT reason FROM duckdb_logs_parsed('tresor') WHERE reason_code = 'mint_refuse
 ----
 the service answered HTTP 403
 
+# a listed secret gone by the time of its material: not a match, and the service's detail stays out
+query I
+SELECT count(*) FROM which_secret('https://vanishing.example/x', 'http') WHERE storage = 'corp';
+----
+0
+
+query III
+SELECT outcome, reason_code, reason FROM duckdb_logs_parsed('tresor') WHERE secret = 'vanishing';
+----
+denied	not_found	the service answered HTTP 404
+
 statement ok
 SET tresor_audit_level = 'all';
 
@@ -117,7 +134,7 @@ SELECT acl_stub_open('s9', 'node-token-alice', 'http://127.0.0.1:{TRESOR_TEST_PO
 query I
 SELECT acl_stub_audit_last('session_grant');
 ----
-ok||corp|s9|alice||||obtained|untimed
+ok||corp|s9|alice||||obtained|timed
 
 statement ok
 SET acl_stub_traceparent = '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01';
@@ -143,6 +160,20 @@ ok||corp|s9|alice|corr-1|00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01
 # a malformed trace context is neither sent nor carried
 statement ok
 SET acl_stub_traceparent = '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01, 01-evil';
+
+query I
+SELECT tresor_secret_param('traced', 'trace_seen');
+----
+VARCHAR none
+
+query I
+SELECT acl_stub_audit_last('lookup');
+----
+ok||corp|s9|alice|corr-1||traced||timed
+
+# only version 00 is known: another version is neither sent nor carried
+statement ok
+SET acl_stub_traceparent = '01-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01';
 
 query I
 SELECT tresor_secret_param('traced', 'trace_seen');
@@ -181,9 +212,46 @@ SELECT acl_stub_audit_last('logout');
 ----
 ok||corp|||||||untimed
 
+# --- writes and management (an administrator's, directly): the service's answer, IF [NOT] EXISTS no-ops as none
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS adm (INSECURE_HTTP true);
+
+statement ok
+CREATE PERSISTENT SECRET IF NOT EXISTS audited_one IN adm (TYPE tresor, SCOPE 'tresor:audited.invalid', FLOW 'token', TOKEN 'tok-audited');
+
+statement ok
+CREATE PERSISTENT SECRET IF NOT EXISTS audited_one IN adm (TYPE tresor, SCOPE 'tresor:audited.invalid', FLOW 'token', TOKEN 'tok-audited');
+
+statement ok
+CALL adm.grant_secret('audited_one', 'role:auditors', ['use']);
+
+statement ok
+CALL adm.revoke_secret('audited_one', 'role:auditors');
+
+statement ok
+DROP PERSISTENT SECRET audited_one FROM adm;
+
+statement ok
+DROP PERSISTENT SECRET IF EXISTS audited_one FROM adm;
+
+query IIII
+SELECT kind, outcome, target, duration_us >= 0 FROM duckdb_logs_parsed('tresor')
+WHERE service = 'adm' AND kind <> 'login' ORDER BY seq;
+----
+write	ok	NULL	true
+write	none	NULL	true
+grant	ok	role:auditors	true
+revoke	ok	role:auditors	true
+drop	ok	NULL	true
+drop	none	NULL	true
+
+statement ok
+DETACH adm;
+
 # nothing tresor logged carries a credential: the client secret, the session's token, a grant id
 query I
 SELECT count(*) FROM duckdb_logs WHERE type = 'tresor'
-  AND (message LIKE '%s3cr3t%' OR message LIKE '%node-token%' OR message LIKE '%dg-%');
+  AND (message LIKE '%s3cr3t%' OR message LIKE '%node-token%' OR message LIKE '%dg-%' OR message LIKE '%tok-audited%');
 ----
 0

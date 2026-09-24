@@ -9,6 +9,7 @@
 #include "tresor_session.hpp"
 
 #include "duckdb/common/mutex.hpp"
+#include "duckdb/common/unordered_set.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/main/secret/secret.hpp"
 #include "duckdb/main/secret/secret_storage.hpp"
@@ -124,10 +125,13 @@ private:
 	                                        optional_ptr<CatalogTransaction> transaction,
 	                                        const string &kind = "lookup");
 	SecretEntry EntryOf(unique_ptr<const BaseSecret> secret);
+	//! Is this the first refused lookup of the acl session here (the audit tells it once)?
+	bool FirstRefusal(const string &acl_session);
 	Caller CallerOf(optional_ptr<CatalogTransaction> transaction);
 
-	weak_ptr<TresorAudit> audit; // the instance's: it goes with the ObjectCache, before this storage
-	mutex lock;                  // the state below, and every view's list and materials
+	weak_ptr<TresorAudit> audit;         // the instance's: it goes with the ObjectCache, before this storage
+	mutex lock;                          // the state below, and every view's list and materials
+	unordered_set<string> refusals_told; // acl sessions whose lookup refusal was audited (once each)
 	shared_ptr<TresorSession> session;
 	shared_ptr<TresorActor> actor;
 	shared_ptr<View> node;

@@ -4,6 +4,7 @@
 #include "tresor_audit.hpp"
 
 #include "duckdb/main/database.hpp"
+#include "duckdb/storage/object_cache.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
 #include <chrono>
@@ -76,7 +77,26 @@ private:
 	std::map<string, int64_t> seen; // an event is answered once: the next ask waits for a newer one
 };
 
-shared_ptr<RecordingSink> recorder;
+//! The recording sink of an instance, kept in its ObjectCache (a test may open more than one database).
+class RecorderEntry : public ObjectCacheEntry {
+public:
+	static string ObjectType() {
+		return "acl_stub_audit_recorder";
+	}
+	string GetObjectType() override {
+		return ObjectType();
+	}
+	optional_idx GetEstimatedCacheMemory() const override {
+		return optional_idx();
+	}
+	shared_ptr<RecordingSink> sink;
+};
+
+shared_ptr<RecorderEntry> RecorderOf(ExpressionState &state) {
+	return DatabaseInstance::GetDatabase(state.GetContext())
+	    .GetObjectCache()
+	    .GetOrCreate<RecorderEntry>(RecorderEntry::ObjectType());
+}
 
 //! Per connection: publishes the session named by acl_stub_session for the statement's duration.
 class StubConnection : public ClientContextState {
@@ -190,9 +210,10 @@ void ListenFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	if (!hooks) {
 		throw InvalidInputException("acl_stub: %s", why);
 	}
-	if (!recorder) {
-		recorder = make_shared_ptr<RecordingSink>();
-		hooks->AddSink(recorder);
+	auto entry = RecorderOf(state);
+	if (!entry->sink) {
+		entry->sink = make_shared_ptr<RecordingSink>();
+		hooks->AddSink(entry->sink);
 	}
 	for (idx_t row = 0; row < args.size(); row++) {
 		result.SetValue(row, Value::BOOLEAN(true));
@@ -204,6 +225,7 @@ void ListenFun(DataChunk &args, ExpressionState &state, Vector &result) {
 void LastFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	for (idx_t row = 0; row < args.size(); row++) {
 		tresor::TresorAuditEvent event;
+		auto recorder = RecorderOf(state)->sink;
 		if (!recorder || !recorder->Last(args.data[0].GetValue(row).ToString(), event)) {
 			result.SetValue(row, Value(LogicalType::VARCHAR));
 			continue;

@@ -387,6 +387,7 @@ void TresorActor::Work() {
 }
 
 void TresorActor::Exchange(Job &job) {
+	auto started = std::chrono::steady_clock::now();
 	// the session's token is exchanged only at the IdP that issued it, with this node's client there
 	if (StripSlash(job.issuer) != StripSlash(session->Info().issuer)) {
 		Wipe(job.token);
@@ -474,7 +475,9 @@ void TresorActor::Exchange(Job &job) {
 	}
 	changed.notify_all();
 	if (!revoke_now) {
-		Tell(job.acl_session, job.user, "obtained", "ok", string(), string());
+		auto took =
+		    std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count();
+		Tell(job.acl_session, job.user, "obtained", "ok", string(), string(), nullptr, took);
 	}
 	if (revoke_now) {
 		Job revoke;
@@ -490,7 +493,10 @@ void TresorActor::Exchange(Job &job) {
 
 void TresorActor::Revoke(Job &job) {
 	if (!RevokeAllowed()) {
-		return; // DETACH's deadline passed, or the service already failed a revocation: the ttl ends it
+		// DETACH's deadline passed, or the service already failed a revocation: the ttl ends it - said so
+		Tell(job.acl_session, job.user, "revoked", "error", "service_unavailable",
+		     "not revoked at DETACH (the service did not answer in time); the grant ends with its ttl");
+		return;
 	}
 	auto started = std::chrono::steady_clock::now();
 	auto took = [&]() {

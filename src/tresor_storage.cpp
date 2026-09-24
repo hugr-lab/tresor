@@ -515,6 +515,15 @@ void TresorSecretStorage::GrantRejected(const Caller &caller) {
 void TresorSecretStorage::ForgetSession(const string &acl_session) {
 	lock_guard<mutex> guard(lock);
 	acl_views.erase(acl_session);
+	refusals_told.erase(acl_session);
+}
+
+bool TresorSecretStorage::FirstRefusal(const string &acl_session) {
+	lock_guard<mutex> guard(lock);
+	if (refusals_told.size() >= 10000) {
+		refusals_told.clear(); // bounded: sessions that never close here (no actor) are forgotten in bulk
+	}
+	return refusals_told.insert(acl_session).second;
 }
 
 shared_ptr<TresorSecretStorage::View> TresorSecretStorage::ViewOf(const Caller &caller) {
@@ -619,16 +628,20 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &calle
                                                              const string &kind) {
 	auto now = NowSeconds();
 	optional_ptr<ClientContext> context = transaction ? transaction->context : nullptr;
+	unique_ptr<const BaseSecret> hit;
 	{
 		lock_guard<mutex> guard(lock);
 		auto cached = view.materials.find(d.name);
 		if (cached != view.materials.end() && cached->second.version == d.version && cached->second.valid_until > now) {
-			// served from memory: counted, not emitted - a scan asks for its secret once per file
-			if (auto live = audit.lock()) {
-				live->Count(kind, "ok", true);
-			}
-			return cached->second.secret->Clone();
+			hit = cached->second.secret->Clone();
 		}
+	}
+	if (hit) {
+		// served from memory: counted (outside the storage's lock), not emitted - a scan asks once per file
+		if (auto live = audit.lock()) {
+			live->Count(kind, "ok", true);
+		}
+		return hit;
 	}
 	auto audited = Audit(kind, caller, context);
 	audited.Secret(d.name, d.type, d.dynamic).Called();
@@ -654,7 +667,7 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &calle
 	}
 	if (response.status == 404 || response.status == 403) {
 		// gone, or no longer ours to use, since the list was fetched: not a match - and the list is stale
-		audited.Denied(ReasonCode(response), DescribeProblem(response.status, response.body));
+		audited.Denied(ReasonCode(response), "the service answered HTTP " + std::to_string(response.status));
 		lock_guard<mutex> guard(lock);
 		view.listed_at = 0;
 		return nullptr;
@@ -757,8 +770,9 @@ SecretMatch TresorSecretStorage::LookupSecret(const string &path, const string &
 	shared_ptr<View> view;
 	auto list = Snapshot(caller, view);
 	if (!view) {
-		if (caller.session && !caller.refused.empty()) {
-			// a statement under an acl session this node cannot act for: the refusal is worth a line
+		if (caller.session && !caller.refused.empty() && FirstRefusal(caller.acl_session)) {
+			// a statement under an acl session this node cannot act for: the refusal is worth a line - once per
+			// session, as duckdb asks every storage for every file whether or not the lookup concerns this one
 			Audit("lookup", caller, transaction ? transaction->context : nullptr)
 			    .Secret(string(), type)
 			    .Denied("no_grant", OwnWords(caller.refused));
@@ -931,7 +945,7 @@ unique_ptr<SecretEntry> TresorSecretStorage::StoreSecret(unique_ptr<const BaseSe
 	}
 	auto name = ServiceName(caller, secret->GetName().GetIdentifierName());
 	auto audited = Audit("write", caller, transaction ? transaction->context : nullptr);
-	audited.Secret(name, secret->GetType().GetIdentifierName());
+	audited.Secret(name, secret->GetType().GetIdentifierName()).Called();
 	std::map<std::string, std::string> headers;
 	if (on_conflict == OnCreateConflict::ERROR_ON_CONFLICT || on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
 		headers["If-None-Match"] = "*"; // CREATE / IF NOT EXISTS: never overwrite
@@ -946,8 +960,10 @@ unique_ptr<SecretEntry> TresorSecretStorage::StoreSecret(unique_ptr<const BaseSe
 		throw;
 	}
 	Invalidate(name);
-	if (response.status == 412) {
-		audited.Called().Error("invalid", "a secret of this name already exists");
+	if (response.status == 412 && on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
+		audited.None(); // IF NOT EXISTS, and it exists: nothing to do
+	} else if (response.status == 412) {
+		audited.Error("invalid", "a secret of this name already exists");
 	} else {
 		audited.Answer(response);
 	}
@@ -979,7 +995,7 @@ void TresorSecretStorage::DropSecretByName(const Identifier &name_p, OnEntryNotF
 	}
 	auto name = ServiceName(caller, name_p.GetIdentifierName());
 	auto audited = Audit("drop", caller, transaction ? transaction->context : nullptr);
-	audited.Secret(name);
+	audited.Secret(name).Called();
 	ServiceResponse response;
 	try {
 		response = caller.Call("DELETE", "/v1/secrets/" + Encode(name));
@@ -988,7 +1004,11 @@ void TresorSecretStorage::DropSecretByName(const Identifier &name_p, OnEntryNotF
 		throw;
 	}
 	Invalidate(name);
-	audited.Answer(response);
+	if (response.status == 404 && on_entry_not_found != OnEntryNotFound::THROW_EXCEPTION) {
+		audited.None(); // IF EXISTS, and it does not: nothing to do
+	} else {
+		audited.Answer(response);
+	}
 	if (response.status == 404) {
 		if (on_entry_not_found == OnEntryNotFound::THROW_EXCEPTION) {
 			throw InvalidInputException("Failed to remove non-existent persistent secret '%s' in secret storage '%s'",
