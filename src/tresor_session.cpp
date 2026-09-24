@@ -1,4 +1,5 @@
 #include "tresor_session.hpp"
+#include "tresor_remember.hpp"
 
 #include "duckdb/common/exception.hpp"
 
@@ -30,6 +31,8 @@ string LoginFlowName(LoginFlow flow) {
 		return "client_credentials";
 	case LoginFlow::TOKEN:
 		return "token";
+	case LoginFlow::REMEMBERED:
+		return "remembered";
 	}
 	return "unknown";
 }
@@ -56,6 +59,7 @@ string TresorSession::AccessToken(bool force) {
 	switch (flow) {
 	case LoginFlow::BROWSER:
 	case LoginFlow::DEVICE:
+	case LoginFlow::REMEMBERED:
 		if (tokens.refresh_token.empty()) {
 			throw InvalidInputException("tresor: the login to %s has expired and the identity provider issued no "
 			                            "refresh token - log in again: DETACH and ATTACH",
@@ -76,16 +80,26 @@ string TresorSession::AccessToken(bool force) {
 	}
 	if (!renewed.Ok()) {
 		if (renewed.error_code == "invalid_grant") {
-			// the refresh chain is dead (revoked, expired, rotated elsewhere): only a new login helps
+			// the refresh chain is dead (revoked, expired, rotated elsewhere): only a new login helps - and a
+			// remembered one is forgotten
 			tokens = oidc::TokenSet();
 			logged_out = true;
+			if (auto store = remember.lock()) {
+				store->Remove(info.issuer, info.client_id);
+			}
 			throw InvalidInputException("tresor: the login to %s is over (%s) - log in again: DETACH and ATTACH",
 			                            info.host, renewed.error);
 		}
 		throw IOException("tresor: renewing the login to %s failed: %s", info.host, renewed.error);
 	}
+	auto rotated = renewed.refresh_token != tokens.refresh_token;
 	tokens = std::move(renewed);
 	issued_at = NowSeconds();
+	if (rotated) {
+		if (auto store = remember.lock()) {
+			store->Store(info.issuer, info.client_id, tokens.refresh_token);
+		}
+	}
 	return tokens.access_token;
 }
 
@@ -165,6 +179,31 @@ oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bo
 	out.refresh_token.clear();
 	std::fill(secret.begin(), secret.end(), '\0');
 	return out;
+}
+
+void TresorSession::Remember(weak_ptr<RememberedLogins> store) {
+	lock_guard<mutex> guard(lock);
+	remember = std::move(store);
+}
+
+bool TresorSession::Remembers(const string &issuer, const string &client_id) {
+	lock_guard<mutex> guard(lock);
+	auto strip = [](string text) {
+		while (!text.empty() && text.back() == '/') {
+			text.pop_back();
+		}
+		return text;
+	};
+	return !remember.expired() && strip(info.issuer) == strip(issuer) && info.client_id == client_id;
+}
+
+string TresorSession::LogOff() {
+	lock_guard<mutex> guard(lock);
+	auto refresh = tokens.refresh_token;
+	tokens = oidc::TokenSet();
+	logged_out = true;
+	remember.reset();
+	return refresh;
 }
 
 void TresorSession::Close() {

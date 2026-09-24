@@ -45,6 +45,9 @@ public:
 	TresorSession &Session() {
 		return *session;
 	}
+	shared_ptr<TresorSession> SharedSession() {
+		return session;
+	}
 
 private:
 	shared_ptr<TresorSession> session;

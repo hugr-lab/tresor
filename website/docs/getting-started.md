@@ -45,8 +45,32 @@ If the service accepts more than one identity provider, name yours:
 ATTACH 'tresor:secrets.corp.example' AS corp (ISSUER 'https://login.corp.example/realms/main');
 ```
 
-The login lasts for the session and refreshes by itself. The tokens stay in memory and are never
-written to disk, so a new DuckDB process logs in again.
+The login lasts for the session and refreshes by itself. Access tokens stay in memory.
+
+**One login for several processes and services.** Your refresh token is kept in the operating system's
+credential store: the macOS Keychain, the Windows Credential Manager, or the Secret Service on Linux
+(GNOME Keyring, KWallet). It is never kept in a file. With it, the next ATTACH needs no browser, in this
+DuckDB process or a later one, and so does an ATTACH of any other service that uses the same identity
+provider and client.
+
+```sql
+ATTACH 'tresor:secrets.corp.example' AS corp;               -- the browser, once
+ATTACH 'tresor:lake-secrets.corp.example' AS lake;          -- same IdP: no browser
+CALL tresor_logoff();                                       -- forget it, revoke it at the IdP
+```
+
+- `REMEMBER false` on an ATTACH neither reads nor writes the store.
+- `SET tresor_keychain = 'off'` turns remembering off for the whole instance; `'memory'` keeps it
+  within this process.
+- The environment variable `TRESOR_KEYCHAIN` sets the default. Use `off` on a shared account such as
+  a CI runner or a jump host.
+- Where no store answers (a server, a container), the browser simply runs each time.
+- `tresor_logoff('corp')` forgets one attachment's login, and
+  `tresor_logoff(issuer := '…', client_id := '…')` forgets one by name. Either way the login is
+  revoked at the identity provider when it supports RFC 7009, and every attachment running on it
+  must be attached again.
+
+A service's login (a tresor secret) is never remembered: it logs in again from its secret.
 
 ```sql
 FROM corp.whoami();      -- service, issuer, subject, roles, token expiry, what you may create, login flow

@@ -15,5 +15,7 @@ public:
 void RegisterTresorSecret(ExtensionLoader &loader);
 //! tresor_secret_param(name, key): a secret's parameter as DuckDB holds it (tresor_secrets.cpp).
 void RegisterTresorSecretParam(ExtensionLoader &loader);
+//! tresor_logoff(...): forget a person's remembered login (tresor_logoff.cpp, specs/012).
+void RegisterTresorLogoff(ExtensionLoader &loader);
 
 } // namespace duckdb

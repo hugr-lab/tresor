@@ -1,0 +1,254 @@
+# name: test/sql/attach/remember.test
+# description: a person's login remembered for the next ATTACH - of this service or another behind the same IdP - and tresor_logoff (specs/012)
+# group: [attach]
+
+require-env TRESOR_TEST_PORT
+
+require httpfs
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+# --- the setting ------------------------------------------------------------------------------------------------
+
+# the default: auto - or what TRESOR_KEYCHAIN says (the test scripts say memory)
+query I
+SELECT current_setting('tresor_keychain') IN ('auto', 'memory');
+----
+true
+
+statement error
+SET tresor_keychain = 'disk';
+----
+tresor_keychain is auto, off or memory
+
+statement error
+SET SESSION tresor_keychain = 'memory';
+----
+set for the whole instance
+
+# this instance's memory: nothing reaches the OS store in a test
+statement ok
+SET tresor_keychain = 'memory';
+
+statement ok
+SET tresor_audit_level = 'all';
+
+statement ok
+CALL enable_logging('tresor');
+
+statement ok
+CREATE MACRO idp(what) AS (SELECT regexp_extract(content, '"' || what || '": ([^,}]*)', 1) FROM read_text('http://127.0.0.1:{TRESOR_TEST_PORT}/_stats'));
+
+statement ok
+CREATE TABLE seen AS SELECT idp('authorize')::INT AS authorize, idp('revoked_tokens')::INT AS revoked;
+
+# --- a login, then the next ATTACH needs no browser -----------------------------------------------------------
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS a (INSECURE_HTTP true, LOGIN 'browser');
+
+query I
+SELECT login FROM a.whoami();
+----
+browser
+
+statement ok
+DETACH a;
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS b (INSECURE_HTTP true, LOGIN 'browser');
+
+query II
+SELECT login, subject FROM b.whoami();
+----
+remembered	alice
+
+# another service of the same IdP and client: the same login, asked for that service's scope
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/second' AS c (INSECURE_HTTP true);
+
+query I
+SELECT login FROM c.whoami();
+----
+remembered
+
+query I
+SELECT idp('refresh_scope') <> '""';
+----
+true
+
+# one browser visit for all three
+query I
+SELECT idp('authorize')::INT - authorize FROM seen;
+----
+1
+
+# --- REMEMBER false neither reads nor writes --------------------------------------------------------------------
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS nr (INSECURE_HTTP true, LOGIN 'browser', REMEMBER false);
+
+query I
+SELECT login FROM nr.whoami();
+----
+browser
+
+query I
+SELECT idp('authorize')::INT - authorize FROM seen;
+----
+2
+
+statement ok
+DETACH nr;
+
+# --- a service's login is never remembered ----------------------------------------------------------------------
+
+statement ok
+CREATE SECRET etl_login (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/nolist-not', FLOW 'client_credentials',
+    CLIENT_ID 'etl', CLIENT_SECRET 's3cr3t', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS svc (INSECURE_HTTP true, SECRET etl_login, REMEMBER true);
+----
+REMEMBER is for a person's login
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS svc (INSECURE_HTTP true, SECRET etl_login);
+
+statement error
+SELECT * FROM tresor_logoff('svc');
+----
+is a service's login
+
+statement ok
+DETACH svc;
+
+# --- a service that refuses the remembered token: the person logs in, and that login is the one remembered ---------
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/picky' AS p (INSECURE_HTTP true, LOGIN 'browser');
+
+query I
+SELECT login FROM p.whoami();
+----
+browser
+
+query I
+SELECT idp('authorize')::INT - authorize FROM seen;
+----
+3
+
+statement ok
+DETACH p;
+
+# --- tresor_logoff: forgotten, revoked at the IdP, and the attachments on it are over ----------------------------
+
+query IIII
+SELECT issuer = 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', client_id, removed, revoked FROM tresor_logoff('b');
+----
+true	duckdb	true	true
+
+query I
+SELECT idp('revoked_tokens')::INT - revoked FROM seen;
+----
+1
+
+statement error
+SELECT * FROM b.whoami();
+----
+is over
+
+statement error
+SELECT * FROM c.whoami();
+----
+is over
+
+statement ok
+DETACH b;
+
+statement ok
+DETACH c;
+
+# forgotten: the next ATTACH is a browser login again
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS d (INSECURE_HTTP true, LOGIN 'browser');
+
+query I
+SELECT login FROM d.whoami();
+----
+browser
+
+statement ok
+DETACH d;
+
+# --- the IdP ended the session: the remembered token is dead, forgotten, and the browser runs --------------------
+
+query I
+SELECT idp('authorize')::INT - authorize FROM seen;
+----
+4
+
+statement ok
+SELECT content FROM read_text('http://127.0.0.1:{TRESOR_TEST_PORT}/_forget');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS e (INSECURE_HTTP true, LOGIN 'browser');
+
+query I
+SELECT login FROM e.whoami();
+----
+browser
+
+query I
+SELECT idp('authorize')::INT - authorize FROM seen;
+----
+5
+
+# by name, not attached: the entry goes (and nothing else is touched)
+statement ok
+DETACH e;
+
+query III
+SELECT client_id, removed, revoked FROM tresor_logoff(issuer := 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', client_id := 'duckdb');
+----
+duckdb	true	true
+
+# --- off: nothing remembered ---------------------------------------------------------------------------------
+
+statement ok
+SET tresor_keychain = 'off';
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS f (INSECURE_HTTP true, LOGIN 'browser');
+
+statement ok
+DETACH f;
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS g (INSECURE_HTTP true, LOGIN 'browser');
+
+query I
+SELECT login FROM g.whoami();
+----
+browser
+
+statement ok
+DETACH g;
+
+# --- the audit (specs/011): a remembered login and a logoff, never a token -------------------------------------
+
+query I
+SELECT count(*) > 0 FROM duckdb_logs_parsed('tresor') WHERE kind = 'login' AND detail = 'remembered';
+----
+true
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('tresor') WHERE kind = 'logout' AND detail = 'logoff_revoked';
+----
+2
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE type = 'tresor' AND (message LIKE '%rt-%' OR message LIKE '%eyJ%');
+----
+0

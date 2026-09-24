@@ -50,7 +50,8 @@ PERSON = {"subject": "alice", "roles": ["role:analysts", "group:sales"], "create
 SERVICE = {"subject": "client:etl", "roles": ["role:etl"], "create": True}
 CLIENTS = {"etl": "s3cr3t"}
 STATIC_TOKENS = {"static-token": {"subject": "client:static", "roles": [], "create": False}}
-REALMS = {"", "multi", "wrong", "expiring", "revoking", "noflows", "broken", "nolist", "acting", "shifty"}
+REALMS = {"", "multi", "wrong", "expiring", "revoking", "noflows", "broken", "nolist", "acting", "shifty", "picky",
+          "second"}
 ISSUERS = {"idp", "idp2", "idp-revoking"}
 FIRST_USES = 2  # expiring/revoking: how many whoami calls a token as first issued survives
 
@@ -145,6 +146,9 @@ NODE_TOKENS = {
 REFUSED_NODE_TOKEN = "node-token-dave"  # the IdP refuses to exchange it
 GRANTS = {}  # grant id -> {"actor": subject, "user": identity, "expires": epoch}
 STATS = {"exchanges": 0, "grants": 0, "revoked": 0, "refresh_asked": 0}
+# the IdP's side of a person's remembered login (specs/012): browser visits, refreshes (and the scope asked),
+# revocations - read by the tests at GET /_stats
+IDP_STATS = {"authorize": 0, "refresh": 0, "refresh_scope": "", "revoked_tokens": 0}
 
 
 def descriptor(name, sec):
@@ -250,6 +254,15 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(chunk)
 
     def do_HEAD(self):
+        if urllib.parse.urlparse(self.path).path in ("/_stats", "/_forget"):
+            # httpfs asks HEAD first: the size of what GET will answer (the stats are read under the lock there)
+            with LOCK:
+                size = len(json.dumps(dict(IDP_STATS) if self.path == "/_stats" else {"forgotten": True}).encode())
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            return
         if urllib.parse.urlparse(self.path).path.startswith("/dynbucket/"):
             self.s3(True)
             return
@@ -259,6 +272,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
+        if url.path == "/_stats":  # specs/012: what the IdP saw, for the tests
+            with LOCK:
+                self.send(200, dict(IDP_STATS))
+            return
+        if url.path == "/_forget":  # specs/012: the IdP forgets every refresh token (a session ended there)
+            with LOCK:
+                REFRESH.clear()
+            self.send(200, {"forgotten": True})
+            return
         if url.path.startswith("/dynbucket/"):
             self.s3(False)
             return
@@ -273,6 +295,7 @@ class Handler(BaseHTTPRequestHandler):
                     "authorization_endpoint": base + "/" + realm + "/authorize",
                     "token_endpoint": base + "/" + realm + "/token",
                     "device_authorization_endpoint": base + "/" + realm + "/device",
+                    "revocation_endpoint": base + "/" + realm + "/revoke",
                 })
             elif rest == "/authorize":
                 if query.get("client_id") != "duckdb" or query.get("code_challenge_method") != "S256":
@@ -281,6 +304,7 @@ class Handler(BaseHTTPRequestHandler):
                 code = "code-" + secrets.token_urlsafe(8)
                 with LOCK:
                     CODES[code] = (query.get("code_challenge"), query.get("redirect_uri"), PERSON)
+                    IDP_STATS["authorize"] += 1
                 target = query["redirect_uri"] + "?" + urllib.parse.urlencode(
                     {"code": code, "state": query.get("state", "")})
                 self.send(302, b"", "text/plain", {"Location": target})
@@ -321,6 +345,8 @@ class Handler(BaseHTTPRequestHandler):
                 identity = entry["identity"] if entry else STATIC_TOKENS.get(token)
                 if entry:
                     entry["uses"] += 1
+                    if realm == "picky" and entry["renewed"]:
+                        identity = None  # specs/012: a service that takes no refreshed token - a login is due
                     if realm in ("expiring", "revoking") and not entry["renewed"] and entry["uses"] > FIRST_USES:
                         identity = None
             if identity is None:
@@ -644,6 +670,13 @@ class Handler(BaseHTTPRequestHandler):
                 "verification_uri": self.base() + "/" + realm + "/activate", "interval": 1, "expires_in": 60,
             })
             return
+        if rest == "/revoke":
+            # RFC 7009: 200 whatever the token; a known refresh token is dead from here on
+            with LOCK:
+                if REFRESH.pop(form.get("token", ""), None) is not None:
+                    IDP_STATS["revoked_tokens"] += 1
+            self.send(200, b"", "text/plain")
+            return
         if rest != "/token":
             self.send(404, {"error": "not_found"})
             return
@@ -660,6 +693,8 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.send(200, issue(entry[2], True))
             elif grant == "refresh_token":
+                IDP_STATS["refresh"] += 1
+                IDP_STATS["refresh_scope"] = form.get("scope", "")
                 identity = REFRESH.get(form.get("refresh_token"))
                 if identity is None or realm == "idp-revoking":
                     self.send(400, {"error": "invalid_grant", "error_description": "refresh token revoked"})

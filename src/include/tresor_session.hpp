@@ -15,7 +15,9 @@ namespace duckdb {
 namespace tresor {
 
 //! How the session logged in; `browser` and `device` are people, the rest services.
-enum class LoginFlow : uint8_t { BROWSER, DEVICE, CLIENT_CREDENTIALS, TOKEN };
+enum class LoginFlow : uint8_t { BROWSER, DEVICE, CLIENT_CREDENTIALS, TOKEN, REMEMBERED };
+
+class RememberedLogins;
 
 string LoginFlowName(LoginFlow flow);
 
@@ -76,6 +78,15 @@ public:
 	//! DETACH: drop the tokens. Calls after this fail.
 	void Close();
 
+	//! Keep this person's login remembered (specs/012): every rotated refresh token is written to `store`, and a
+	//! dead one (invalid_grant) removed from it. Set once, before the session is shared.
+	void Remember(weak_ptr<RememberedLogins> store);
+	//! Is this login remembered under (issuer, client id)?
+	bool Remembers(const string &issuer, const string &client_id);
+	//! tresor_logoff: the login is over here too - the tokens go, the next call asks for a new ATTACH. The
+	//! refresh token, for revocation, is handed out once (empty when there is none).
+	string LogOff();
+
 private:
 	//! A usable access token, renewing it when it has less than a minute left; `force` renews anyway
 	//! (after a 401). Called with the lock held.
@@ -89,7 +100,8 @@ private:
 	int64_t issued_at = 0; // when `tokens` arrived: the renewal margin is at most half their life
 	string client_secret;  // client_credentials only: the re-mint needs it
 	bool closed = false;
-	bool logged_out = false; // the IdP ended the login (invalid_grant): only a new ATTACH helps
+	bool logged_out = false;             // the IdP ended the login (invalid_grant): only a new ATTACH helps
+	weak_ptr<RememberedLogins> remember; // specs/012: where a rotated refresh token goes
 };
 
 } // namespace tresor

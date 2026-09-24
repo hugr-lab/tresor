@@ -4,6 +4,7 @@
 #include "tresor_catalog.hpp"
 #include "tresor_events.hpp"
 #include "tresor_login.hpp"
+#include "tresor_remember.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/scalar_function.hpp"
@@ -65,7 +66,11 @@ unique_ptr<Catalog> TresorAttach(optional_ptr<StorageExtensionInfo> storage_info
 		login.Failed(ex);
 		throw;
 	}
-	login.For(node, name).Ok();
+	login.For(node, name);
+	if (session->Flow() == tresor::LoginFlow::REMEMBERED) {
+		login.Detail("remembered");
+	}
+	login.Ok();
 	shared_ptr<tresor::TresorActor> actor;
 	if (request.act_for_sessions) {
 		tresor::ActorOptions actor_options;
@@ -95,6 +100,9 @@ void LoadInternal(ExtensionLoader &loader) {
 
 	// what tresor did, for acl-otel's sinks and duckdb's log (specs/011)
 	tresor::TresorAudit::Register(loader.GetDatabaseInstance());
+	// a person's login remembered in the OS keychain (specs/012)
+	tresor::RememberedLogins::Register(loader.GetDatabaseInstance());
+	RegisterTresorLogoff(loader);
 
 	RegisterTresorSecret(loader);
 	RegisterTresorSecretParam(loader);

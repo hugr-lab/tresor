@@ -92,7 +92,11 @@ pointers, braces always, short comments. 2.0 API drift to expect: `ScalarFunctio
 - **The ATTACH path has no scheme** (`tresor:host[:port][/base]`, https implied): an `https://` path
   makes duckdb require httpfs and force READ_ONLY before it looks at the type. A test pins this.
 - **Never** write secret material to disk, log or emit material / tokens / session handles /
-  delegation grant ids, or send an IdP token to anyone but its audience.
+  delegation grant ids, or send an IdP token to anyone but its audience. The one exception
+  (specs/012, the owner's decision of 2026-09-24): a **person's refresh token** is kept in the **OS
+  credential store** (duckdb-ext-common `keychain/`). It is never kept in a file, and never with an
+  access token, a grant or material. Tests never touch that store (`TRESOR_KEYCHAIN=memory` in the
+  test scripts).
 - **Login directly with the IdP**, never through the secrets service.
 - **Admins manage, roles use** (specs/009): only administrators create secrets and grant `use`, to
   roles and groups; an admin role implies no `use`. **Under a delegation grant** a server uses its own

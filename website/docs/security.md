@@ -65,3 +65,15 @@ principals (the policy layer's job).
   each audience.
 - Services log in with their own credentials — client credentials, a private-key JWT, or a federated
   workload assertion — never with a stored person's token.
+- **A person's refresh token is kept in the OS credential store** (specs/012), and only that: never
+  a file, never an access token, never a service's credential. It goes to its identity provider only,
+  both for a refresh and for a revocation.
+  - The store protects it from other OS users and from a copied disk. It does not protect it from
+    another process of the same user.
+  - On macOS the item belongs to the program that stored it (`duckdb`, `python3`); another program
+    has to ask first.
+  - On Linux the Secret Service provider decides where the collection lives. KeePassXC may keep it
+    in a synced file.
+  - On macOS the login keychain file travels with a backup.
+  - If this is too much for you, use `REMEMBER false`, `tresor_keychain = 'off'` or
+    `TRESOR_KEYCHAIN=off`.
