@@ -142,6 +142,7 @@ if [ -n "${TRESOR_ACL_EXTENSION:-}" ]; then
 	[ -n "${TRESOR_ACL_DEBUG:-}" ] && sed -E -e 's/eyJ[A-Za-z0-9._-]*/<token>/g' -e 's/[0-9A-Fa-f]{32}/<handle>/g' \
 		"$work/acl.log" >"$TRESOR_ACL_DEBUG"
 	tail -n +"$((logged + 1))" "$work/server.log" >"$work/acl_server.log"
+	[ -n "${TRESOR_ACL_DEBUG:-}" ] && cp "$work/acl_server.log" "$TRESOR_ACL_DEBUG.server"
 	checks=(
 		'^check:refused-before-acl 0$'
 		'^check:node [0-9a-f-]{36}\|NULL$'
@@ -151,6 +152,9 @@ if [ -n "${TRESOR_ACL_EXTENSION:-}" ]; then
 		'^check:session-lake acl_lake$'
 		'^check:closed true$'
 		'^check:admin-made 1$'
+		'^check:admin-granted role:analysts$'
+		'^check:nonadmin-granted role:analysts$'
+		'^check:nonadmin-made 0$'
 		'^check:admin-closed true$'
 		'^check:admin-dropped 0$'
 	)
@@ -168,7 +172,7 @@ if [ -n "${TRESOR_ACL_EXTENSION:-}" ]; then
 	}
 	if [ "$acl_ok" = 1 ]; then
 		echo "test_keycloak: with duckdb-acl, a session's statements ran as its user, and its grant was revoked;" \
-			"an admin created and dropped a secret through the node"
+			"an admin managed secrets through the node, a user who is none could not"
 	else
 		# the checks and the errors only, and never a token (even a cut-off one) or a session handle: an error
 		# may quote a statement with alice's token or the handle in it

@@ -6,7 +6,7 @@
 #
 #   scripts/ci/acl_checkout.sh <dir>
 set -euo pipefail
-ACL_COMMIT=f1bdff8a1ed6713b935cc74803594add5807f5b2 # duckdb-acl main: secrets through the ACL (spec 082), ACLC 2
+ACL_COMMIT=8739e765a44af7477e33a18b59e3dda0ed0b757b # duckdb-acl main: secrets through the ACL, under the session (specs 082, 083), ACLC 2
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 dest="${1:?usage: acl_checkout.sh <dir>}"
 

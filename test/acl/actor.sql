@@ -37,7 +37,8 @@ ACL ADMIN CREATE VIRTUAL TABLE FUNCTION c.me RETURNS TABLE (subject VARCHAR, act
     AS SELECT subject, actor FROM node.main.whoami();
 ACL ADMIN CREATE VIRTUAL TABLE FUNCTION c.lake RETURNS TABLE (name VARCHAR)
     AS SELECT name FROM which_secret('https://acl-lake.example/x', 'http') WHERE storage = 'node';
-ACL ADMIN GRANT CATALOG c TO ROLE analysts MAIN;
+-- analysts may reach the secrets statements in acl (the capability): the service still refuses them, as no admins
+ACL ADMIN GRANT CATALOG c TO ROLE analysts WITH (select, secrets) MAIN;
 -- bob, a service admin: manages the service's secrets through the node (tresor specs/009, acl spec 082)
 ACL ADMIN CREATE ROLE secrets_admin;
 ACL ADMIN GRANT CATALOG c TO ROLE secrets_admin WITH (select, secrets) MAIN;
@@ -62,12 +63,26 @@ DETACH owner;
 CREATE TABLE hb AS SELECT acl_session_open('@ADMIN_TOKEN@') AS handle;
 .output @WORK@/admin_session.sql
 SELECT acl_session_sql(handle, 'CREATE PERSISTENT SECRET bob_made (TYPE http, SCOPE ''https://bob-made.example'', BEARER_TOKEN ''b'')') || ';' FROM hb;
--- ACL GRANT SECRET comes back when duckdb-acl runs it under the session (reported at f1bdff8: it reached the
--- service as the node's bare identity)
+SELECT acl_session_sql(handle, 'ACL GRANT SECRET bob_made TO ROLE analysts') || ';' FROM hb;
 .output
 .read @WORK@/admin_session.sql
 ATTACH 'tresor:@HOST@' AS owner (INSECURE_HTTP true, SECRET etl);
 SELECT 'check:admin-made ' || count(*) FROM owner.secrets() WHERE name = 'bob_made';
+SELECT 'check:admin-granted ' || string_agg(principal, ',') FROM owner.grants('bob_made');
+DETACH owner;
+
+-- alice is no admin: acl lets the statement through (the capability), the service refuses it over her grant.
+-- Checked by what it left behind: the CLI's list mode prints no error raised during execution
+CREATE TABLE ha AS SELECT acl_session_open('@TOKEN@') AS handle;
+.output @WORK@/alice_grant.sql
+SELECT acl_session_sql(handle, 'ACL GRANT SECRET bob_made TO ROLE interns') || ';' FROM ha;
+SELECT acl_session_sql(handle, 'CREATE PERSISTENT SECRET alice_made (TYPE http, SCOPE ''https://alice.example'', BEARER_TOKEN ''a'')') || ';' FROM ha;
+.output
+.read @WORK@/alice_grant.sql
+SELECT acl_session_close(handle) FROM ha;
+ATTACH 'tresor:@HOST@' AS owner (INSECURE_HTTP true, SECRET etl);
+SELECT 'check:nonadmin-granted ' || string_agg(principal, ',') FROM owner.grants('bob_made');
+SELECT 'check:nonadmin-made ' || count(*) FROM owner.secrets() WHERE name = 'alice_made';
 DETACH owner;
 .output @WORK@/admin_drop.sql
 SELECT acl_session_sql(handle, 'DROP PERSISTENT SECRET bob_made') || ';' FROM hb;
