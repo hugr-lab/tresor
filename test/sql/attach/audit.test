@@ -1,0 +1,189 @@
+# name: test/sql/attach/audit.test
+# description: what tresor did, for duckdb's log and for a sink on the tresor_audit contract, in the statement's trace (specs/011)
+# group: [attach]
+
+require-env TRESOR_TEST_PORT
+
+require acl_stub
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+# --- the setting: off by default, three levels ----------------------------------------------------------------
+
+query I
+SELECT current_setting('tresor_audit_level');
+----
+off
+
+statement error
+SET tresor_audit_level = 'loud';
+----
+tresor_audit_level is off, denied or all
+
+statement ok
+CALL enable_logging('tresor');
+
+statement ok
+CREATE SECRET etl_login (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'client_credentials',
+    CLIENT_ID 'etl', CLIENT_SECRET 's3cr3t', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+
+# off: nothing reaches the log, whatever tresor does
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS corp (INSECURE_HTTP true, ACT_FOR_SESSIONS true, SESSION_GRANT_WAIT 5);
+
+query I
+SELECT tresor_secret_param('node_lake', 'key_id');
+----
+VARCHAR NODE
+
+statement ok
+DETACH corp;
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE type = 'tresor';
+----
+0
+
+# all: the login, each service call, the logout - one typed row each
+statement ok
+SET tresor_audit_level = 'all';
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS corp (INSECURE_HTTP true, ACT_FOR_SESSIONS true, SESSION_GRANT_WAIT 5);
+
+query I
+SELECT tresor_secret_param('node_lake', 'key_id');
+----
+VARCHAR NODE
+
+# served from tresor's cache: counted, not logged
+query I
+SELECT tresor_secret_param('node_lake', 'key_id');
+----
+VARCHAR NODE
+
+query IIIIIII
+SELECT kind, outcome, service, login, principal, secret, duration_us >= 0
+FROM duckdb_logs_parsed('tresor') ORDER BY seq;
+----
+login	ok	corp	client_credentials	client:etl	NULL	true
+lookup	ok	corp	client_credentials	client:etl	node_lake	true
+
+# denied: only refusals and failures - the IdP refused to mint a token for the caller (specs/010)
+statement ok
+SET tresor_audit_level = 'denied';
+
+statement error
+SELECT tresor_secret_param('refused_mint', 'bearer_token');
+----
+mint_refused
+
+query I
+SELECT tresor_secret_param('traced', 'trace_seen');
+----
+VARCHAR none
+
+query IIII
+SELECT kind, outcome, reason_code, log_level FROM duckdb_logs_parsed('tresor') WHERE seq > 2 ORDER BY seq;
+----
+lookup	denied	mint_refused	WARNING
+
+# the reason is tresor's words: the service's text is not passed on
+query I
+SELECT reason FROM duckdb_logs_parsed('tresor') WHERE reason_code = 'mint_refused';
+----
+the service answered HTTP 403
+
+statement ok
+SET tresor_audit_level = 'all';
+
+# --- a sink on the contract (acl-otel's place), and an acl session's statement trace ----------------------------
+
+query I
+SELECT acl_stub_audit_listen();
+----
+true
+
+statement ok
+SET acl_stub_user = 'alice';
+
+query I
+SELECT acl_stub_open('s9', 'node-token-alice', 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', 300);
+----
+1
+
+# the grant arrives on tresor's own threads: the event says so, never the grant
+query I
+SELECT acl_stub_audit_last('session_grant');
+----
+ok||corp|s9|alice||||obtained|untimed
+
+statement ok
+SET acl_stub_traceparent = '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01';
+
+statement ok
+SET acl_stub_correlation = 'corr-1';
+
+statement ok
+SET acl_stub_session = 's9';
+
+# the statement's trace goes on to the service, in the W3C header
+query I
+SELECT tresor_secret_param('traced', 'trace_seen');
+----
+VARCHAR 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01
+
+# and the event carries it, with the session, its user and the correlation id
+query I
+SELECT acl_stub_audit_last('lookup');
+----
+ok||corp|s9|alice|corr-1|00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01|traced||timed
+
+# a malformed trace context is neither sent nor carried
+statement ok
+SET acl_stub_traceparent = '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01, 01-evil';
+
+query I
+SELECT tresor_secret_param('traced', 'trace_seen');
+----
+VARCHAR none
+
+query I
+SELECT acl_stub_audit_last('lookup');
+----
+ok||corp|s9|alice|corr-1||traced||timed
+
+# the log row of a statement under a session names it too
+query III
+SELECT acl_session, "user", correlation_id FROM duckdb_logs_parsed('tresor') WHERE kind = 'lookup' AND secret = 'traced' AND traceparent IS NOT NULL;
+----
+s9	alice	corr-1
+
+statement ok
+SET acl_stub_session = '';
+
+query I
+SELECT acl_stub_close('s9', 'client');
+----
+1
+
+query I
+SELECT acl_stub_audit_last('session_grant');
+----
+ok||corp|s9|alice||||revoked|timed
+
+statement ok
+DETACH corp;
+
+query I
+SELECT acl_stub_audit_last('logout');
+----
+ok||corp|||||||untimed
+
+# nothing tresor logged carries a credential: the client secret, the session's token, a grant id
+query I
+SELECT count(*) FROM duckdb_logs WHERE type = 'tresor'
+  AND (message LIKE '%s3cr3t%' OR message LIKE '%node-token%' OR message LIKE '%dg-%');
+----
+0

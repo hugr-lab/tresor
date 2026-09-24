@@ -112,9 +112,40 @@ func (s *Server) logged(next http.Handler) http.Handler {
 		start := time.Now()
 		holder := &auth.Caller{}
 		next.ServeHTTP(rec, r.WithContext(context.WithValue(r.Context(), loggedCallerKey{}, holder)))
-		s.log.Info("request", "method", r.Method, "path", loggedPath(r.URL.Path), "status", rec.status,
-			"subject", holder.Subject, "ms", time.Since(start).Milliseconds())
+		attrs := []any{"method", r.Method, "path", loggedPath(r.URL.Path), "status", rec.status,
+			"subject", holder.Subject, "ms", time.Since(start).Milliseconds()}
+		// the caller's trace (protocol, Tracing): its ids, so the line can be found from the client's trace
+		if traceID, spanID, ok := traceIDs(r.Header.Get("traceparent")); ok {
+			attrs = append(attrs, "trace_id", traceID, "parent_span_id", spanID)
+		}
+		s.log.Info("request", attrs...)
 	})
+}
+
+// traceIDs reads a W3C traceparent (version 00): the trace id and the parent span id; ok false for anything
+// malformed, which is then ignored - never logged as it came.
+func traceIDs(header string) (traceID, spanID string, ok bool) {
+	parts := strings.Split(header, "-")
+	if len(header) != 55 || len(parts) != 4 || parts[0] != "00" || !lowerHex(parts[1], 32) ||
+		!lowerHex(parts[2], 16) || !lowerHex(parts[3], 2) {
+		return "", "", false
+	}
+	if parts[1] == strings.Repeat("0", 32) || parts[2] == strings.Repeat("0", 16) {
+		return "", "", false
+	}
+	return parts[1], parts[2], true
+}
+
+func lowerHex(text string, size int) bool {
+	if len(text) != size {
+		return false
+	}
+	for _, c := range text {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 type loggedCallerKey struct{}

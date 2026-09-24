@@ -23,6 +23,7 @@ include_directories(${DUCKDB_EXT_COMMON_OIDC_INCLUDE} duckdb/third_party/httplib
 
 set(EXTENSION_SOURCES
     src/tresor_extension.cpp
+    src/tresor_events.cpp
     src/tresor_actor.cpp
     src/tresor_browser.cpp
     src/tresor_catalog.cpp

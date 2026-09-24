@@ -53,6 +53,14 @@ public:
 	LoginFlow Flow() const {
 		return flow;
 	}
+	//! Who logged in, as the service named it at the login's whoami (`subject:<issuer>|<sub>`); set once,
+	//! before the session is shared.
+	const string &Subject() const {
+		return subject;
+	}
+	void SetSubject(string subject_p) {
+		subject = std::move(subject_p);
+	}
 
 	//! A call to the service's API (`path` is relative to `api`, starting with '/'). A token about to
 	//! expire is renewed first; a 401 renews once and retries once (protocol, Errors). Throws when the
@@ -75,6 +83,7 @@ private:
 
 	ServiceInfo info;
 	LoginFlow flow;
+	string subject;
 	mutex lock;
 	oidc::TokenSet tokens;
 	int64_t issued_at = 0; // when `tokens` arrived: the renewal margin is at most half their life

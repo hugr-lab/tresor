@@ -1,4 +1,5 @@
 #include "tresor_storage.hpp"
+#include "tresor_events.hpp"
 #include "tresor_login.hpp"
 
 #include "acl_connection.hpp"
@@ -415,7 +416,8 @@ vector<Descriptor> FetchDescriptors(const Caller &caller) {
 	return out;
 }
 
-TresorSecretStorage::TresorSecretStorage(const string &name, int64_t offset) : SecretStorage(name, offset) {
+TresorSecretStorage::TresorSecretStorage(const string &name, int64_t offset, weak_ptr<TresorAudit> audit_p)
+    : SecretStorage(name, offset), audit(std::move(audit_p)) {
 	persistent = true; // the secrets live in the service
 }
 
@@ -472,6 +474,10 @@ Caller TresorSecretStorage::CallerFor(optional_ptr<ClientContext> context) {
 		return caller; // not under an acl session: the node itself
 	}
 	caller.acl_session = view.session_id.empty() ? "?" : view.session_id;
+	caller.user = view.principal.issuer.empty() ? view.principal.subject
+	                                            : "subject:" + view.principal.issuer + "|" + view.principal.subject;
+	caller.correlation_id = view.correlation_id;
+	caller.traceparent = ValidTraceparent(view.traceparent);
 	if (!acting) {
 		caller.refused = storage_name + " does not act for duckdb-acl sessions (ATTACH it with ACT_FOR_SESSIONS)";
 		return caller;
@@ -609,40 +615,56 @@ vector<Descriptor> TresorSecretStorage::Refresh(const Caller &caller) {
 }
 
 unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &caller, View &view, const Descriptor &d,
-                                                             optional_ptr<CatalogTransaction> transaction) {
+                                                             optional_ptr<CatalogTransaction> transaction,
+                                                             const string &kind) {
 	auto now = NowSeconds();
+	optional_ptr<ClientContext> context = transaction ? transaction->context : nullptr;
 	{
 		lock_guard<mutex> guard(lock);
 		auto cached = view.materials.find(d.name);
 		if (cached != view.materials.end() && cached->second.version == d.version && cached->second.valid_until > now) {
+			// served from memory: counted, not emitted - a scan asks for its secret once per file
+			if (auto live = audit.lock()) {
+				live->Count(kind, "ok", true);
+			}
 			return cached->second.secret->Clone();
 		}
 	}
+	auto audited = Audit(kind, caller, context);
+	audited.Secret(d.name, d.type, d.dynamic).Called();
 	ServiceResponse response;
 	try {
 		response = caller.Call("GET", "/v1/secrets/" + Encode(d.name));
-	} catch (PermissionException &) {
+	} catch (PermissionException &ex) {
+		audited.Failed(ex);
 		if (caller.IsNode()) {
 			throw;
 		}
 		return nullptr; // the service refused the session's grant (marked by the call): a lookup finds nothing
+	} catch (std::exception &ex) {
+		audited.Failed(ex);
+		throw;
 	}
 	if (response.status == 403 && ProblemType(response.body) == "mint_refused") {
 		// a token for the caller the IdP would not mint (specs/010): the lookup fails with the reason, rather
 		// than going on without the credential the path needs
+		audited.Answer(response);
 		throw IOException("tresor: the secret %s of %s: %s", d.name, caller.session->Info().host,
 		                  DescribeProblem(response.status, response.body));
 	}
 	if (response.status == 404 || response.status == 403) {
 		// gone, or no longer ours to use, since the list was fetched: not a match - and the list is stale
+		audited.Denied(ReasonCode(response), DescribeProblem(response.status, response.body));
 		lock_guard<mutex> guard(lock);
 		view.listed_at = 0;
 		return nullptr;
 	}
 	if (response.status != 200) {
+		audited.Answer(response);
 		throw IOException("tresor: the secret %s of %s: %s", d.name, caller.session->Info().host,
 		                  DescribeProblem(response.status, response.body));
 	}
+
 	// numbers as raw text: a HUGEINT or DECIMAL keeps every digit
 	JsonDoc doc(response.body, YYJSON_READ_NUMBER_AS_RAW);
 	auto root = doc.Root();
@@ -650,7 +672,6 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &calle
 	if (!params || !yyjson_is_obj(params)) {
 		throw IOException("tresor: the secret %s of %s came without params", d.name, caller.session->Info().host);
 	}
-	optional_ptr<ClientContext> context = transaction ? transaction->context : nullptr;
 	// a dynamic S3-family secret is refreshed by tresor (httpfs's REFRESH auto calls the provider recorded
 	// in the secret, with the options of its refresh_info); every other one keeps the service's provider
 	auto refreshable = d.dynamic && RefreshableType(d.type);
@@ -703,6 +724,7 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &calle
 	} else if (d.dynamic) {
 		valid_until = now; // a dynamic secret without a readable expiry is never reused
 	}
+	audited.Ok();
 	lock_guard<mutex> guard(lock);
 	if (session != caller.session) {
 		return std::move(secret); // detached meanwhile: served once, never cached
@@ -735,6 +757,12 @@ SecretMatch TresorSecretStorage::LookupSecret(const string &path, const string &
 	shared_ptr<View> view;
 	auto list = Snapshot(caller, view);
 	if (!view) {
+		if (caller.session && !caller.refused.empty()) {
+			// a statement under an acl session this node cannot act for: the refusal is worth a line
+			Audit("lookup", caller, transaction ? transaction->context : nullptr)
+			    .Secret(string(), type)
+			    .Denied("no_grant", OwnWords(caller.refused));
+		}
 		return SecretMatch();
 	}
 	// score the usable descriptors by duckdb's own rule, on placeholders without material
@@ -849,7 +877,7 @@ unique_ptr<const BaseSecret> TresorSecretStorage::RefreshMaterial(const string &
 			}
 			view->materials.erase(d.name);
 		}
-		auto material = MaterialOf(caller, *view, d, transaction);
+		auto material = MaterialOf(caller, *view, d, transaction, "refresh");
 		if (!material) {
 			break;
 		}
@@ -867,6 +895,12 @@ unique_ptr<const BaseSecret> TresorSecretStorage::RefreshMaterial(const string &
 		throw PermissionException("tresor: %s", caller.refused);
 	}
 	throw InvalidInputException("tresor: %s has no secret %s this caller may use", storage_name, name);
+}
+
+Audited TresorSecretStorage::Audit(const string &kind, const Caller &caller, optional_ptr<ClientContext> context) {
+	Audited audited(audit, kind, context);
+	audited.For(caller, storage_name);
+	return audited;
 }
 
 string TresorSecretStorage::ServiceName(const Caller &caller, const string &name) {
@@ -896,14 +930,27 @@ unique_ptr<SecretEntry> TresorSecretStorage::StoreSecret(unique_ptr<const BaseSe
 		return make_uniq<SecretEntry>(EntryOf(secret->Clone()));
 	}
 	auto name = ServiceName(caller, secret->GetName().GetIdentifierName());
+	auto audited = Audit("write", caller, transaction ? transaction->context : nullptr);
+	audited.Secret(name, secret->GetType().GetIdentifierName());
 	std::map<std::string, std::string> headers;
 	if (on_conflict == OnCreateConflict::ERROR_ON_CONFLICT || on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
 		headers["If-None-Match"] = "*"; // CREATE / IF NOT EXISTS: never overwrite
 	} else if (on_conflict != OnCreateConflict::REPLACE_ON_CONFLICT) {
 		throw InternalException("tresor: unexpected conflict mode for a secret");
 	}
-	auto response = caller.Call("PUT", "/v1/secrets/" + Encode(name), SecretBody(*key_value), headers);
+	ServiceResponse response;
+	try {
+		response = caller.Call("PUT", "/v1/secrets/" + Encode(name), SecretBody(*key_value), headers);
+	} catch (std::exception &ex) {
+		audited.Failed(ex);
+		throw;
+	}
 	Invalidate(name);
+	if (response.status == 412) {
+		audited.Called().Error("invalid", "a secret of this name already exists");
+	} else {
+		audited.Answer(response);
+	}
 	if (response.status == 412) {
 		if (on_conflict == OnCreateConflict::IGNORE_ON_CONFLICT) {
 			return nullptr; // duckdb's IF NOT EXISTS contract: nothing created, no entry
@@ -931,8 +978,17 @@ void TresorSecretStorage::DropSecretByName(const Identifier &name_p, OnEntryNotF
 		throw InvalidInputException("tresor: %s is detached", storage_name);
 	}
 	auto name = ServiceName(caller, name_p.GetIdentifierName());
-	auto response = caller.Call("DELETE", "/v1/secrets/" + Encode(name));
+	auto audited = Audit("drop", caller, transaction ? transaction->context : nullptr);
+	audited.Secret(name);
+	ServiceResponse response;
+	try {
+		response = caller.Call("DELETE", "/v1/secrets/" + Encode(name));
+	} catch (std::exception &ex) {
+		audited.Failed(ex);
+		throw;
+	}
 	Invalidate(name);
+	audited.Answer(response);
 	if (response.status == 404) {
 		if (on_entry_not_found == OnEntryNotFound::THROW_EXCEPTION) {
 			throw InvalidInputException("Failed to remove non-existent persistent secret '%s' in secret storage '%s'",
@@ -978,7 +1034,7 @@ TresorSecretStorage &StorageFor(ClientContext &context, const string &name) {
 	// the offset must be unique among the instance's storages (duckdb's tie-break rule) and stay below 100,
 	// where it would start to outweigh one character of scope: skip the taken ones
 	while (registry->next_offset < 100) {
-		auto storage = make_uniq<TresorSecretStorage>(name, registry->next_offset++);
+		auto storage = make_uniq<TresorSecretStorage>(name, registry->next_offset++, TresorAudit::Get(*context.db));
 		auto &ref = *storage;
 		try {
 			manager.LoadSecretStorage(std::move(storage));

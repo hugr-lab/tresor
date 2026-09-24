@@ -2,6 +2,7 @@
 
 #include "tresor_extension.hpp"
 #include "tresor_catalog.hpp"
+#include "tresor_events.hpp"
 #include "tresor_login.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -48,11 +49,23 @@ unique_ptr<Catalog> TresorAttach(optional_ptr<StorageExtensionInfo> storage_info
 		// here, or acl speaks another contract
 		tresor::TresorActor::CheckHooks(db.GetDatabase());
 	}
-	auto session = tresor::Login(context, request);
-	// the list the storage starts from: a service that cannot list its secrets is not attached
+	tresor::Audited login(storage.AuditOf(), "login", &context);
+	login.event.service = name;
+	login.event.host = request.host;
+	login.Called();
+	shared_ptr<tresor::TresorSession> session;
+	vector<tresor::Descriptor> initial;
 	tresor::Caller node;
-	node.session = session;
-	auto initial = tresor::FetchDescriptors(node);
+	try {
+		session = tresor::Login(context, request);
+		node.session = session;
+		// the list the storage starts from: a service that cannot list its secrets is not attached
+		initial = tresor::FetchDescriptors(node);
+	} catch (std::exception &ex) {
+		login.Failed(ex);
+		throw;
+	}
+	login.For(node, name).Ok();
 	shared_ptr<tresor::TresorActor> actor;
 	if (request.act_for_sessions) {
 		tresor::ActorOptions actor_options;
@@ -60,6 +73,8 @@ unique_ptr<Catalog> TresorAttach(optional_ptr<StorageExtensionInfo> storage_info
 		actor_options.scope = request.exchange_scope;
 		actor_options.audience = session->Info().audience; // pinned at the login (never the service's alone)
 		actor_options.grant_wait_seconds = request.grant_wait_seconds;
+		actor_options.service = name;
+		actor_options.audit = storage.AuditOf();
 		actor = make_shared_ptr<tresor::TresorActor>(session, std::move(actor_options));
 	}
 	info.path = IN_MEMORY_PATH;
@@ -77,6 +92,9 @@ void LoadInternal(ExtensionLoader &loader) {
 	storage->attach = TresorAttach;
 	storage->create_transaction_manager = TresorCreateTransactionManager;
 	StorageExtension::Register(config, "tresor", std::move(storage));
+
+	// what tresor did, for acl-otel's sinks and duckdb's log (specs/011)
+	tresor::TresorAudit::Register(loader.GetDatabaseInstance());
 
 	RegisterTresorSecret(loader);
 	RegisterTresorSecretParam(loader);

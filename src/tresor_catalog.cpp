@@ -23,6 +23,12 @@ void TresorCatalog::Shutdown() {
 		actor->Stop(); // the grants still held are revoked with the login, before it goes
 	}
 	session->Close();
+	if (!shut) {
+		shut = true;
+		Caller node;
+		node.session = session;
+		storage.Audit("logout", node, nullptr).Ok();
+	}
 }
 
 void TresorCatalog::Initialize(bool load_builtin) {

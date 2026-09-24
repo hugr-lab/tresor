@@ -22,6 +22,8 @@ It is **not meant for production**: one process, one encrypted file, no high ava
     audience;
   - asymmetric algorithms only.
 
+- Tracing: the request log names the caller's `trace_id` and `parent_span_id` from a well-formed
+  `traceparent`. It does not export spans; a production service would.
 - Delegation: grant exchange, the `Delegation` header, and actor policy (tresor specs/009: under a
   grant a server uses its own grants for the user, and passes management through only for admins).
 

@@ -434,6 +434,9 @@ class Handler(BaseHTTPRequestHandler):
                              "redact_keys": [], "mint_refused": True},
             "stats": {"type": "http", "scope": ["https://stats.invalid"], "permissions": [], "comment": stats,
                       "params": {}, "redact_keys": []},
+            # the trace context this very request came with (specs/011): dynamic, so never served from cache
+            "traced": {"type": "http", "scope": ["https://traced.example"], "permissions": ["use"], "dynamic": True,
+                       "params": {"trace_seen": self.headers.get("traceparent", "none")}, "redact_keys": []},
         }
         if rest == "/v1/secrets":
             self.send(200, [descriptor(n, sec) for n, sec in listing.items()])

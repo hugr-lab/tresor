@@ -658,6 +658,14 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 		throw InvalidInputException("tresor: %s refused the login: %s", request.host,
 		                            DescribeProblem(whoami.status, whoami.body));
 	}
+	{
+		JsonDoc doc(whoami.body);
+		auto root = doc.Root();
+		auto subject = root && yyjson_is_obj(root) ? yyjson_obj_get(root, "subject") : nullptr;
+		if (subject && yyjson_is_str(subject)) {
+			session->SetSubject(yyjson_get_str(subject));
+		}
+	}
 	return session;
 }
 

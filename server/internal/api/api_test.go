@@ -433,3 +433,23 @@ func TestNoExistenceOracle(t *testing.T) {
 		t.Fatalf("If-Match: %d vs %d", missing.status, existing.status)
 	}
 }
+
+func TestTraceIDs(t *testing.T) {
+	traceID, spanID, ok := traceIDs("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01")
+	if !ok || traceID != "0af7651916cd43dd8448eb211c80319c" || spanID != "b7ad6b7169203331" {
+		t.Fatalf("a valid traceparent: %q %q %v", traceID, spanID, ok)
+	}
+	for _, bad := range []string{
+		"",
+		"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331",
+		"01-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+		"00-0AF7651916CD43DD8448EB211C80319C-b7ad6b7169203331-01",
+		"00-00000000000000000000000000000000-b7ad6b7169203331-01",
+		"00-0af7651916cd43dd8448eb211c80319c-0000000000000000-01",
+		"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01\nforged=1",
+	} {
+		if _, _, ok := traceIDs(bad); ok {
+			t.Fatalf("accepted %q", bad)
+		}
+	}
+}

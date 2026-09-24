@@ -51,6 +51,7 @@ private:
 	TresorSecretStorage &storage;  // owned by the SecretManager, for the instance's lifetime
 	vector<Descriptor> initial;    // the list the ATTACH fetched: the storage starts from it
 	shared_ptr<TresorActor> actor; // ACT_FOR_SESSIONS (specs/008), else null
+	bool shut = false;             // Shutdown ran (DETACH, then the destructor)
 
 	//! The end of the catalog, by DETACH or otherwise: out of the lookup, the grants revoked, the login gone.
 	void Shutdown();

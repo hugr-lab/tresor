@@ -112,3 +112,37 @@ exchange):
 The test realm in `server/testdata/keycloak` has all three. With Entra, the token's `iss` must equal
 the issuer the node logs in with: v1 tokens (`https://sts.windows.net/<tenant>/`) against a v2
 issuer are refused as "from another issuer".
+
+## What tresor did: audit and traces
+
+tresor records what it did as events: logins and logouts, secret lookups and refreshes, writes, drops,
+annotations, grants and revocations, and on a duckdb-acl node each session's delegation grant
+(obtained, failed, revoked, rejected, expired). An event names:
+- the service and the caller;
+- the secret (never its material);
+- the outcome, and for a refusal a bounded reason code;
+- the time the service took.
+
+It never carries a token, a session handle, a grant id or a statement's text. The events go to two
+places, each off unless you ask for it:
+
+- **DuckDB's log.** `tresor_audit_level` is `off` (the default), `denied` (refusals and failures) or
+  `all`. DuckDB keeps a row only while its own logging is on for the `tresor` type:
+
+  ```sql
+  SET tresor_audit_level = 'all';
+  CALL enable_logging('tresor');
+  SELECT kind, outcome, secret, reason_code, duration_us FROM duckdb_logs_parsed('tresor');
+  ```
+
+  A row written for a statement names its connection and query, like any DuckDB log row. A lookup
+  served from tresor's memory is not logged: a scan asks for its secret once per file.
+- **The `tresor_audit` contract** (duckdb-ext-common), for an exporter loaded beside tresor. On a
+  duckdb-acl node, [acl-otel](https://github.com/hugr-lab/acl-otel) turns the events into
+  OpenTelemetry logs, spans and metrics. With no exporter loaded, no event is even composed.
+
+**Traces.** Under an acl session, an event carries the statement's `traceparent` and correlation id,
+as duckdb-acl publishes them. An exporter places tresor's work in the trace of the statement that
+caused it. tresor also sends the `traceparent` to the service ([protocol, Tracing](./protocol.md#tracing)),
+so a service that traces continues the same trace.
+

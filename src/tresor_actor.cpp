@@ -47,7 +47,9 @@ public:
 	}
 	void OnSessionOpen(const acl::SessionOpenInfo &info, const string &access_token) override {
 		if (auto live = actor.lock()) {
-			live->Opened(info.session_id, info.token_issuer, info.expires_at, access_token);
+			auto &who = info.principal;
+			auto user = who.issuer.empty() ? who.subject : "subject:" + who.issuer + "|" + who.subject;
+			live->Opened(info.session_id, user, info.token_issuer, info.expires_at, access_token);
 		}
 	}
 	void OnSessionClose(const string &session_id, const string &reason) override {
@@ -77,6 +79,9 @@ ServiceResponse Caller::Call(const string &method, const string &path, const str
 	}
 	if (!refused.empty()) {
 		throw PermissionException("tresor: %s", refused);
+	}
+	if (!traceparent.empty()) {
+		headers["traceparent"] = traceparent; // the statement's trace goes on at the service (protocol, Tracing)
 	}
 	if (IsNode()) {
 		return session->Call(method, path, body, headers);
@@ -158,6 +163,8 @@ void TresorActor::Stop() {
 			if (entry.second.state == State::READY) {
 				Job job;
 				job.revoke = true;
+				job.acl_session = entry.first;
+				job.user = entry.second.user;
 				job.token = entry.second.grant;
 				jobs.push_back(std::move(job));
 			}
@@ -182,7 +189,7 @@ void TresorActor::OnSessionGone(std::function<void(const string &)> callback) {
 	gone = std::move(callback);
 }
 
-void TresorActor::Opened(const string &acl_session, const string &token_issuer, int64_t expires_at,
+void TresorActor::Opened(const string &acl_session, const string &user, const string &token_issuer, int64_t expires_at,
                          const string &token) {
 	lock_guard<mutex> guard(lock);
 	if (stopping || acl_session.empty() || sessions.count(acl_session)) {
@@ -190,8 +197,10 @@ void TresorActor::Opened(const string &acl_session, const string &token_issuer, 
 	}
 	auto &entry = sessions[acl_session];
 	entry.wait_until = std::chrono::steady_clock::now() + std::chrono::seconds(options.grant_wait_seconds);
+	entry.user = user;
 	Job job;
 	job.acl_session = acl_session;
+	job.user = user;
 	job.token = token; // the only copy, until the exchange is done
 	job.issuer = token_issuer;
 	job.expires_at = expires_at;
@@ -225,6 +234,8 @@ void TresorActor::Closed(const string &acl_session) {
 		} else if (entry->second.state == State::READY && !stopping) {
 			Job job;
 			job.revoke = true;
+			job.acl_session = acl_session;
+			job.user = entry->second.user;
 			job.token = entry->second.grant;
 			jobs.push_back(std::move(job));
 			queued.notify_one();
@@ -274,6 +285,9 @@ string TresorActor::GrantFor(const string &acl_session, optional_ptr<ClientConte
 				entry->second.why = "this acl session's delegation grant has expired";
 				Wipe(entry->second.grant);
 				why = entry->second.why;
+				auto user = entry->second.user;
+				guard.unlock();
+				Tell(acl_session, user, "expired", "denied", "no_grant", why, context);
 				return string();
 			}
 			return entry->second.grant;
@@ -294,16 +308,38 @@ string TresorActor::GrantFor(const string &acl_session, optional_ptr<ClientConte
 }
 
 void TresorActor::Rejected(const string &acl_session) {
-	Fail(acl_session, "the service no longer accepts this acl session's delegation grant");
+	Fail(acl_session, "the service no longer accepts this acl session's delegation grant", "unauthenticated",
+	     "rejected");
 }
 
-void TresorActor::Fail(const string &acl_session, const string &why) {
+void TresorActor::Tell(const string &acl_session, const string &user, const string &detail, const string &outcome,
+                       const string &code, const string &reason, optional_ptr<ClientContext> context,
+                       int64_t duration_us) {
+	Audited audited(options.audit, "session_grant", context);
+	Caller caller;
+	caller.session = session;
+	caller.acl_session = acl_session;
+	caller.user = user;
+	audited.For(caller, options.service).Detail(detail);
+	audited.event.duration_us = duration_us;
+	if (outcome == "ok") {
+		audited.Ok();
+	} else if (outcome == "denied") {
+		audited.Denied(code, reason);
+	} else {
+		audited.Error(code, reason);
+	}
+}
+
+void TresorActor::Fail(const string &acl_session, const string &why, const string &code, const string &detail) {
+	string user;
 	{
 		lock_guard<mutex> guard(lock);
 		auto entry = sessions.find(acl_session);
 		if (entry == sessions.end()) {
 			return;
 		}
+		user = entry->second.user;
 		Wipe(entry->second.grant);
 		if (entry->second.closed) {
 			sessions.erase(entry); // closed while pending: nothing left to remember
@@ -313,6 +349,7 @@ void TresorActor::Fail(const string &acl_session, const string &why) {
 		}
 	}
 	changed.notify_all();
+	Tell(acl_session, user, detail, detail == "rejected" ? "denied" : "error", code, OwnWords(why));
 }
 
 bool TresorActor::RevokeAllowed() {
@@ -341,7 +378,8 @@ void TresorActor::Work() {
 		} catch (std::exception &) {
 			// a failed exchange is recorded (its reason names the step, never a token)
 			if (!job.revoke) {
-				Fail(job.acl_session, "the delegation grant could not be obtained (the service or the IdP failed)");
+				Fail(job.acl_session, "the delegation grant could not be obtained (the service or the IdP failed)",
+				     "transport");
 			}
 		}
 		Wipe(job.token);
@@ -388,8 +426,10 @@ void TresorActor::Exchange(Job &job) {
 	}
 	Wipe(body);
 	if (response.status != 201 && response.status != 200) {
-		Fail(job.acl_session, "the service refused a delegation grant for this acl session: " +
-		                          DescribeProblem(response.status, response.body));
+		Fail(job.acl_session,
+		     "the service refused a delegation grant for this acl session: " +
+		         DescribeProblem(response.status, response.body),
+		     ReasonCode(response));
 		return;
 	}
 	string grant;
@@ -433,9 +473,14 @@ void TresorActor::Exchange(Job &job) {
 		}
 	}
 	changed.notify_all();
+	if (!revoke_now) {
+		Tell(job.acl_session, job.user, "obtained", "ok", string(), string());
+	}
 	if (revoke_now) {
 		Job revoke;
 		revoke.revoke = true;
+		revoke.acl_session = job.acl_session;
+		revoke.user = job.user;
 		revoke.token = grant;
 		Revoke(revoke);
 		Wipe(revoke.token);
@@ -447,14 +492,30 @@ void TresorActor::Revoke(Job &job) {
 	if (!RevokeAllowed()) {
 		return; // DETACH's deadline passed, or the service already failed a revocation: the ttl ends it
 	}
+	auto started = std::chrono::steady_clock::now();
+	auto took = [&]() {
+		return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started)
+		    .count();
+	};
 	try {
 		auto response =
 		    session->Call("DELETE", "/v1/delegations/" + EncodePathSegment(job.token), "", {}, REVOKE_TIMEOUT_SECONDS);
-		(void)response;
+		if (response.status / 100 == 2 || response.status == 404) {
+			Tell(job.acl_session, job.user, "revoked", "ok", string(), string(), nullptr, took());
+		} else {
+			Tell(job.acl_session, job.user, "revoked", "error", ReasonCode(response),
+			     // the status alone: a service's problem text may quote the path, and the grant is in it
+			     "the service refused to revoke the grant (HTTP " + std::to_string(response.status) + ")", nullptr,
+			     took());
+		}
 	} catch (std::exception &) {
 		// the error names the request's URL, with the grant in it - dropped; the grant ends with its ttl
-		lock_guard<mutex> guard(lock);
-		revoke_failed = stopping; // at DETACH, the rest are not tried: the service is not answering
+		{
+			lock_guard<mutex> guard(lock);
+			revoke_failed = stopping; // at DETACH, the rest are not tried: the service is not answering
+		}
+		Tell(job.acl_session, job.user, "revoked", "error", "transport",
+		     "the service did not answer the revocation; the grant ends with its ttl", nullptr, took());
 	}
 }
 

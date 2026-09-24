@@ -1,4 +1,5 @@
 #include "tresor_catalog.hpp"
+#include "tresor_events.hpp"
 #include "tresor_login.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -27,6 +28,8 @@ struct ManageBindData : public TableFunctionData {
 	string name;                            // the secret, canonical
 	string argument;                        // the comment, or the principal
 	vector<string> verbs;
+	//! The change being made (per call), told of the service's refusal; mutable: told from const paths.
+	mutable optional_ptr<Audited> audited;
 };
 
 struct Grant {
@@ -51,6 +54,9 @@ string Arg(TableFunctionBindInput &input, idx_t index, const char *what) {
 
 //! A service answer that is not a success, as the user reads it.
 [[noreturn]] void Refused(const ManageBindData &data, const ServiceResponse &response, const char *doing) {
+	if (data.audited) {
+		data.audited->Answer(response);
+	}
 	auto &host = data.session->Info().host;
 	if (response.status == 404) {
 		throw InvalidInputException("tresor: no secret %s in %s", data.name, host);
@@ -177,6 +183,9 @@ void EmitGrant(DataChunk &output, idx_t row, const Grant &grant) {
 	output.data[2].Append(Verbs(grant.verbs));
 }
 
+void Change(ManageBindData &data, ManageState &state, TresorSecretStorage &storage, const string &path,
+            DataChunk &output);
+
 void ManageScan(ClientContext &context, TableFunctionInput &input, DataChunk &output) {
 	auto &state = input.global_state->Cast<ManageState>();
 	if (state.done) {
@@ -193,6 +202,33 @@ void ManageScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 	data.caller = storage.CallerFor(&context);
 	data.name = storage.ServiceName(data.caller, data.name);
 	auto path = "/v1/secrets/" + EncodePathSegment(data.name);
+	if (data.action == Action::GRANTS) {
+		// reading the grants changes nothing: not audited
+		state.rows = ReadGrants(data);
+		while (state.offset < state.rows.size() && output.size() < STANDARD_VECTOR_SIZE) {
+			EmitGrant(output, 0, state.rows[state.offset++]);
+		}
+		return;
+	}
+	auto kind = data.action == Action::ANNOTATE ? "annotate" : data.action == Action::GRANT ? "grant" : "revoke";
+	auto audited = storage.Audit(kind, data.caller, &context);
+	audited.Secret(data.name).Called();
+	if (data.action != Action::ANNOTATE) {
+		audited.Target(data.argument);
+	}
+	data.audited = &audited;
+	try {
+		Change(data, state, storage, path, output);
+	} catch (std::exception &ex) {
+		audited.Failed(ex);
+		throw;
+	}
+	audited.Ok();
+}
+
+//! annotate_secret, grant_secret, revoke_secret: the change, made; a refusal throws.
+void Change(ManageBindData &data, ManageState &state, TresorSecretStorage &storage, const string &path,
+            DataChunk &output) {
 	switch (data.action) {
 	case Action::ANNOTATE: {
 		auto response = data.caller.Call("PATCH", path, "{\"comment\":" + JsonString(data.argument) + "}");
@@ -208,13 +244,8 @@ void ManageScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 		                                                        : Value(LogicalType::VARCHAR));
 		return;
 	}
-	case Action::GRANTS: {
-		state.rows = ReadGrants(data);
-		while (state.offset < state.rows.size() && output.size() < STANDARD_VECTOR_SIZE) {
-			EmitGrant(output, 0, state.rows[state.offset++]);
-		}
-		return;
-	}
+	case Action::GRANTS:
+		return; // read in ManageScan
 	case Action::GRANT: {
 		// one grant per principal: an existing grant to it is replaced under its id and any others to it
 		// removed, so the principal ends up holding exactly these verbs; a new one gets a stable id

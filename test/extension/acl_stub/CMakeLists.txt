@@ -11,7 +11,8 @@ project(${TARGET_NAME})
 set(CMAKE_CXX_STANDARD "17" CACHE STRING "C++ standard to enforce")
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-include_directories(src/include ${CMAKE_CURRENT_LIST_DIR}/../../../duckdb-ext-common/contracts)
+include_directories(src/include ${CMAKE_CURRENT_LIST_DIR}/../../../duckdb-ext-common/contracts
+                    ${CMAKE_CURRENT_LIST_DIR}/../../../duckdb-ext-common/hooks)
 
 build_static_extension(${TARGET_NAME} src/acl_stub_extension.cpp)
 build_loadable_extension(${TARGET_NAME} " " src/acl_stub_extension.cpp)
