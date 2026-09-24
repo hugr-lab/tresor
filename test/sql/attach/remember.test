@@ -156,11 +156,6 @@ DETACH p;
 
 # --- tresor_logoff: not for a statement run for an acl session's user -------------------------------------------
 
-query I
-SELECT acl_stub_open('lo-1', 'node-token-alice', 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', 300);
-----
-0
-
 statement ok
 SET acl_stub_session = 'lo-1';
 

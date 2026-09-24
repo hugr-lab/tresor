@@ -80,7 +80,9 @@ public:
 	//! Keep this person's login remembered (specs/012), in `store`'s current mode: the refresh token the session
 	//! holds now is stored, every rotation after it too, and a dead one (invalid_grant) removed. Its key is this
 	//! service's: (issuer, client id, host).
-	void Remember(const shared_ptr<RememberedLogins> &store);
+	//! `started_from`: the token a remembered login began with (what RememberedLogin stored); empty for a fresh
+	//! login, which replaces the entry.
+	void Remember(const shared_ptr<RememberedLogins> &store, const string &started_from);
 	//! Is this login remembered under `key`?
 	bool Remembers(const LoginKey &key);
 	//! The key this session's login would be remembered under.
@@ -105,6 +107,7 @@ private:
 	bool logged_out = false;                        // the IdP ended the login (invalid_grant): only a new ATTACH helps
 	weak_ptr<RememberedLogins> remember;            // specs/012: where a rotated refresh token goes
 	KeychainMode remember_mode = KeychainMode::OFF; // the mode it was remembered in: stored only while it holds
+	string remember_subject;                        // whose login it is: another person's stored since is not adopted
 };
 
 } // namespace tresor

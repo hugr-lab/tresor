@@ -138,10 +138,40 @@ bool RememberedLogins::Usable(string &why) {
 	return false;
 }
 
-bool RememberedLogins::Load(const LoginKey &key, string &refresh) {
+string RememberedLogins::Encode(const string &subject, const string &refresh) {
+	auto one_line = subject; // a subject is one line; one that is not never matches a session's (so never adopted)
+	for (auto &c : one_line) {
+		if (c == '\n') {
+			c = '?';
+		}
+	}
+	return "1\n" + one_line + "\n" + refresh;
+}
+
+bool RememberedLogins::Decode(const string &value, string &subject, string &refresh) {
+	WipeString(subject);
 	WipeString(refresh);
+	if (value.compare(0, 2, "1\n") != 0) {
+		return false;
+	}
+	auto split = value.find('\n', 2);
+	if (split == string::npos || split + 1 >= value.size()) {
+		return false;
+	}
+	subject = value.substr(2, split - 2);
+	refresh = value.substr(split + 1);
+	return true;
+}
+
+bool RememberedLogins::Load(const LoginKey &key, KeychainMode expected, string &subject, string &refresh) {
+	WipeString(subject);
+	WipeString(refresh);
+	if (Mode() != expected) {
+		return false;
+	}
 	auto account = Account(key);
-	switch (Mode()) {
+	string value;
+	switch (expected) {
 	case KeychainMode::OFF:
 		return false;
 	case KeychainMode::MEMORY: {
@@ -150,48 +180,65 @@ bool RememberedLogins::Load(const LoginKey &key, string &refresh) {
 		if (found == memory.end()) {
 			return false;
 		}
-		refresh = found->second;
-		return true;
+		value = found->second;
+		break;
 	}
 	case KeychainMode::AUTO: {
 		string why;
 		if (!keychain::KeychainAvailable(why)) {
 			return false;
 		}
-		auto loaded = keychain::KeychainLoad(KEYCHAIN_SERVICE, account, refresh);
-		return loaded.ok && loaded.found && !refresh.empty();
+		auto loaded = keychain::KeychainLoad(KEYCHAIN_SERVICE, account, value);
+		if (!loaded.ok || !loaded.found) {
+			return false;
+		}
+		break;
 	}
 	}
-	return false;
+	auto ok = Decode(value, subject, refresh);
+	WipeString(value);
+	return ok;
 }
 
-void RememberedLogins::Store(const LoginKey &key, const string &refresh, KeychainMode expected) {
+void RememberedLogins::Store(const LoginKey &key, const string &subject, const string &refresh, KeychainMode expected) {
 	if (refresh.empty() || Mode() != expected) {
 		return;
 	}
 	auto account = Account(key);
+	auto value = Encode(subject, refresh);
 	if (expected == KeychainMode::MEMORY) {
 		lock_guard<mutex> guard(lock);
 		auto &slot = memory[account];
 		WipeString(slot);
-		slot = refresh;
-		return;
+		slot = value;
+	} else if (expected == KeychainMode::AUTO) {
+		string why;
+		if (keychain::KeychainAvailable(why)) {
+			(void)keychain::KeychainStore(KEYCHAIN_SERVICE, account, value); // best effort: next time, a login
+		}
 	}
-	string why;
-	if (expected == KeychainMode::AUTO && keychain::KeychainAvailable(why)) {
-		(void)keychain::KeychainStore(KEYCHAIN_SERVICE, account, refresh); // best effort: next time, a login
-	}
+	WipeString(value);
 }
 
-bool RememberedLogins::Remove(const LoginKey &key, const string &only_if) {
+bool RememberedLogins::Remove(const LoginKey &key, KeychainMode expected, const string &only_if) {
+	if (Mode() != expected) {
+		return false;
+	}
 	auto account = Account(key);
-	switch (Mode()) {
+	string subject;
+	string stored;
+	switch (expected) {
 	case KeychainMode::OFF:
 		return false;
 	case KeychainMode::MEMORY: {
 		lock_guard<mutex> guard(lock);
 		auto found = memory.find(account);
-		if (found == memory.end() || (!only_if.empty() && found->second != only_if)) {
+		if (found == memory.end()) {
+			return false;
+		}
+		auto matches = only_if.empty() || (Decode(found->second, subject, stored) && stored == only_if);
+		WipeString(stored);
+		if (!matches) {
 			return false;
 		}
 		WipeString(found->second);
@@ -203,10 +250,11 @@ bool RememberedLogins::Remove(const LoginKey &key, const string &only_if) {
 		if (!keychain::KeychainAvailable(why)) {
 			return false;
 		}
-		string stored;
-		auto loaded = keychain::KeychainLoad(KEYCHAIN_SERVICE, account, stored);
+		string value;
+		auto loaded = keychain::KeychainLoad(KEYCHAIN_SERVICE, account, value);
 		auto present = loaded.ok && loaded.found;
-		auto matches = present && (only_if.empty() || stored == only_if);
+		auto matches = present && (only_if.empty() || (Decode(value, subject, stored) && stored == only_if));
+		WipeString(value);
 		WipeString(stored);
 		if (!matches) {
 			return false;

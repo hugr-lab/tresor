@@ -54,14 +54,18 @@ public:
 	KeychainMode Mode() const;
 	//! Can logins be remembered here: false with why ('off', or no OS store in this process).
 	bool Usable(string &why);
-	//! The refresh token remembered for `key`; false when there is none (or no store).
-	bool Load(const LoginKey &key, string &refresh);
-	//! Remember `refresh` for `key` - only while the mode is still `mode` (the one the login was remembered in:
-	//! a login remembered in memory never reaches the OS store after a switch to auto).
-	void Store(const LoginKey &key, const string &refresh, KeychainMode mode);
+	//! Every call names the mode it means (`expected`): the one a login was remembered in. A login remembered in
+	//! memory never reaches the OS store after a switch to auto, nor the other way round - a call whose mode is
+	//! no longer the instance's does nothing.
+	//!
+	//! The login remembered for `key`: whose it is (the subject whoami named) and its refresh token; false when
+	//! there is none.
+	bool Load(const LoginKey &key, KeychainMode expected, string &subject, string &refresh);
+	//! Remember `subject`'s `refresh` for `key`.
+	void Store(const LoginKey &key, const string &subject, const string &refresh, KeychainMode expected);
 	//! Forget `key`; with `only_if`, only while that is the token stored (a session whose rotated-away token was
 	//! refused must not remove the one another session stored since). True when an entry was removed.
-	bool Remove(const LoginKey &key, const string &only_if = string());
+	bool Remove(const LoginKey &key, KeychainMode expected, const string &only_if = string());
 	//! The lock of one key: a refresh chain is renewed by one caller at a time in this instance.
 	mutex &KeyLock(const LoginKey &key);
 	~RememberedLogins() override;
@@ -69,6 +73,10 @@ public:
 private:
 	//! The entry's name: length-prefixed parts, so no two keys share one.
 	static string Account(const LoginKey &key);
+	//! The stored value: a version, the subject, the refresh token - the subject so that a session never adopts
+	//! another person's login stored under its key since (a logoff and a login as someone else elsewhere).
+	static string Encode(const string &subject, const string &refresh);
+	static bool Decode(const string &value, string &subject, string &refresh);
 
 	atomic<uint8_t> mode {uint8_t(KeychainMode::AUTO)};
 	mutex lock;                           // memory, key_locks

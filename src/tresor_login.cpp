@@ -353,7 +353,7 @@ oidc::TokenSet PersonLogin(ClientContext &context, const AttachRequest &request,
 //! forgotten), or the IdP would not mint for this scope - a login runs then. A transport failure is an error: no
 //! browser opens for a passing outage.
 bool RememberedLogin(ClientContext &context, const AttachRequest &request, const ServiceInfo &info,
-                     oidc::TokenSet &tokens) {
+                     oidc::TokenSet &tokens, string &started_from) {
 	auto store = RememberedLogins::Get(*context.db);
 	string why;
 	if (!store->Usable(why)) {
@@ -365,8 +365,10 @@ bool RememberedLogin(ClientContext &context, const AttachRequest &request, const
 	}
 	// one refresh of this chain at a time here: another attachment may be rotating it
 	lock_guard<mutex> chain(store->KeyLock(key));
+	auto mode = store->Mode();
+	string subject;
 	string refresh;
-	if (!store->Load(key, refresh)) {
+	if (!store->Load(key, mode, subject, refresh)) {
 		return false;
 	}
 	auto renewed = oidc::RefreshGrant(info.endpoints, info.client_id, "", refresh, info.scope);
@@ -374,14 +376,16 @@ bool RememberedLogin(ClientContext &context, const AttachRequest &request, const
 		if (renewed.refresh_token.empty()) {
 			renewed.refresh_token = refresh; // RFC 6749 §6: the IdP may keep the old one
 		} else if (renewed.refresh_token != refresh) {
-			store->Store(key, renewed.refresh_token, store->Mode()); // rotated: the old one is dead already
+			store->Store(key, subject, renewed.refresh_token, mode); // rotated: the old one is dead already
 		}
 		Wipe(refresh);
 		tokens = std::move(renewed);
+		started_from = tokens.refresh_token; // what the store holds now, for Remember to compare against
 		return true;
 	}
 	if (renewed.error_code == "invalid_grant") {
-		store->Remove(key, refresh); // dead: forgotten (unless another attachment stored a newer one), a login runs
+		store->Remove(key, mode,
+		              refresh); // dead: forgotten (unless another attachment stored a newer one), a login runs
 		Wipe(refresh);
 		return false;
 	}
@@ -611,6 +615,7 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 	// a person's login is remembered in the OS keychain (specs/012), unless asked not to
 	bool remember = !service_secret && request.remember;
 	std::function<oidc::TokenSet(LoginFlow &)> interactive; // a person's login, for a remembered one refused
+	string started_from; // the stored token a remembered login began with (specs/012); empty for a fresh login
 	LoginFlow flow;
 	oidc::TokenSet tokens;
 	string client_secret;
@@ -677,7 +682,7 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 			interactive = [&context, &request, &info, chosen](LoginFlow &person_flow) {
 				return PersonLogin(context, request, info, *chosen, person_flow);
 			};
-			if (remember && RememberedLogin(context, request, info, tokens)) {
+			if (remember && RememberedLogin(context, request, info, tokens, started_from)) {
 				flow = LoginFlow::REMEMBERED;
 				// does it reach this service? One plain whoami, no renew-and-retry: a service that refuses it
 				// (another audience, a scope the IdP would not widen) gets the person's login instead, and that
@@ -691,6 +696,7 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 				if (probe.status == 401) {
 					Wipe(tokens.access_token);
 					Wipe(tokens.refresh_token);
+					Wipe(started_from); // a fresh login: it replaces the entry
 					tokens = interactive(flow);
 				}
 			} else {
@@ -760,9 +766,10 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 		auto store = RememberedLogins::Get(*context.db);
 		string why;
 		if (store->Usable(why)) {
-			session->Remember(store);
+			session->Remember(store, started_from);
 		}
 	}
+	Wipe(started_from);
 	return session;
 }
 

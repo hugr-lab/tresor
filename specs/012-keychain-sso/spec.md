@@ -46,8 +46,11 @@ keychain.
   scope, have tresor refresh the shared token for it, and receive that service's access token at its
   own whoami, with no browser and nothing visible. Keyed per service, a new service is a login the
   person sees.
-- **The value.** One value per account: the refresh token. It is written right after a login,
-  rewritten on every rotation, and removed on `invalid_grant`.
+- **The value.** One value per account: a version, the subject (as whoami named it) and the refresh
+  token.
+  - It is written right after a login, rewritten on every rotation, and removed on `invalid_grant`.
+  - A session adopts a stored token only when the subject is its own: a logoff and another
+    person's login elsewhere never turn a live session into that person.
 - **Nothing else is stored.** Scope, audience and expiry are re-derived at each use; the IdP knows
   the token's lifetime.
 
@@ -195,6 +198,26 @@ entry for the chosen (issuer, client):
 - **Not taken:**
   - keychain I/O runs under the session's lock during a renewal (at most once per token lifetime);
   - the whoami probe's timeout is fixed at 30 s.
+
+### The re-review's findings (applied)
+
+- **MEDIUM: a live session could adopt another person's login.** It did so when that login was stored
+  under its key since, through a logoff and a login as someone else elsewhere. Now the stored
+  value carries the subject, and a session adopts only its own.
+- **MEDIUM: the mode was fixed for Store only.** Load and Remove now name the mode too: a login
+  remembered in memory never reads or removes in the OS store after a switch to auto.
+- **MEDIUM: a remembered login's first store could overwrite a newer token.** Another attachment
+  may have rotated the token between the refresh and the whoami. `Remember` now runs under the key's
+  lock and stores only if the entry is still the token it began with. A fresh login still replaces
+  the entry.
+- **Smaller fixes:**
+  - `tresor_logoff` takes the key's lock (after ending the sessions, in their order);
+  - a revocation endpoint found by an unattached logoff must be https or loopback;
+  - after `invalid_grant`, a renewal retries once with a newer token another process stored;
+  - the no-op `acl_stub_open` is gone from the test.
+- **The key lock is this process's.** Across processes the re-read and the compare-and-delete are
+  what keep two DuckDB processes from spoiling one chain; a rotating IdP with reuse detection can still end
+  both, which a new login mends.
 
 ## What the tests found
 

@@ -169,13 +169,24 @@ Row Forget(ClientContext &context, const tresor::LoginKey &key,
 		keep(held);
 		row.removed = true;
 	}
-	string stored;
-	if (store->Load(key, stored)) {
-		keep(stored);
+	{
+		// after the sessions (session lock, then key lock - their order): an ATTACH renewing this chain right now
+		// finishes first, and what it stored goes too
+		lock_guard<mutex> chain(store->KeyLock(key));
+		auto mode = store->Mode();
+		string subject;
+		string stored;
+		if (store->Load(key, mode, subject, stored)) {
+			keep(stored);
+		}
+		row.removed = store->Remove(key, mode) || row.removed;
 	}
-	row.removed = store->Remove(key) || row.removed;
 	if (!tokens.empty() && endpoints.revocation_endpoint.empty() && Reachable(key.issuer)) {
 		endpoints = tresor::oidc::Discover(key.issuer); // not attached here: the issuer's own discovery
+		// the endpoint gets the token: https, or loopback - as every endpoint a login uses
+		if (!Reachable(endpoints.revocation_endpoint)) {
+			endpoints.revocation_endpoint.clear();
+		}
 	}
 	for (auto &token : tokens) {
 		if (!endpoints.revocation_endpoint.empty() && tresor::oidc::Revoke(endpoints, key.client_id, "", token).ok) {

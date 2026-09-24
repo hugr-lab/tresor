@@ -70,26 +70,37 @@ string TresorSession::AccessToken(bool force) {
 			// session (or process) may have rotated it since this one read it (specs/012)
 			auto store = remember.lock();
 			unique_lock<mutex> chain;
-			if (store) {
-				chain = unique_lock<mutex>(store->KeyLock(Key()));
+			// the token stored now, when it is this person's (a logoff and another person's login elsewhere is not
+			// this session's to adopt)
+			auto adopt = [&]() {
+				string subject;
 				string current;
-				if (store->Load(Key(), current) && current != tokens.refresh_token) {
+				auto newer = store->Load(Key(), remember_mode, subject, current) && subject == remember_subject &&
+				             current != tokens.refresh_token;
+				if (newer) {
 					tokens.refresh_token.swap(current);
 				}
 				std::fill(current.begin(), current.end(), '\0');
+				return newer;
+			};
+			if (store) {
+				chain = unique_lock<mutex>(store->KeyLock(Key()));
+				adopt();
 			}
-			// this service's scope: a remembered token was first minted for this service's login, and the IdP is asked
-			// for what this service needs, never what an earlier grant happened to hold
+			// this service's scope: the IdP is asked for what this service needs, never what an earlier grant held
 			renewed = oidc::RefreshGrant(info.endpoints, info.client_id, "", tokens.refresh_token, info.scope);
+			if (store && !renewed.Ok() && renewed.error_code == "invalid_grant") {
+				// only the dead one is forgotten - and another process may have stored a newer one meanwhile: once
+				store->Remove(Key(), remember_mode, tokens.refresh_token);
+				if (adopt()) {
+					renewed = oidc::RefreshGrant(info.endpoints, info.client_id, "", tokens.refresh_token, info.scope);
+				}
+			}
 			if (renewed.Ok() && renewed.refresh_token.empty()) {
 				renewed.refresh_token = tokens.refresh_token; // RFC 6749 §6: a refresh may keep the old one
 			}
 			if (store && renewed.Ok() && renewed.refresh_token != tokens.refresh_token) {
-				store->Store(Key(), renewed.refresh_token, remember_mode);
-			}
-			if (store && !renewed.Ok() && renewed.error_code == "invalid_grant") {
-				store->Remove(Key(),
-				              tokens.refresh_token); // only the dead one: never what another session stored since
+				store->Store(Key(), remember_subject, renewed.refresh_token, remember_mode);
 			}
 			break;
 		}
@@ -206,12 +217,25 @@ LoginKey TresorSession::Key() const {
 	return key;
 }
 
-void TresorSession::Remember(const shared_ptr<RememberedLogins> &store) {
+void TresorSession::Remember(const shared_ptr<RememberedLogins> &store, const string &started_from) {
 	lock_guard<mutex> guard(lock);
 	remember = store;
 	remember_mode = store->Mode();
-	// what the session holds now - rotated by a renew-and-retry since the login, perhaps
-	store->Store(Key(), tokens.refresh_token, remember_mode);
+	remember_subject = subject;
+	lock_guard<mutex> chain(store->KeyLock(Key()));
+	// a fresh login replaces what was there; a remembered one stores what it holds now (rotated by a renew-and-
+	// retry since, perhaps) - unless another attachment rotated the stored token past it meanwhile
+	if (!started_from.empty()) {
+		string stored_subject;
+		string stored;
+		auto found = store->Load(Key(), remember_mode, stored_subject, stored);
+		auto moved_on = found && stored != started_from;
+		std::fill(stored.begin(), stored.end(), '\0');
+		if (moved_on) {
+			return;
+		}
+	}
+	store->Store(Key(), remember_subject, tokens.refresh_token, remember_mode);
 }
 
 bool TresorSession::Remembers(const LoginKey &key) {
@@ -227,6 +251,7 @@ string TresorSession::LogOff() {
 	tokens = oidc::TokenSet();
 	logged_out = true;
 	remember.reset();
+	remember_subject.clear();
 	return refresh;
 }
 
