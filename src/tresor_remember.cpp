@@ -10,8 +10,8 @@
 
 #include <cstdlib>
 
-// A person's refresh token, kept for the next ATTACH (specs/012). Nothing here logs, and no message carries a
-// token: the OS store's errors name the store and its status only.
+// A person's refresh token, kept for the next ATTACH of the same service (specs/012). Nothing here logs, and no
+// message carries a token: the OS store's errors name the store and its status only.
 
 namespace duckdb {
 namespace tresor {
@@ -20,18 +20,26 @@ namespace {
 
 constexpr const char *KEYCHAIN_SERVICE = "duckdb-tresor";
 
-KeychainMode ParseMode(const string &text) {
+bool TryParseMode(const string &text, KeychainMode &mode) {
 	auto lowered = StringUtil::Lower(text);
 	if (lowered == "auto") {
-		return KeychainMode::AUTO;
+		mode = KeychainMode::AUTO;
+	} else if (lowered == "off") {
+		mode = KeychainMode::OFF;
+	} else if (lowered == "memory") {
+		mode = KeychainMode::MEMORY;
+	} else {
+		return false;
 	}
-	if (lowered == "off") {
-		return KeychainMode::OFF;
+	return true;
+}
+
+KeychainMode ParseMode(const string &text) {
+	KeychainMode mode;
+	if (!TryParseMode(text, mode)) {
+		throw InvalidInputException("tresor_keychain is auto, off or memory - not '%s'", text);
 	}
-	if (lowered == "memory") {
-		return KeychainMode::MEMORY;
-	}
-	throw InvalidInputException("tresor_keychain is auto, off or memory - not '%s'", text);
+	return mode;
 }
 
 void SetKeychainMode(ClientContext &context, SetScope scope, Value &parameter) {
@@ -43,6 +51,13 @@ void SetKeychainMode(ClientContext &context, SetScope scope, Value &parameter) {
 
 void WipeString(string &text) {
 	keychain::KeychainWipe(text);
+}
+
+string Normalized(string issuer) {
+	while (!issuer.empty() && issuer.back() == '/') {
+		issuer.pop_back();
+	}
+	return issuer;
 }
 
 } // namespace
@@ -57,17 +72,22 @@ shared_ptr<RememberedLogins> RememberedLogins::Get(DatabaseInstance &db) {
 
 void RememberedLogins::Register(DatabaseInstance &db) {
 	// the default may come from the environment: TRESOR_KEYCHAIN=off (a CI runner, a shared machine) or =memory
-	// (test suites - they never touch the person's own store). It can only narrow: `auto` is the default anyway
+	// (test suites - they never touch the person's own store)
 	auto from_env = std::getenv("TRESOR_KEYCHAIN");
+	string default_mode = "auto";
 	if (from_env && *from_env) {
-		Get(db)->SetMode(ParseMode(from_env));
+		KeychainMode mode;
+		if (!TryParseMode(from_env, mode)) {
+			throw InvalidInputException("tresor: TRESOR_KEYCHAIN is auto, off or memory - not '%s'", from_env);
+		}
+		Get(db)->SetMode(mode);
+		default_mode = StringUtil::Lower(from_env);
 	}
 	auto &config = DBConfig::GetConfig(db);
 	config.AddExtensionOption("tresor_keychain",
 	                          "tresor: where a person's login is remembered - auto (the OS credential store, where "
-	                          "there is one), off, or memory (this instance only)",
-	                          LogicalType::VARCHAR, Value(from_env && *from_env ? StringUtil::Lower(from_env) : "auto"),
-	                          SetKeychainMode, SetScope::GLOBAL);
+	                          "there is one), off, or memory (this instance only); the default from TRESOR_KEYCHAIN",
+	                          LogicalType::VARCHAR, Value(default_mode), SetKeychainMode, SetScope::GLOBAL);
 	Value given; // a value given before LOAD (a config option) is taken over without the callback
 	if (config.TryGetCurrentSetting(Identifier("tresor_keychain"), given) && !given.IsNull()) {
 		Get(db)->SetMode(ParseMode(given.ToString()));
@@ -80,12 +100,13 @@ RememberedLogins::~RememberedLogins() {
 	}
 }
 
-string RememberedLogins::Account(const string &issuer, const string &client_id) {
-	auto normalized = issuer;
-	while (!normalized.empty() && normalized.back() == '/') {
-		normalized.pop_back();
+string RememberedLogins::Account(const LoginKey &key) {
+	string out;
+	for (auto *part : {&key.issuer, &key.client_id, &key.service}) {
+		auto text = part == &key.issuer ? Normalized(*part) : *part;
+		out += (out.empty() ? "" : " ") + std::to_string(text.size()) + ":" + text;
 	}
-	return normalized + " " + client_id;
+	return out;
 }
 
 void RememberedLogins::SetMode(KeychainMode mode_p) {
@@ -99,8 +120,12 @@ void RememberedLogins::SetMode(KeychainMode mode_p) {
 	}
 }
 
+KeychainMode RememberedLogins::Mode() const {
+	return KeychainMode(mode.load());
+}
+
 bool RememberedLogins::Usable(string &why) {
-	switch (KeychainMode(mode.load())) {
+	switch (Mode()) {
 	case KeychainMode::OFF:
 		why = "tresor_keychain is off";
 		return false;
@@ -113,10 +138,13 @@ bool RememberedLogins::Usable(string &why) {
 	return false;
 }
 
-bool RememberedLogins::Load(const string &issuer, const string &client_id, string &refresh) {
+bool RememberedLogins::Load(const LoginKey &key, string &refresh) {
 	WipeString(refresh);
-	auto account = Account(issuer, client_id);
-	if (KeychainMode(mode.load()) == KeychainMode::MEMORY) {
+	auto account = Account(key);
+	switch (Mode()) {
+	case KeychainMode::OFF:
+		return false;
+	case KeychainMode::MEMORY: {
 		lock_guard<mutex> guard(lock);
 		auto found = memory.find(account);
 		if (found == memory.end()) {
@@ -125,20 +153,24 @@ bool RememberedLogins::Load(const string &issuer, const string &client_id, strin
 		refresh = found->second;
 		return true;
 	}
-	string why;
-	if (!Usable(why)) {
-		return false;
+	case KeychainMode::AUTO: {
+		string why;
+		if (!keychain::KeychainAvailable(why)) {
+			return false;
+		}
+		auto loaded = keychain::KeychainLoad(KEYCHAIN_SERVICE, account, refresh);
+		return loaded.ok && loaded.found && !refresh.empty();
 	}
-	auto loaded = keychain::KeychainLoad(KEYCHAIN_SERVICE, account, refresh);
-	return loaded.ok && loaded.found && !refresh.empty();
+	}
+	return false;
 }
 
-void RememberedLogins::Store(const string &issuer, const string &client_id, const string &refresh) {
-	if (refresh.empty()) {
+void RememberedLogins::Store(const LoginKey &key, const string &refresh, KeychainMode expected) {
+	if (refresh.empty() || Mode() != expected) {
 		return;
 	}
-	auto account = Account(issuer, client_id);
-	if (KeychainMode(mode.load()) == KeychainMode::MEMORY) {
+	auto account = Account(key);
+	if (expected == KeychainMode::MEMORY) {
 		lock_guard<mutex> guard(lock);
 		auto &slot = memory[account];
 		WipeString(slot);
@@ -146,29 +178,52 @@ void RememberedLogins::Store(const string &issuer, const string &client_id, cons
 		return;
 	}
 	string why;
-	if (Usable(why)) {
+	if (expected == KeychainMode::AUTO && keychain::KeychainAvailable(why)) {
 		(void)keychain::KeychainStore(KEYCHAIN_SERVICE, account, refresh); // best effort: next time, a login
 	}
 }
 
-void RememberedLogins::Remove(const string &issuer, const string &client_id) {
-	auto account = Account(issuer, client_id);
-	{
+bool RememberedLogins::Remove(const LoginKey &key, const string &only_if) {
+	auto account = Account(key);
+	switch (Mode()) {
+	case KeychainMode::OFF:
+		return false;
+	case KeychainMode::MEMORY: {
 		lock_guard<mutex> guard(lock);
 		auto found = memory.find(account);
-		if (found != memory.end()) {
-			WipeString(found->second);
-			memory.erase(found);
+		if (found == memory.end() || (!only_if.empty() && found->second != only_if)) {
+			return false;
 		}
+		WipeString(found->second);
+		memory.erase(found);
+		return true;
 	}
-	// the OS store too, whatever the mode: a logoff with the keychain switched off still clears what an earlier
-	// mode left there
-	{
+	case KeychainMode::AUTO: {
 		string why;
-		if (keychain::KeychainAvailable(why)) {
-			(void)keychain::KeychainRemove(KEYCHAIN_SERVICE, account);
+		if (!keychain::KeychainAvailable(why)) {
+			return false;
 		}
+		string stored;
+		auto loaded = keychain::KeychainLoad(KEYCHAIN_SERVICE, account, stored);
+		auto present = loaded.ok && loaded.found;
+		auto matches = present && (only_if.empty() || stored == only_if);
+		WipeString(stored);
+		if (!matches) {
+			return false;
+		}
+		return keychain::KeychainRemove(KEYCHAIN_SERVICE, account).ok;
 	}
+	}
+	return false;
+}
+
+mutex &RememberedLogins::KeyLock(const LoginKey &key) {
+	lock_guard<mutex> guard(lock);
+	auto &slot = key_locks[Account(key)];
+	if (!slot) {
+		slot = make_uniq<mutex>();
+	}
+	return *slot;
 }
 
 } // namespace tresor

@@ -65,11 +65,34 @@ string TresorSession::AccessToken(bool force) {
 			                            "refresh token - log in again: DETACH and ATTACH",
 			                            info.host);
 		}
-		renewed = oidc::RefreshGrant(info.endpoints, info.client_id, "", tokens.refresh_token);
-		if (renewed.Ok() && renewed.refresh_token.empty()) {
-			renewed.refresh_token = tokens.refresh_token; // RFC 6749 §6: a refresh may keep the old one
+		{
+			// a remembered login's chain is renewed by one caller at a time, from the token stored now: another
+			// session (or process) may have rotated it since this one read it (specs/012)
+			auto store = remember.lock();
+			unique_lock<mutex> chain;
+			if (store) {
+				chain = unique_lock<mutex>(store->KeyLock(Key()));
+				string current;
+				if (store->Load(Key(), current) && current != tokens.refresh_token) {
+					tokens.refresh_token.swap(current);
+				}
+				std::fill(current.begin(), current.end(), '\0');
+			}
+			// this service's scope: a remembered token was first minted for this service's login, and the IdP is asked
+			// for what this service needs, never what an earlier grant happened to hold
+			renewed = oidc::RefreshGrant(info.endpoints, info.client_id, "", tokens.refresh_token, info.scope);
+			if (renewed.Ok() && renewed.refresh_token.empty()) {
+				renewed.refresh_token = tokens.refresh_token; // RFC 6749 §6: a refresh may keep the old one
+			}
+			if (store && renewed.Ok() && renewed.refresh_token != tokens.refresh_token) {
+				store->Store(Key(), renewed.refresh_token, remember_mode);
+			}
+			if (store && !renewed.Ok() && renewed.error_code == "invalid_grant") {
+				store->Remove(Key(),
+				              tokens.refresh_token); // only the dead one: never what another session stored since
+			}
+			break;
 		}
-		break;
 	case LoginFlow::CLIENT_CREDENTIALS:
 		renewed = oidc::ClientCredentials(info.endpoints, info.client_id, client_secret, info.scope);
 		break;
@@ -84,22 +107,13 @@ string TresorSession::AccessToken(bool force) {
 			// remembered one is forgotten
 			tokens = oidc::TokenSet();
 			logged_out = true;
-			if (auto store = remember.lock()) {
-				store->Remove(info.issuer, info.client_id);
-			}
 			throw InvalidInputException("tresor: the login to %s is over (%s) - log in again: DETACH and ATTACH",
 			                            info.host, renewed.error);
 		}
 		throw IOException("tresor: renewing the login to %s failed: %s", info.host, renewed.error);
 	}
-	auto rotated = renewed.refresh_token != tokens.refresh_token;
 	tokens = std::move(renewed);
 	issued_at = NowSeconds();
-	if (rotated) {
-		if (auto store = remember.lock()) {
-			store->Store(info.issuer, info.client_id, tokens.refresh_token);
-		}
-	}
 	return tokens.access_token;
 }
 
@@ -181,20 +195,30 @@ oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bo
 	return out;
 }
 
-void TresorSession::Remember(weak_ptr<RememberedLogins> store) {
-	lock_guard<mutex> guard(lock);
-	remember = std::move(store);
+LoginKey TresorSession::Key() const {
+	LoginKey key;
+	key.issuer = info.issuer;
+	while (!key.issuer.empty() && key.issuer.back() == '/') {
+		key.issuer.pop_back();
+	}
+	key.client_id = info.client_id;
+	key.service = info.host;
+	return key;
 }
 
-bool TresorSession::Remembers(const string &issuer, const string &client_id) {
+void TresorSession::Remember(const shared_ptr<RememberedLogins> &store) {
 	lock_guard<mutex> guard(lock);
-	auto strip = [](string text) {
-		while (!text.empty() && text.back() == '/') {
-			text.pop_back();
-		}
-		return text;
-	};
-	return !remember.expired() && strip(info.issuer) == strip(issuer) && info.client_id == client_id;
+	remember = store;
+	remember_mode = store->Mode();
+	// what the session holds now - rotated by a renew-and-retry since the login, perhaps
+	store->Store(Key(), tokens.refresh_token, remember_mode);
+}
+
+bool TresorSession::Remembers(const LoginKey &key) {
+	lock_guard<mutex> guard(lock);
+	auto mine = Key();
+	return !remember.expired() && mine.issuer == key.issuer && mine.client_id == key.client_id &&
+	       mine.service == key.service;
 }
 
 string TresorSession::LogOff() {

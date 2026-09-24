@@ -348,36 +348,48 @@ oidc::TokenSet PersonLogin(ClientContext &context, const AttachRequest &request,
 	return tokens;
 }
 
-//! A remembered login (specs/012): the refresh token kept for this IdP and public client, refreshed for this
-//! service's scope. True with `tokens` set; false when there is none, or it is dead (then forgotten), or the IdP
-//! would not mint for this scope - a login runs then. A transport failure is an error: no browser opens for a
-//! passing outage.
+//! A remembered login (specs/012): the refresh token kept for this service's (issuer, public client, host),
+//! refreshed for this service's scope. True with `tokens` set; false when there is none, or it is dead (then
+//! forgotten), or the IdP would not mint for this scope - a login runs then. A transport failure is an error: no
+//! browser opens for a passing outage.
 bool RememberedLogin(ClientContext &context, const AttachRequest &request, const ServiceInfo &info,
                      oidc::TokenSet &tokens) {
 	auto store = RememberedLogins::Get(*context.db);
 	string why;
+	if (!store->Usable(why)) {
+		return false;
+	}
+	LoginKey key {info.issuer, info.client_id, info.host};
+	while (!key.issuer.empty() && key.issuer.back() == '/') {
+		key.issuer.pop_back();
+	}
+	// one refresh of this chain at a time here: another attachment may be rotating it
+	lock_guard<mutex> chain(store->KeyLock(key));
 	string refresh;
-	if (!store->Usable(why) || !store->Load(info.issuer, info.client_id, refresh)) {
+	if (!store->Load(key, refresh)) {
 		return false;
 	}
 	auto renewed = oidc::RefreshGrant(info.endpoints, info.client_id, "", refresh, info.scope);
 	if (renewed.Ok()) {
 		if (renewed.refresh_token.empty()) {
 			renewed.refresh_token = refresh; // RFC 6749 §6: the IdP may keep the old one
+		} else if (renewed.refresh_token != refresh) {
+			store->Store(key, renewed.refresh_token, store->Mode()); // rotated: the old one is dead already
 		}
 		Wipe(refresh);
 		tokens = std::move(renewed);
 		return true;
 	}
-	Wipe(refresh);
 	if (renewed.error_code == "invalid_grant") {
-		store->Remove(info.issuer, info.client_id); // dead: forgotten, and a login runs
+		store->Remove(key, refresh); // dead: forgotten (unless another attachment stored a newer one), a login runs
+		Wipe(refresh);
 		return false;
 	}
+	Wipe(refresh);
 	if (renewed.error_code.empty()) {
 		throw IOException("tresor: the remembered login to %s could not be renewed: %s", request.host, renewed.error);
 	}
-	return false; // e.g. invalid_scope: this IdP will not widen the token to this service - a login runs
+	return false; // e.g. invalid_scope: a login runs
 }
 
 } // namespace
@@ -717,12 +729,10 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 			                            request.host);
 		}
 	}
-	auto kept = remember ? tokens.refresh_token : string(); // what the keychain gets, once the service accepts
 	auto session = make_shared_ptr<TresorSession>(std::move(info), flow, std::move(tokens), std::move(client_secret));
 	// the login is proven only when the service accepts it: fail closed at ATTACH, not at first use
 	auto whoami = session->Call("GET", "/v1/whoami");
 	if (whoami.status != 200) {
-		Wipe(kept);
 		session->Close();
 		throw InvalidInputException("tresor: %s refused the login: %s", request.host,
 		                            DescribeProblem(whoami.status, whoami.body));
@@ -745,17 +755,14 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 		}
 	}
 	if (remember) {
-		// the service accepted it: this login is remembered for the next ATTACH, of this service or another behind the
-		// same IdP and client (specs/012), and its rotations go on being remembered
+		// the service accepted it: this login is remembered for the next ATTACH of this service (specs/012) - what
+		// the session holds now, and its rotations from here on
 		auto store = RememberedLogins::Get(*context.db);
 		string why;
 		if (store->Usable(why)) {
-			auto &login = session->Info();
-			store->Store(login.issuer, login.client_id, kept);
 			session->Remember(store);
 		}
 	}
-	Wipe(kept);
 	return session;
 }
 

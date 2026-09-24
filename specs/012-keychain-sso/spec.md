@@ -1,4 +1,4 @@
-# Spec 012: one login for a person — the refresh token in the OS keychain, shared by services of one IdP
+# Spec 012: one login for a person — the refresh token in the OS keychain, per service
 
 - **Status**: implemented
 - **Date**: 2026-09-24
@@ -7,13 +7,13 @@
 ## Summary
 
 A person's browser or device login keeps its **refresh token in the operating system's credential
-store** (duckdb-ext-common spec 010, `keychain/`), keyed by the identity provider and the public
-client. The next ATTACH skips the browser when that key already holds a live refresh token. This
-covers:
-- the same service, in the same or a later DuckDB process;
-- any other service whose discovery names the same issuer and client.
+store** (duckdb-ext-common spec 010, `keychain/`), keyed by the identity provider, the public
+client and **the service**. The next ATTACH of that service, in the same or a later DuckDB process,
+skips the browser.
 
-That is single sign-on. `tresor_logoff(...)` removes the entry and asks the IdP to revoke it.
+Another service behind the same IdP gets its own login. That is one browser round, quick while the
+IdP's session lives. It never gets a token refreshed for it silently from another service's login
+(the owner's decision, 2026-09-24, after the review's H2). `tresor_logoff(...)` removes the entry and asks the IdP to revoke it.
 Service logins (`client_credentials`, `token`) — duckdb-acl nodes among them — never touch the
 keychain.
 
@@ -37,9 +37,15 @@ keychain.
 
 ### What is kept, and under which key
 
-- **Service and account.** Keychain service `duckdb-tresor`; account
-  `<issuer, no trailing slash> <client_id>`. The client is the public one from the discovery
-  (`issuers[].client_id`).
+- **Service and account.**
+  - The keychain service is `duckdb-tresor`.
+  - The account is the length-prefixed (issuer without a trailing slash, client_id, service
+    `host[:port][/base]`). The client is the public one from the discovery (`issuers[].client_id`).
+- **Why per service.** A service names its issuer, client and scopes in its own discovery. Were the
+  key (issuer, client) alone, a hostile service behind the same IdP could name another service's
+  scope, have tresor refresh the shared token for it, and receive that service's access token at its
+  own whoami, with no browser and nothing visible. Keyed per service, a new service is a login the
+  person sees.
 - **The value.** One value per account: the refresh token. It is written right after a login,
   rewritten on every rotation, and removed on `invalid_grant`.
 - **Nothing else is stored.** Scope, audience and expiry are re-derived at each use; the IdP knows
@@ -82,18 +88,20 @@ entry for the chosen (issuer, client):
 ### `tresor_logoff`
 
 - `CALL tresor_logoff('<catalog>')`: the entry of that attachment's (issuer, client).
-- `CALL tresor_logoff(issuer := '…', client_id := '…')`: one by name.
-- `CALL tresor_logoff()`: the login of every person attachment here.
-  - Entries of logins not attached in this instance are removed by name.
-  - The module does not enumerate the store: a listing API differs on every platform, and a name is
-    enough.
-- What it does:
-  - removes the entry;
-  - revokes the refresh token at the IdP when the discovery (OIDC) names a `revocation_endpoint`
-    (RFC 7009, as the public client), best effort;
-  - marks the attached sessions using that key as logged out (their next renewal asks for a new
-    ATTACH).
-- It returns one row per login: (issuer, client_id, removed, revoked). It never returns a token.
+- `CALL tresor_logoff(service := '…', issuer := '…', client_id := '…')`: one by name, attached or
+  not.
+- `CALL tresor_logoff()`: every remembered login attached here. A `REMEMBER false` attachment is
+  left alone. The store is not enumerated: a listing API differs on every platform, and a name is
+  enough.
+- It is refused for a statement run under a duckdb-acl session: a session's user must not end the
+  node's people's logins.
+- What it does, in this order:
+  1. ends the attached sessions remembered under that key, so that no renewal can store it back;
+  2. removes the entry;
+  3. revokes every distinct refresh token (the stored one and the sessions') at the IdP, when the
+     discovery (OIDC) names a `revocation_endpoint` (RFC 7009, as the public client), best effort.
+- It returns one row per login: (service, issuer, client_id, removed, revoked). It never returns a
+  token.
 - It refuses a service's attachment by name ("nothing of it is remembered, DETACH ends it").
 - Unattached, by issuer: the revocation endpoint comes from the issuer's own discovery, https or
   loopback only.
@@ -125,11 +133,10 @@ entry for the chosen (issuer, client):
   - on Linux, wherever the Secret Service provider keeps its collection;
   - on macOS, guarded per host program.
 - **Where it may go.** Only to its issuer's token endpoint, and to the revocation endpoint. The
-  issuer is the entry's key and the discovery's choice of issuer; a token is never sent to an
-  issuer other than the one it is stored under.
-- **Is it meant for this service?** Its access token proves that at whoami, as a fresh login's
-  does. A service cannot obtain another service's token: the refresh happens at the IdP, and the
-  IdP bounds the scope and audience.
+  issuer is part of the entry's key; a token is never sent to an issuer other than the one it is
+  stored under.
+- **Which service gets its tokens.** Only the service the login was made for, since the key has the
+  service in it. A service cannot obtain a token refreshed from another service's login.
 - **What the store protects.** Another process of the same OS user (Linux, Windows) can read the
   entry. That is the OS's model for every desktop application, and it is documented in
   security.md. `REMEMBER false` or `tresor_keychain = 'off'` for anyone who does not accept it.
@@ -157,6 +164,38 @@ entry for the chosen (issuer, client):
   - `tresor_logoff` removes the entry, and Keycloak's revocation ends the refresh token (the next
     process's refresh gets `invalid_grant`).
 
+## The review's findings (applied)
+
+- **HIGH H2: another service behind the same IdP and client got tokens for this one, silently.** Now
+  the key is per service (the owner's decision); see "Why per service".
+- **HIGH H1: `memory` and `off` still reached the OS store on a remove.** Now only `auto` ever
+  touches it; `memory` and `off` never do.
+- **HIGH H3: a remembered session renewed without its scope.** The renewal now asks for this
+  service's scope, for every person flow.
+- **Rotation.**
+  - A chain is renewed by one caller at a time in the instance (a lock per key).
+  - A renewal first re-reads the stored token, which another session or process may have rotated.
+  - A rotated token is stored at once, even when the service then refuses the login.
+  - A dead token is removed only if it is still the stored one.
+  - A remembered session stores what it holds, not what the login returned.
+- **`tresor_logoff`.**
+  - It ends the sessions first, so no renewal stores the token back.
+  - It revokes each distinct token.
+  - It touches remembered logins only, and `removed` comes from what was found.
+  - It is refused under an acl session.
+  - A logout is audited only when something was forgotten.
+- **Smaller fixes:**
+  - the account key is length-prefixed;
+  - the loopback check parses the host;
+  - a login remembered in `memory` never reaches the OS store after a switch to `auto` (the mode is
+    fixed when the login is remembered);
+  - an invalid `TRESOR_KEYCHAIN` names itself;
+  - the docs cover the account switch, a detached catalog (use the named form), and the host
+    program's access on macOS.
+- **Not taken:**
+  - keychain I/O runs under the session's lock during a renewal (at most once per token lifetime);
+  - the whoami probe's timeout is fixed at 30 s.
+
 ## What the tests found
 
 - **A test run reached the real macOS keychain.** The fake IdP's person logins were stored under
@@ -171,17 +210,21 @@ entry for the chosen (issuer, client):
 
 ## Checked
 
-- **`test/sql/attach/remember.test`** (fake IdP, 62 assertions), with the fake counting its
+- **`test/sql/attach/remember.test`** (fake IdP, 74 assertions), with the fake counting its
   `/authorize` visits, refreshes (and their scope) and revocations:
-  - one browser visit serves this service, a later ATTACH and another service of the IdP, asked in
-    its own scope;
+  - one browser visit serves this service and a later ATTACH of it, refreshed in exactly its scope;
+  - another service of the same IdP gets its own browser login, and is then remembered apart;
   - `REMEMBER false`;
   - a service login refused `REMEMBER` and `tresor_logoff`;
   - a service that refuses the refreshed token (the fake's `picky`) gets a browser login;
-  - `tresor_logoff('b')` removes and revokes the login, and ends both attachments on it;
+  - `tresor_logoff` is refused under an acl session (acl_stub);
+  - `tresor_logoff('b')` removes, revokes and ends that login only: another service's login and a
+    `REMEMBER false` one are untouched;
+  - `tresor_logoff()` takes the other remembered one;
   - the next ATTACH opens the browser;
   - the IdP forgetting its tokens makes the next ATTACH a browser login;
-  - logoff by name;
+  - logoff by name needs all three (service, issuer, client_id), and revokes through the issuer's own
+    discovery;
   - `off`;
   - the audit's `remembered` and `logoff_revoked`, with no token in the log.
 - **`test_keycloak.sh`, `TRESOR_KC_KEYCHAIN=1`** (CI: Linux, gnome-keyring on the step's session

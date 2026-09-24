@@ -8,6 +8,7 @@
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/unordered_map.hpp"
 #include "oidc_core.hpp"
+#include "tresor_remember.hpp"
 
 #include <functional>
 
@@ -16,8 +17,6 @@ namespace tresor {
 
 //! How the session logged in; `browser` and `device` are people, the rest services.
 enum class LoginFlow : uint8_t { BROWSER, DEVICE, CLIENT_CREDENTIALS, TOKEN, REMEMBERED };
-
-class RememberedLogins;
 
 string LoginFlowName(LoginFlow flow);
 
@@ -78,11 +77,14 @@ public:
 	//! DETACH: drop the tokens. Calls after this fail.
 	void Close();
 
-	//! Keep this person's login remembered (specs/012): every rotated refresh token is written to `store`, and a
-	//! dead one (invalid_grant) removed from it. Set once, before the session is shared.
-	void Remember(weak_ptr<RememberedLogins> store);
-	//! Is this login remembered under (issuer, client id)?
-	bool Remembers(const string &issuer, const string &client_id);
+	//! Keep this person's login remembered (specs/012), in `store`'s current mode: the refresh token the session
+	//! holds now is stored, every rotation after it too, and a dead one (invalid_grant) removed. Its key is this
+	//! service's: (issuer, client id, host).
+	void Remember(const shared_ptr<RememberedLogins> &store);
+	//! Is this login remembered under `key`?
+	bool Remembers(const LoginKey &key);
+	//! The key this session's login would be remembered under.
+	LoginKey Key() const;
 	//! tresor_logoff: the login is over here too - the tokens go, the next call asks for a new ATTACH. The
 	//! refresh token, for revocation, is handed out once (empty when there is none).
 	string LogOff();
@@ -100,8 +102,9 @@ private:
 	int64_t issued_at = 0; // when `tokens` arrived: the renewal margin is at most half their life
 	string client_secret;  // client_credentials only: the re-mint needs it
 	bool closed = false;
-	bool logged_out = false;             // the IdP ended the login (invalid_grant): only a new ATTACH helps
-	weak_ptr<RememberedLogins> remember; // specs/012: where a rotated refresh token goes
+	bool logged_out = false;                        // the IdP ended the login (invalid_grant): only a new ATTACH helps
+	weak_ptr<RememberedLogins> remember;            // specs/012: where a rotated refresh token goes
+	KeychainMode remember_mode = KeychainMode::OFF; // the mode it was remembered in: stored only while it holds
 };
 
 } // namespace tresor

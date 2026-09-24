@@ -6,6 +6,8 @@ require-env TRESOR_TEST_PORT
 
 require httpfs
 
+require acl_stub
+
 statement ok
 LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
 
@@ -64,25 +66,38 @@ SELECT login, subject FROM b.whoami();
 ----
 remembered	alice
 
-# another service of the same IdP and client: the same login, asked for that service's scope
+# the refresh asked for this service's scope, exactly
+query I
+SELECT idp('refresh_scope');
+----
+"openid offline_access duckdb-secrets"
+
+# another service of the same IdP and client is not handed this login: it gets its own (one browser round -
+# quick while the IdP's session lives), and is remembered apart
 statement ok
-ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/second' AS c (INSECURE_HTTP true);
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/second' AS c (INSECURE_HTTP true, LOGIN 'browser');
+
+query I
+SELECT login FROM c.whoami();
+----
+browser
+
+statement ok
+DETACH c;
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/second' AS c (INSECURE_HTTP true, LOGIN 'browser');
 
 query I
 SELECT login FROM c.whoami();
 ----
 remembered
 
-query I
-SELECT idp('refresh_scope') <> '""';
-----
-true
-
-# one browser visit for all three
+# two browser visits: one per service
 query I
 SELECT idp('authorize')::INT - authorize FROM seen;
 ----
-1
+2
 
 # --- REMEMBER false neither reads nor writes --------------------------------------------------------------------
 
@@ -97,10 +112,7 @@ browser
 query I
 SELECT idp('authorize')::INT - authorize FROM seen;
 ----
-2
-
-statement ok
-DETACH nr;
+3
 
 # --- a service's login is never remembered ----------------------------------------------------------------------
 
@@ -137,17 +149,35 @@ browser
 query I
 SELECT idp('authorize')::INT - authorize FROM seen;
 ----
-3
+4
 
 statement ok
 DETACH p;
 
-# --- tresor_logoff: forgotten, revoked at the IdP, and the attachments on it are over ----------------------------
+# --- tresor_logoff: not for a statement run for an acl session's user -------------------------------------------
 
-query IIII
-SELECT issuer = 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', client_id, removed, revoked FROM tresor_logoff('b');
+query I
+SELECT acl_stub_open('lo-1', 'node-token-alice', 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', 300);
 ----
-true	duckdb	true	true
+0
+
+statement ok
+SET acl_stub_session = 'lo-1';
+
+statement error
+SELECT * FROM tresor_logoff();
+----
+not under a duckdb-acl session
+
+statement ok
+SET acl_stub_session = '';
+
+# --- tresor_logoff: forgotten, revoked at the IdP, and the attachment on it is over - that service's only -------
+
+query IIIII
+SELECT service = '127.0.0.1:{TRESOR_TEST_PORT}', issuer = 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', client_id, removed, revoked FROM tresor_logoff('b');
+----
+true	true	duckdb	true	true
 
 query I
 SELECT idp('revoked_tokens')::INT - revoked FROM seen;
@@ -159,13 +189,28 @@ SELECT * FROM b.whoami();
 ----
 is over
 
-statement error
-SELECT * FROM c.whoami();
+# another service's login, and a REMEMBER false one, are not this login
+query I
+SELECT login FROM c.whoami();
 ----
-is over
+remembered
+
+query I
+SELECT login FROM nr.whoami();
+----
+browser
 
 statement ok
 DETACH b;
+
+statement ok
+DETACH nr;
+
+# every remembered login here: c's
+query II
+SELECT service = '127.0.0.1:{TRESOR_TEST_PORT}/second', removed FROM tresor_logoff();
+----
+true	true
 
 statement ok
 DETACH c;
@@ -187,7 +232,7 @@ DETACH d;
 query I
 SELECT idp('authorize')::INT - authorize FROM seen;
 ----
-4
+5
 
 statement ok
 SELECT content FROM read_text('http://127.0.0.1:{TRESOR_TEST_PORT}/_forget');
@@ -203,14 +248,19 @@ browser
 query I
 SELECT idp('authorize')::INT - authorize FROM seen;
 ----
-5
+6
 
-# by name, not attached: the entry goes (and nothing else is touched)
+# by name, not attached: service, issuer and client id - the entry goes, revoked through the issuer's discovery
 statement ok
 DETACH e;
 
+statement error
+SELECT * FROM tresor_logoff(issuer := 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', client_id := 'duckdb');
+----
+all three
+
 query III
-SELECT client_id, removed, revoked FROM tresor_logoff(issuer := 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', client_id := 'duckdb');
+SELECT client_id, removed, revoked FROM tresor_logoff(service := 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', issuer := 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', client_id := 'duckdb');
 ----
 duckdb	true	true
 
@@ -246,7 +296,7 @@ true
 query I
 SELECT count(*) FROM duckdb_logs_parsed('tresor') WHERE kind = 'logout' AND detail = 'logoff_revoked';
 ----
-2
+3
 
 query I
 SELECT count(*) FROM duckdb_logs WHERE type = 'tresor' AND (message LIKE '%rt-%' OR message LIKE '%eyJ%');

@@ -70,8 +70,11 @@ principals (the policy layer's job).
   both for a refresh and for a revocation.
   - The store protects it from other OS users and from a copied disk. It does not protect it from
     another process of the same user.
-  - On macOS the item belongs to the program that stored it (`duckdb`, `python3`); another program
-    has to ask first.
+  - On macOS the item belongs to the program that stored it (`duckdb`, `python3`). Any script that
+    program runs reads it without asking; another program has to ask first.
+  - A login is kept per service (issuer, client, service). Two services behind one identity provider
+    and public client could ask for each other's scope, so tresor never refreshes one service's login
+    for another: a new service always gets a login of its own.
   - On Linux the Secret Service provider decides where the collection lives. KeePassXC may keep it
     in a synced file.
   - On macOS the login keychain file travels with a backup.
