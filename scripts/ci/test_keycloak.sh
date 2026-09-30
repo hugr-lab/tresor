@@ -3,9 +3,26 @@
 # (server/docker-compose.yml), build and start ref-server, then run the conformance suite
 # (test/sql/conformance/*) and the reference server's own tests (test/sql/reference_server/*) against
 # the pair - a service login with client credentials, and a person's browser login played by
-# test/keycloak/browser.py. Needs docker and go.
+# test/keycloak/browser.py. Needs docker, and go unless TRESOR_SERVER_CMD is set.
 #
 #   scripts/ci/test_keycloak.sh [unittest binary]      # KEEP_KEYCLOAK=1 leaves Keycloak running
+#
+# Another duckdb-secrets/1 service under the same tests (tresor-server's CI):
+#   TRESOR_SERVER_CMD     one simple command that is the server itself, in the foreground, instead of
+#                         building ref-server - run as `exec`, so no `&&`, no `VAR=` prefix, no wrapper
+#                         (`go run`, `docker run`): the pid checked and killed must be the server's. Its
+#                         environment: TRESOR_TEST_SERVER_CONFIG (the config, on this run's ports),
+#                         KEYCLOAK_PORT, TRESOR_SERVER_PORT, TRESOR_EXCHANGE_SECRET
+#   TRESOR_SERVER_CONFIG  the config it is given (default server/testdata/keycloak/server.yaml); the
+#                         literal 127.0.0.1:18480 and 127.0.0.1:18443 in it become this run's ports
+#   TRESOR_SERVER_WAIT    seconds it may take to answer the discovery (default 10)
+# What such a service must match:
+# - plain http on 127.0.0.1:$TRESOR_SERVER_PORT (the tests ATTACH with INSECURE_HTTP true);
+# - server.yaml's issuer, roles claim, admins (client:etl seeds secrets and grants), the actor
+#   client:acl-node and the exchange client: test/sql/reference_server/* runs against it too, no skips;
+# - the duckdb-acl part (run whenever an acl extension is found: TRESOR_ACL_EXTENSION, or a build with
+#   TRESOR_TEST_ACL_DIR) reads request lines from its log as ref-server writes them (slog text):
+#   `method=POST path=/v1/delegations status=201` and `method=DELETE path=/v1/delegations/<id> status=204`.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 unittest="${1:-$root/build/release/test/unittest}"
@@ -40,23 +57,35 @@ curl -sf "$issuer/.well-known/openid-configuration" >/dev/null || {
 	exit 1
 }
 
-echo "test_keycloak: building and starting ref-server"
-(cd "$root/server" && GOWORK=off go build -o "$work/ref-server" ./cmd/ref-server)
 # the test config, on the ports of this run
 sed -e "s/127.0.0.1:18480/127.0.0.1:$kc_port/g" -e "s/127.0.0.1:18443/127.0.0.1:$server_port/g" \
-	"$root/server/testdata/keycloak/server.yaml" >"$work/server.yaml"
+	"${TRESOR_SERVER_CONFIG:-$root/server/testdata/keycloak/server.yaml}" >"$work/server.yaml"
 # the service's exchange client secret (specs/010): from the environment, as the config names it
-TRESOR_EXCHANGE_SECRET=svc-secret "$work/ref-server" -config "$work/server.yaml" >"$work/server.log" 2>&1 &
+if [ -n "${TRESOR_SERVER_CMD:-}" ]; then
+	server_name="the service under test"
+	echo "test_keycloak: starting $server_name"
+	# exec: the pid is the server's own, for the checks and the cleanup
+	TRESOR_TEST_SERVER_CONFIG="$work/server.yaml" KEYCLOAK_PORT="$kc_port" TRESOR_SERVER_PORT="$server_port" \
+		TRESOR_EXCHANGE_SECRET=svc-secret bash -c "exec $TRESOR_SERVER_CMD" >"$work/server.log" 2>&1 &
+else
+	server_name="ref-server"
+	echo "test_keycloak: building and starting ref-server"
+	(cd "$root/server" && GOWORK=off go build -o "$work/ref-server" ./cmd/ref-server)
+	TRESOR_EXCHANGE_SECRET=svc-secret "$work/ref-server" -config "$work/server.yaml" >"$work/server.log" 2>&1 &
+fi
 server_pid=$!
 # a downstream http API that answers whom a bearer token was minted for (specs/010)
 python3 "$root/test/keycloak/echo.py" --port-file "$work/echo.port" &
 echo_pid=$!
 for _ in $(seq 50); do [ -s "$work/echo.port" ] && break; sleep 0.1; done
 export TRESOR_KC_ECHO="127.0.0.1:$(cat "$work/echo.port")"
-for _ in $(seq 50); do curl -sf "http://127.0.0.1:$server_port/.well-known/duckdb-secrets" >/dev/null && break; sleep 0.2; done
+for _ in $(seq $((${TRESOR_SERVER_WAIT:-10} * 5))); do
+	curl -sf "http://127.0.0.1:$server_port/.well-known/duckdb-secrets" >/dev/null && break
+	sleep 0.2
+done
 if ! kill -0 "$server_pid" 2>/dev/null || ! curl -sf "http://127.0.0.1:$server_port/.well-known/duckdb-secrets" >/dev/null; then
 	cat "$work/server.log" >&2
-	echo "test_keycloak: ref-server did not come up" >&2
+	echo "test_keycloak: $server_name did not come up" >&2
 	exit 1
 fi
 
@@ -269,7 +298,7 @@ else
 fi
 "$unittest" --skip-error-messages '' 'test/sql/conformance/*' || status=1
 if [ "$status" != 0 ]; then
-	echo "--- ref-server log ---" >&2
+	echo "--- $server_name log ---" >&2
 	cat "$work/server.log" >&2
 fi
 exit "$status"
