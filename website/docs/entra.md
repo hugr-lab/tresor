@@ -29,7 +29,8 @@ own: it is given a role on the API.
 Checked live against an Entra tenant on 2026-09-30 (`scripts/dev/entra_live.sh`, below):
 - a person's browser login, through the `http://127.0.0.1/callback` redirect, any port;
 - a node with its certificate (`private_key_jwt`), and with a client secret;
-- v2 tokens throughout, and the `idtyp` rule telling the node from the person.
+- v2 tokens throughout, the `idtyp` rule telling the node from the person, and the node's app role
+  (`role:nodes`).
 
 Not yet checked live: On-Behalf-Of for a duckdb-acl node, a federated credential, and a managed
 identity (it needs an Azure host). They are tested against the protocol's shapes.
@@ -302,3 +303,4 @@ scripts/dev/entra_live.sh
 | a node is treated as a person (no `client:` principal) | no `idtyp` claim | add the optional claim `idtyp` to the API's access tokens |
 | a managed identity: `names the audience '<client id>', but the managed identity's secret is for 'api://…'` | `AUDIENCE` is the Application ID URI | `AUDIENCE` is the API's client id, as the service's audience |
 | a person's groups are missing | the groups overage (over 200 groups) | grant through app roles |
+| a node has `client:…` but no `role:nodes` | the node's registration lacks the API's **application** permission (a new registration has only Graph's `User.Read`) | API permissions → Add → duckdb-secrets → **Application permissions** → `nodes`, then **Grant admin consent** |

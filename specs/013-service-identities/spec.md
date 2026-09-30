@@ -227,8 +227,11 @@ expects (apps, API permissions, `accessTokenAcceptedVersion`) is documented in
    client id>` through the `idtyp` rule.
 3. **The node with its client secret.** The same, as the baseline.
 
-**Open:** the node's token carried no `roles` claim (no `role:nodes`). That points to the
-application permission's admin consent at the tenant, not to tresor; to be confirmed.
+**The node's role.** At first the node's token carried no `roles` claim. The registration had
+only the default `Microsoft Graph / User.Read`, not the API's `nodes` application permission.
+With the permission added and admin consent granted, both node logins read
+`role:nodes, client:<node client id>`. It was tenant configuration, not tresor; the Entra page's
+troubleshooting table now has the row.
 
 
 
