@@ -30,7 +30,10 @@ Checked live against an Entra tenant on 2026-09-30 (`scripts/dev/entra_live.sh`,
 - a person's browser login, through the `http://127.0.0.1/callback` redirect, any port;
 - a node with its certificate (`private_key_jwt`), and with a client secret;
 - v2 tokens throughout, the `idtyp` rule telling the node from the person, and the node's app role
-  (`role:nodes`).
+  (`role:nodes`);
+- a person holding `secrets_admin` and `analysts` as app roles, without duckdb-acl: creating a
+  secret, granting `use` to `role:analysts` and `role:nodes`, DuckDB's lookup finding it only once
+  granted, and no longer once revoked; the node finding the secret granted to its role.
 
 Not yet checked live: On-Behalf-Of for a duckdb-acl node, a federated credential, and a managed
 identity (it needs an Azure host). They are tested against the fake service and Keycloak, in CI.
@@ -45,7 +48,7 @@ identity (it needs an Azure host). They are tested against the fake service and 
 | --- | --- | --- |
 | Application ID URI | Expose an API | `api://duckdb-secrets` (or the suggested `api://<client id>`) |
 | A delegated scope | Expose an API → Add a scope | `access_as_user`, who can consent: admins and users |
-| App roles | App roles | `secrets_admin` (allowed member types: users/groups), `nodes` (applications) |
+| App roles | App roles | `secrets_admin`, `analysts` (allowed member types: users/groups); `nodes` (applications) |
 | Token version 2 | Manifest | `"api": {"requestedAccessTokenVersion": 2}` (in the older manifest view: `"accessTokenAcceptedVersion": 2`) |
 | Who may get tokens | Enterprise applications → duckdb-secrets → Properties | **Assignment required? Yes** (recommended) |
 | The `idtyp` claim | Token configuration → Add optional claim → Access | `idtyp` |
@@ -59,10 +62,31 @@ Why each matters:
 - **`idtyp`.** The claim says `app` in a token an application got for itself. It is how the
   service tells a node's token from a person's (the `service` rule below). Without it, every node
   would be taken for a person.
-- **App roles.** They become the principals the service grants to: `role:secrets_admin`,
-  `role:nodes`. A role is assigned under **Enterprise applications → duckdb-secrets → Users and
-  groups** for people (for groups, Entra ID P1 or P2), and granted to applications as an API
-  permission (step 3).
+- **App roles.** They become the principals the service knows:
+  - `role:secrets_admin`: the administrators, in the service's policy (step 5);
+  - `role:analysts`, `role:nodes`: what an administrator grants `use` to. Add a role per group of
+    people that uses different secrets.
+  - An administrator's role gives no `use` by itself. An administrator who is to use a secret also
+    holds a role it is granted to.
+  - People get roles under **Enterprise applications → duckdb-secrets → Users and groups**. Groups
+    need Entra ID P1 or P2: the free tier assigns users only.
+  - Applications get roles as an API permission (step 3).
+- **One role per assignment.** The portal's *Add user/group* takes a single role: a person with
+  two roles is assigned twice. When the portal offers no role to pick, Microsoft Graph does it
+  (`az login --tenant <tenant id>` as an administrator of the tenant):
+
+  ```sh
+  api_sp=$(az ad sp list --filter "appId eq '<API client id>'" --query '[0].id' -o tsv)
+  role=$(az ad sp show --id "$api_sp" --query "appRoles[?value=='analysts'].id | [0]" -o tsv)
+  user=$(az ad user show --id <user principal name> --query id -o tsv)
+  az rest --method POST --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$api_sp/appRoleAssignedTo" \
+    --headers Content-Type=application/json \
+    --body "{\"principalId\":\"$user\",\"resourceId\":\"$api_sp\",\"appRoleId\":\"$role\"}"
+  ```
+
+- **A new role** shows in the next token: DETACH and ATTACH again (a remembered login is
+  refreshed then). If it is still missing, `CALL tresor_logoff()` and ATTACH: that logs in through
+  the browser.
 - **Assignment required.** Without it, any user and any application in the tenant can get a token
   for the API. It has no roles, but it still is a `subject:` (or a `client:`) the service knows.
   Turn it on, or at least grant only to roles and groups.
@@ -184,7 +208,8 @@ to a managed identity; Microsoft Graph can:
 api_sp=$(az ad sp list --filter "appId eq '<API client id>'" --query '[0].id' -o tsv)
 role=$(az ad sp show --id "$api_sp" --query "appRoles[?value=='nodes'].id | [0]" -o tsv)
 mi_sp=<the managed identity's object (principal) id>
-az rest --method POST --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$mi_sp/appRoleAssignments" \
+az rest --method POST --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$api_sp/appRoleAssignedTo" \
+  --headers Content-Type=application/json \
   --body "{\"principalId\":\"$mi_sp\",\"resourceId\":\"$api_sp\",\"appRoleId\":\"$role\"}"
 ```
 
@@ -236,6 +261,16 @@ ATTACH 'tresor:secrets.corp.example' AS corp;     -- the browser; LOGIN 'device'
 FROM corp.whoami();
 ```
 
+An administrator (`role:secrets_admin`) keeps a secret in the service and grants its use:
+
+```sql
+CREATE PERSISTENT SECRET lake IN corp (TYPE s3, KEY_ID '…', SECRET '…', SCOPE 's3://lake');
+CALL corp.grant_secret('lake', 'role:analysts', ['use']);
+CALL corp.grant_secret('lake', 'role:nodes', ['use']);
+FROM corp.grants('lake');
+CALL corp.revoke_secret('lake', 'role:analysts');
+```
+
 A node, whichever way it proves itself. For `client_credentials` and `federated`,
 `OAUTH_SCOPE 'api://…/.default'` is **required** with Entra: without it, tresor asks for the
 discovery's scopes, and client credentials accept only `/.default` (`AADSTS1002012`). A managed
@@ -277,14 +312,23 @@ ATTACH 'tresor:secrets.corp.example' AS corp (ACT_FOR_SESSIONS true,
 
 ## 7. Check it
 
-`scripts/dev/entra_live.sh` runs the reference server against your tenant and logs DuckDB in:
-- as a person, in the browser;
-- as the node with its certificate;
+`scripts/dev/entra_live.sh` runs the reference server against your tenant (administrators:
+`role:secrets_admin`) and logs DuckDB in:
+- as a person, in the browser, holding `secrets_admin` and `analysts`, without duckdb-acl:
+  - creates `entra_live`, an `http` secret with a placeholder token;
+  - DuckDB's lookup does not find it: an administrator's role gives no `use`;
+  - grants `use` to `role:analysts` and `role:nodes`: the lookup finds it;
+  - revokes it from `role:analysts`: the lookup no longer finds it;
+- as the node with its certificate, which finds the secret granted to `role:nodes`;
 - with its secret too, when given.
+
+Each step checks its own output and the script exits nonzero when one fails.
 
 It takes everything from the environment, and never writes a credential or prints a token. It
 needs a release build of this repository (`build/release/duckdb` and the extension) and Go, for
-the server. `ENTRA_SKIP_PERSON=1` skips the browser step.
+the server. `ENTRA_SKIP_PERSON=1` skips the browser step (the nodes then only log in);
+`ENTRA_ADMIN_ROLE`, `ENTRA_USE_ROLE` and `ENTRA_NODE_ROLE` name other roles than `secrets_admin`,
+`analysts` and `nodes`.
 
 ```sh
 export ENTRA_TENANT=<tenant id> ENTRA_API_CLIENT_ID=<API client id> ENTRA_API_URI=api://duckdb-secrets \
@@ -315,4 +359,7 @@ scripts/dev/entra_live.sh
 | a node is treated as a person (no `client:` principal) | no `idtyp` claim | add the optional claim `idtyp` to the API's access tokens |
 | a managed identity: `names the audience '<client id>', but the managed identity's secret is for 'api://…'` | `AUDIENCE` is the Application ID URI | `AUDIENCE` is the API's client id, as the service's audience |
 | a person's groups are missing | the groups overage (over 200 groups) | grant through app roles |
+| an administrator does not find a secret they created | an administrator's role gives no `use` | grant `use` to a role the administrator holds |
+| whoami lacks a role just assigned | the token was issued before the assignment | DETACH and ATTACH; if still missing, `CALL tresor_logoff()` |
+| the portal offers no role to pick | *Add user/group* takes one role, and may offer only one | the Graph call under step 1 |
 | a node has `client:…` but no `role:nodes` | the node's registration lacks the API's **application** permission (a new registration has only Graph's `User.Read`) | API permissions → Add → duckdb-secrets → **Application permissions** → `nodes`, then **Grant admin consent** |
