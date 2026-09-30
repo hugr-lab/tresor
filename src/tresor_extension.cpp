@@ -56,10 +56,21 @@ unique_ptr<Catalog> TresorAttach(optional_ptr<StorageExtensionInfo> storage_info
 	login.Called();
 	shared_ptr<tresor::TresorSession> session;
 	vector<tresor::Descriptor> initial;
+	unique_ptr<tresor::ActorOptions> acting;
 	tresor::Caller node;
 	try {
 		session = tresor::Login(context, request);
 		node.session = session;
+		if (request.act_for_sessions) {
+			try {
+				acting = make_uniq<tresor::ActorOptions>(
+				    tresor::ActingOptions(*session, request.on_behalf_of, request.exchange_scope,
+				                          request.exchange_audience, request.grant_wait_seconds, name));
+			} catch (...) {
+				session->Close();
+				throw;
+			}
+		}
 		// the list the storage starts from: a service that cannot list its secrets is not attached
 		initial = tresor::FetchDescriptors(node);
 	} catch (std::exception &ex) {
@@ -71,19 +82,8 @@ unique_ptr<Catalog> TresorAttach(optional_ptr<StorageExtensionInfo> storage_info
 		login.Detail("remembered");
 	}
 	login.Ok();
-	shared_ptr<tresor::TresorActor> actor;
-	if (request.act_for_sessions) {
-		tresor::ActorOptions actor_options;
-		actor_options.on_behalf_of = request.on_behalf_of;
-		actor_options.scope = request.exchange_scope;
-		actor_options.audience = session->Info().audience; // pinned at the login (never the service's alone)
-		actor_options.grant_wait_seconds = request.grant_wait_seconds;
-		actor_options.service = name;
-		actor_options.audit = storage.AuditOf();
-		actor = make_shared_ptr<tresor::TresorActor>(session, std::move(actor_options));
-	}
 	info.path = IN_MEMORY_PATH;
-	return make_uniq<tresor::TresorCatalog>(db, std::move(session), storage, std::move(initial), std::move(actor));
+	return make_uniq<tresor::TresorCatalog>(db, std::move(session), storage, std::move(initial), std::move(acting));
 }
 
 unique_ptr<TransactionManager> TresorCreateTransactionManager(optional_ptr<StorageExtensionInfo> storage_info,

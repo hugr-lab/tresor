@@ -16,6 +16,9 @@
 namespace duckdb {
 namespace tresor {
 
+//! SESSION_GRANT_WAIT's default, at ATTACH and at act_for_sessions() alike (specs/008, 015).
+constexpr int64_t DEFAULT_GRANT_WAIT_SECONDS = 10;
+
 //! How the session logged in; `browser` and `device` are people, the rest services.
 enum class LoginFlow : uint8_t { BROWSER, DEVICE, CLIENT_CREDENTIALS, TOKEN, REMEMBERED, FEDERATED, MANAGED_IDENTITY };
 
@@ -78,7 +81,11 @@ public:
 	//! Exchange a token someone presented to this node for one meant for the service (specs/008): at the
 	//! session's own IdP, as its own client. Only a client_credentials login can. No lock held across the
 	//! network. The subject token never reaches an error.
-	oidc::TokenSet ExchangeForService(const string &subject_token, bool on_behalf_of, const string &scope);
+	oidc::TokenSet ExchangeForService(const string &subject_token, bool on_behalf_of, const string &scope,
+	                                  const string &audience);
+	//! The `aud` of the session's own access token (renewed first if due); `is_jwt` false for an opaque one.
+	//! The token itself never leaves the session.
+	vector<string> OwnAudiences(bool &is_jwt);
 
 	//! DETACH: drop the tokens. Calls after this fail.
 	void Close();

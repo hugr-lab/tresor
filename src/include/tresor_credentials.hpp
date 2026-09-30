@@ -18,7 +18,14 @@ class ClientContext;
 namespace tresor {
 
 struct ServiceCredential {
-	enum class Kind : uint8_t { SECRET, PRIVATE_KEY, ASSERTION_FILE, GITHUB_ACTIONS, MANAGED_IDENTITY };
+	enum class Kind : uint8_t {
+		SECRET,
+		PRIVATE_KEY,
+		ASSERTION_FILE,
+		GITHUB_ACTIONS,
+		MANAGED_IDENTITY,
+		AZURE_MANAGED_IDENTITY_ASSERTION
+	};
 
 	Kind kind = Kind::SECRET;
 	string client_id;
@@ -27,7 +34,8 @@ struct ServiceCredential {
 	string key_id;             // PRIVATE_KEY, optional
 	string certificate_file;   // PRIVATE_KEY, optional
 	string assertion_file;     // ASSERTION_FILE
-	string assertion_audience; // GITHUB_ACTIONS
+	string assertion_audience; // GITHUB_ACTIONS, AZURE_MANAGED_IDENTITY_ASSERTION
+	string identity_client_id; // AZURE_MANAGED_IDENTITY_ASSERTION: a user-assigned identity; empty: system-assigned
 	string audience;           // MANAGED_IDENTITY: the resource its token is for - the secret's, never the service's
 
 	//! The client's proof for one request (a key's and a token's files read now). The caller wipes it.

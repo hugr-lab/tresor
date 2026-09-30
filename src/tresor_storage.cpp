@@ -433,6 +433,15 @@ void TresorSecretStorage::Activate(shared_ptr<TresorSession> session_p, vector<D
 	acl_views.clear();
 }
 
+void TresorSecretStorage::SetActor(const TresorSession &which, shared_ptr<TresorActor> actor_p) {
+	lock_guard<mutex> guard(lock);
+	if (session.get() != &which) {
+		return;
+	}
+	actor = std::move(actor_p);
+	acl_views.clear(); // a session's statements were refused until now; nothing of that is kept
+}
+
 void TresorSecretStorage::Deactivate(const TresorSession &which) {
 	lock_guard<mutex> guard(lock);
 	if (session.get() != &which) {
@@ -479,7 +488,9 @@ Caller TresorSecretStorage::CallerFor(optional_ptr<ClientContext> context) {
 	caller.correlation_id = view.correlation_id;
 	caller.traceparent = ValidTraceparent(view.traceparent);
 	if (!acting) {
-		caller.refused = storage_name + " does not act for duckdb-acl sessions (ATTACH it with ACT_FOR_SESSIONS)";
+		caller.refused = storage_name +
+		                 " does not act for duckdb-acl sessions (ATTACH it with ACT_FOR_SESSIONS, or CALL " +
+		                 storage_name + ".act_for_sessions())";
 		return caller;
 	}
 	caller.grant = acting->GrantFor(view.session_id, context, why);

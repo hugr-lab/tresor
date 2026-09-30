@@ -1,0 +1,203 @@
+# name: test/sql/attach/act_for_sessions.test
+# description: acting for duckdb-acl's sessions turned on for a live catalog, attached before acl - the node's bootstrap (specs/015)
+# group: [attach]
+
+require-env TRESOR_TEST_PORT
+
+require acl_stub
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+SET tresor_audit_level = 'all';
+
+statement ok
+CALL enable_logging('tresor');
+
+statement ok
+CREATE SECRET etl_login (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'client_credentials',
+    CLIENT_ID 'etl', CLIENT_SECRET 's3cr3t', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+
+# the bootstrap: tresor first, before anything publishes acl sessions
+query I
+SELECT acl_stub_publisher('');
+----
+acl_stub (ACLC 2)
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS corp (INSECURE_HTTP true);
+
+query I
+SELECT DISTINCT name FROM which_secret('s3://acting/x.parquet', 's3');
+----
+node_lake
+
+statement error
+CALL corp.act_for_sessions();
+----
+nothing publishes acl sessions in this instance
+
+# acl is loaded now; a session opened before acting gets nothing, now or later
+statement ok
+SELECT acl_stub_publisher('acl_stub (ACLC 2)');
+
+query I
+SELECT acl_stub_open('early', 'node-token-alice', 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', 300);
+----
+0
+
+statement ok
+SET acl_stub_session = 'early';
+
+statement error
+SELECT * FROM corp.whoami();
+----
+does not act for duckdb-acl sessions
+
+# never under an acl session
+statement error
+CALL corp.act_for_sessions();
+----
+not under a duckdb-acl session
+
+statement ok
+SET acl_stub_session = '';
+
+# the options, checked as ATTACH's are
+statement error
+CALL corp.act_for_sessions(exchange := 'saml');
+----
+EXCHANGE is 'token_exchange' or 'on_behalf_of'
+
+statement error
+CALL corp.act_for_sessions(exchange := 'on_behalf_of');
+----
+needs EXCHANGE_SCOPE
+
+statement error
+CALL corp.act_for_sessions(session_grant_wait := 601);
+----
+SESSION_GRANT_WAIT is 0 to 600 seconds
+
+statement error
+CALL corp.act_for_sessions(exchange_scope := NULL);
+----
+exchange_scope must not be NULL
+
+# on: the audience pinned as ATTACH pins it (the discovery's, which the node's own token carries)
+query IIIII
+CALL corp.act_for_sessions(session_grant_wait := 5);
+----
+corp	token_exchange	duckdb-secrets	NULL	true
+
+# the same again: nothing changes
+query IIIII
+CALL corp.act_for_sessions(SESSION_GRANT_WAIT := 5);
+----
+corp	token_exchange	duckdb-secrets	NULL	false
+
+# other options: one way, DETACH to change
+statement error
+CALL corp.act_for_sessions(session_grant_wait := 7);
+----
+already acts for duckdb-acl sessions, with other options
+
+# a session opened now: its user's statements go through its grant
+query I
+SELECT acl_stub_open('s1', 'node-token-alice', 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', 300);
+----
+1
+
+statement ok
+SET acl_stub_session = 's1';
+
+query II
+SELECT subject, actor FROM corp.whoami();
+----
+alice	client:etl
+
+query II
+SELECT name, storage FROM which_secret('s3://acting/x.parquet', 's3');
+----
+node_lake	corp
+
+# the one opened before: still nothing
+statement ok
+SET acl_stub_session = 'early';
+
+statement error
+SELECT * FROM corp.whoami();
+----
+opened before this catalog acted for sessions
+
+statement ok
+SET acl_stub_session = '';
+
+# the refused attempt is the session's, not the node's
+query II
+SELECT acl_session, principal IS NOT NULL FROM duckdb_logs_parsed('tresor')
+WHERE kind = 'login' AND detail = 'act_for_sessions' AND outcome = 'denied';
+----
+early	true
+
+# audited: a login event, detail act_for_sessions - ok when it turned on, none when it already was, denied
+# under an acl session, error when refused (nothing publishes sessions, no scope, other options); a call whose
+# options do not bind never reaches it
+query III
+SELECT outcome, service, count(*) FROM duckdb_logs_parsed('tresor')
+WHERE kind = 'login' AND detail = 'act_for_sessions' GROUP BY ALL ORDER BY outcome;
+----
+denied	corp	1
+error	corp	3
+none	corp	1
+ok	corp	1
+
+query I
+SELECT acl_stub_close('s1', 'client');
+----
+1
+
+statement ok
+DETACH corp;
+
+# an ATTACH that already acts: the call with its options changes nothing, with others it is refused
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS acting (INSECURE_HTTP true, ACT_FOR_SESSIONS true, SESSION_GRANT_WAIT 5);
+
+query I
+SELECT changed FROM acting.act_for_sessions(session_grant_wait := 5);
+----
+false
+
+statement error
+CALL acting.act_for_sessions();
+----
+already acts for duckdb-acl sessions, with other options
+
+statement ok
+DETACH acting;
+
+# a service whose discovery names another audience than the node's own token: refused at the call too
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/shifty' AS shifty (INSECURE_HTTP true);
+
+statement error
+CALL shifty.act_for_sessions();
+----
+names the audience 'payroll-api', which the node's own token is not issued for
+
+statement ok
+DETACH shifty;
+
+# a person's login is no client at the identity provider
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS me (INSECURE_HTTP true, LOGIN 'browser');
+
+statement error
+CALL me.act_for_sessions();
+----
+needs a service login
+
+statement ok
+DETACH me;

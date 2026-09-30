@@ -161,6 +161,9 @@ KEY_CLIENTS = {"keynode": "keynode.pub", "eckeynode": "eckeynode.pub"}
 # federated tokens the fake's "federation" trusts: JWT-shaped, as a platform's are (tresor sends nothing else)
 FEDERATED = {"fednode": {"eyJhbGciOiJub25lIn0.eyJzdWIiOiJmZWRub2RlIn0.c2ln", "eyJhbGciOiJub25lIn0.eyJzdWIiOiJmZWRub2RlMiJ9.c2ln", "github-jwt"}}
 SEEN_JTI = set()
+# realms that serve a node acting for acl sessions (specs/008); auth0 too, for the pinned audience (specs/015)
+ACTING_REALMS = ("acting", "shifty", "auth0")
+MI_ASSERTIONS = set()  # specs/015: tokens /msi/token issued for api://AzureADTokenExchange
 
 
 def b64url_decode(text):
@@ -224,6 +227,8 @@ def client_ok(form, token_endpoint):
         if form.get("client_assertion_type") != "urn:ietf:params:oauth:client-assertion-type:jwt-bearer":
             return False
         IDP_STATS["assertions"] += 1
+        if client == "minode":  # specs/015: a managed identity's token as the federated credential
+            return assertion in MI_ASSERTIONS
         if client in FEDERATED:
             IDP_STATS["last_federated"] = assertion  # a test token, not a credential: the rotation is read here
             return assertion in FEDERATED[client]
@@ -371,8 +376,11 @@ class Handler(BaseHTTPRequestHandler):
             resource = query.get("resource", "")
             with LOCK:
                 IDP_STATS["mi_resource"] = resource
+                IDP_STATS["mi_client_id"] = query.get("client_id", "")
                 # a user-assigned identity called "mismatch" gets a token for another audience: never sent on
                 token = jwt_shaped("other" if query.get("client_id") == "mismatch" else resource)
+                if resource == "api://AzureADTokenExchange":
+                    MI_ASSERTIONS.add(token)  # specs/015: what the IdP takes as minode's client assertion
                 TOKENS[token] = {"identity": service_identity("mi"), "uses": 0, "renewed": False}
             self.send(200, {"access_token": token, "expires_in": "300", "resource": resource})
             return
@@ -446,7 +454,7 @@ class Handler(BaseHTTPRequestHandler):
                                  "delegation": realm != "expiring"},
             })
             return
-        if realm in ("acting", "shifty") and rest.startswith("/v1/"):
+        if realm in ACTING_REALMS and rest.startswith("/v1/"):
             self.acting_get(rest)
             return
         if rest == "/v1/whoami":
@@ -658,7 +666,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def refuse_delegated_write(self, realm):
         """acting: a write carrying a grant is the actor policy's refusal (as the reference server's default)."""
-        if realm not in ("acting", "shifty") or not self.headers.get("Delegation"):
+        if realm not in ACTING_REALMS or not self.headers.get("Delegation"):
             return False
         identity, actor = self.effective()
         if identity is not None:
@@ -714,7 +722,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         realm, rest = self.split(urllib.parse.urlparse(self.path).path)
-        if realm in ("acting", "shifty") and rest.startswith("/v1/delegations/"):
+        if realm in ACTING_REALMS and rest.startswith("/v1/delegations/"):
             self.acting_delete_grant(urllib.parse.unquote(rest[len("/v1/delegations/"):]))
             return
         if self.refuse_delegated_write(realm):
@@ -764,7 +772,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         url = urllib.parse.urlparse(self.path)
         realm, rest = self.split(url.path)
-        if realm in ("acting", "shifty") and rest == "/v1/delegations":
+        if realm in ACTING_REALMS and rest == "/v1/delegations":
             self.acting_post_grant()
             return
         if rest.startswith("/v1/secrets/") and self.refuse_delegated_write(realm):
@@ -822,6 +830,7 @@ class Handler(BaseHTTPRequestHandler):
             elif grant == "urn:ietf:params:oauth:grant-type:token-exchange":
                 at = "urn:ietf:params:oauth:token-type:access_token"
                 subject = form.get("subject_token")
+                IDP_STATS["exchange_audience"] = form.get("audience", "")  # specs/015: the node's pinned one
                 if not client_ok(form, self.base() + "/" + realm + "/token"):
                     self.send(401, {"error": "invalid_client", "error_description": "bad client credentials"})
                 elif form.get("audience") != "duckdb-secrets" or form.get("subject_token_type") != at:

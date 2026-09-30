@@ -15,7 +15,7 @@ title: Concepts
    persistent secrets.
 2. **A catalog of functions** — `corp.secrets()`, `corp.whoami()`, `corp.grants(…)`,
    `corp.annotate_secret(…)`, `corp.grant_secret(…)`, `corp.revoke_secret(…)` — the view, and the
-   management surface for administrators.
+   management surface for administrators; and `corp.act_for_sessions(…)` for a duckdb-acl node.
 3. **A login.** The identity the attach established is what every call to the service carries.
 
 Several services can be attached at once; each is its own storage and its own catalog.
@@ -81,6 +81,22 @@ ATTACH 'tresor:secrets.example' AS corp (SECRET node, ACT_FOR_SESSIONS true);
 ```
 
 Load duckdb-acl before this ATTACH: `ACT_FOR_SESSIONS` is refused where nothing publishes acl sessions.
+
+A node that installs duckdb-acl from a repository whose secret the service holds attaches tresor
+first, and turns acting on once acl is loaded, with no re-attach:
+
+```sql
+ATTACH 'tresor:secrets.example' AS corp (SECRET node);   -- the repository's secret is in the lookup now
+INSTALL acl FROM '…'; LOAD acl;
+CALL corp.act_for_sessions();   -- the options below, in lowercase: exchange := 'on_behalf_of', …
+```
+
+- `act_for_sessions()` makes the same checks as `ACT_FOR_SESSIONS`, at the call.
+- It is one way: DETACH ends it.
+- It is idempotent: the same options again change nothing (`changed = false`), and other options are
+  refused.
+- It is refused under an acl session.
+- A session opened before it gets no grant: it ends, and the next one does.
 
 When a user's acl session opens, tresor:
 1. exchanges the session's token at the identity provider for one meant for the service;

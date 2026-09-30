@@ -193,10 +193,16 @@ tokens. For every session it trades the user's token for one meant for the servi
   sign-in did not satisfy make On-Behalf-Of fail with `interaction_required` (`AADSTS50076`,
   `AADSTS50079`), and the node cannot prompt anyone. Apply the same policies to the node's API, so
   that they are met when the user signs in.
-- A node that logs in with a **managed identity** cannot act for users: it is no client that can
-  exchange tokens. Use a federated credential or a certificate on an application. (A managed
-  identity as the federated credential of the node's application would work in Entra; tresor has
-  no assertion source for it yet.)
+- A node that logs in with `FLOW 'managed_identity'` cannot act for users: it is no client that can
+  exchange tokens. On Azure, make the managed identity the **federated credential of the node's
+  application** instead, so the node holds no secret:
+  - App registrations → the node → **Certificates & secrets** → **Federated credentials** → **Add
+    credential** → scenario **Managed identity** → the identity;
+  - the secret: `FLOW 'federated'`, `ASSERTION_SOURCE 'azure_managed_identity'` (below). tresor asks
+    the platform for a token for `api://AzureADTokenExchange` and signs in as the application with it.
+    Add `IDENTITY_CLIENT_ID` for a user-assigned identity. In a sovereign cloud, set
+    `ASSERTION_AUDIENCE` to its federation audience (e.g. `api://AzureADTokenExchangeUSGov`).
+  - Not yet checked against a live tenant (it needs an Azure host).
 
 ## 4. A managed identity
 
@@ -303,12 +309,22 @@ CREATE SECRET node (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'mana
 ATTACH 'tresor:secrets.corp.example' AS corp;
 ```
 
-A duckdb-acl node acting for its users:
+A duckdb-acl node acting for its users, on Azure with no secret: its managed identity is the
+federated credential of its app registration.
 
 ```sql
+CREATE SECRET node (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'federated',
+    CLIENT_ID '<node client id>', ISSUER 'https://login.microsoftonline.com/<tenant id>/v2.0',
+    OAUTH_SCOPE 'api://duckdb-secrets/.default',
+    ASSERTION_SOURCE 'azure_managed_identity');   -- IDENTITY_CLIENT_ID '<…>' for a user-assigned one
+
 ATTACH 'tresor:secrets.corp.example' AS corp (ACT_FOR_SESSIONS true,
     EXCHANGE 'on_behalf_of', EXCHANGE_SCOPE 'api://duckdb-secrets/.default');
 ```
+
+A node that installs duckdb-acl from a repository the service holds the secret for attaches first
+and turns acting on after `LOAD acl`:
+`CALL corp.act_for_sessions(exchange := 'on_behalf_of', exchange_scope := 'api://duckdb-secrets/.default')`.
 
 ## 7. Check it
 

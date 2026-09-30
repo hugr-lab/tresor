@@ -147,8 +147,10 @@ CREATE SECRET node (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'mana
   - A federated token file must hold a JWT; any other content is never sent.
   - Keys are RSA (2048 bits or more, RS256) or P-256 (ES256), unencrypted PEM.
 - **A node acting for duckdb-acl sessions** (`ACT_FOR_SESSIONS`) may log in with a key or
-  federated. A managed identity cannot: it is no client at the identity provider, so it has
-  nothing to exchange a session's token as.
+  federated. `FLOW 'managed_identity'` cannot: it is no client at the identity provider, so it has
+  nothing to exchange a session's token as. On Azure, make the managed identity the federated
+  credential of the node's app registration instead: `FLOW 'federated'` with
+  `ASSERTION_SOURCE 'azure_managed_identity'` (see [Microsoft Entra ID](./entra.md#a-node-acting-for-its-users-duckdb-acl)).
 - **A managed identity's token is only for `AUDIENCE`.** A service whose discovery names another
   audience is refused, and a token the platform minted for another audience is never sent.
 - **An identity provider that takes the audience from a request parameter** (Auth0) gets it when

@@ -106,19 +106,72 @@ TresorActor::~TresorActor() {
 	Stop();
 }
 
+ActorOptions ActingOptions(TresorSession &session, bool on_behalf_of, const string &scope,
+                           const string &exchange_audience, int64_t grant_wait_seconds, const string &service) {
+	auto &info = session.Info();
+	// the exchange is made as the node's own client: a client_credentials or federated login has one
+	if (session.Flow() != LoginFlow::CLIENT_CREDENTIALS && session.Flow() != LoginFlow::FEDERATED) {
+		throw InvalidInputException("tresor: acting for duckdb-acl sessions needs a service login - a SECRET of flow "
+		                            "client_credentials or federated (a managed identity is no client at the "
+		                            "identity provider: use FLOW 'federated' with ASSERTION_SOURCE "
+		                            "'azure_managed_identity')");
+	}
+	if (on_behalf_of && scope.empty()) {
+		throw InvalidInputException("tresor: EXCHANGE 'on_behalf_of' needs EXCHANGE_SCOPE (the service's "
+		                            "api://.../.default)");
+	}
+	if (info.audience_parameter && exchange_audience.empty()) {
+		// the node's own token's audience was the discovery's choice (it was asked for): it proves nothing about
+		// where users' tokens may go - the node pins that itself
+		throw InvalidInputException("tresor: %s asks for the audience parameter - a node acting for sessions pins the "
+		                            "audience users' tokens are exchanged for with EXCHANGE_AUDIENCE",
+		                            info.host);
+	}
+	ActorOptions options;
+	options.on_behalf_of = on_behalf_of;
+	options.scope = scope;
+	options.grant_wait_seconds = grant_wait_seconds;
+	options.service = service;
+	// the audience users' tokens are exchanged for is the node's to decide, not the service's: pinned by
+	// EXCHANGE_AUDIENCE, or the discovery's - only when the node's own token, which the IdP issued for this
+	// login, is meant for it too. A service (or whoever alters its discovery) never picks where tokens go
+	if (!exchange_audience.empty()) {
+		options.audience = exchange_audience;
+	} else if (!info.audience.empty() && !on_behalf_of) {
+		bool is_jwt = false;
+		auto own = session.OwnAudiences(is_jwt);
+		if (std::find(own.begin(), own.end(), info.audience) == own.end()) {
+			throw InvalidInputException("tresor: %s names the audience '%s', which the node's own token is not "
+			                            "issued for - set EXCHANGE_AUDIENCE to the audience users' tokens are "
+			                            "to be exchanged for",
+			                            info.host, info.audience);
+		}
+		options.audience = info.audience;
+	}
+	if (on_behalf_of) {
+		options.audience.clear(); // On-Behalf-Of targets its scope
+	}
+	if (options.audience.empty() && options.scope.empty()) {
+		throw InvalidInputException("tresor: %s names no audience for its issuer, and no EXCHANGE_AUDIENCE or "
+		                            "EXCHANGE_SCOPE was given - nothing to exchange a session's token for",
+		                            info.host);
+	}
+	return options;
+}
+
 void TresorActor::CheckHooks(DatabaseInstance &db) {
 	string why;
 	auto hooks = acl::AclSessionHooks::Reach(db.GetObjectCache(), why);
 	if (!hooks) {
-		throw InvalidInputException("tresor: ACT_FOR_SESSIONS cannot observe duckdb-acl's sessions: %s", why);
+		throw InvalidInputException("tresor: acting for sessions cannot observe duckdb-acl's sessions: %s", why);
 	}
 	// the registry exists on either side's first touch: only a publisher's mark says sessions are published
 	// here (ACLC 2) - without it every statement would look like the node's own work
 	string publisher;
 	if (!hooks->Publisher(publisher)) {
-		throw InvalidInputException("tresor: ACT_FOR_SESSIONS needs duckdb-acl, and nothing publishes acl sessions "
+		throw InvalidInputException("tresor: acting for sessions needs duckdb-acl, and nothing publishes acl sessions "
 		                            "in this instance (duckdb-acl not loaded, or one older than ACLC 2) - LOAD a "
-		                            "current duckdb-acl before this ATTACH");
+		                            "current duckdb-acl first");
 	}
 }
 
@@ -126,7 +179,7 @@ void TresorActor::Start(DatabaseInstance &db) {
 	string why;
 	hooks = acl::AclSessionHooks::Reach(db.GetObjectCache(), why);
 	if (!hooks) {
-		throw InvalidInputException("tresor: ACT_FOR_SESSIONS cannot observe duckdb-acl's sessions: %s", why);
+		throw InvalidInputException("tresor: acting for sessions cannot observe duckdb-acl's sessions: %s", why);
 	}
 	for (idx_t i = 0; i < WORKERS; i++) {
 		workers.emplace_back([this]() { Work(); });
@@ -272,7 +325,8 @@ string TresorActor::GrantFor(const string &acl_session, optional_ptr<ClientConte
 	while (true) {
 		auto entry = sessions.find(acl_session);
 		if (entry == sessions.end() || entry->second.closed) {
-			why = "this acl session has no delegation grant here (it opened before the ATTACH, or is over)";
+			why = "this acl session has no delegation grant here (it opened before this catalog acted for sessions, or "
+			      "is over)";
 			return string();
 		}
 		if (entry->second.state == State::FAILED) {
@@ -395,7 +449,7 @@ void TresorActor::Exchange(Job &job) {
 		                          "'s login - it cannot be exchanged here");
 		return;
 	}
-	auto exchanged = session->ExchangeForService(job.token, options.on_behalf_of, options.scope);
+	auto exchanged = session->ExchangeForService(job.token, options.on_behalf_of, options.scope, options.audience);
 	Wipe(job.token);
 	if (!exchanged.Ok()) {
 		Fail(job.acl_session, "the identity provider refused to exchange this acl session's token: " + exchanged.error);

@@ -329,6 +329,73 @@ a managed identity is none
 statement ok
 DROP SECRET mi;
 
+# --- a managed identity as an app registration's federated credential (specs/015) ------------------------------
+
+statement error
+CREATE SECRET mif (TYPE tresor, SCOPE 'tresor:x', FLOW 'federated', CLIENT_ID 'minode', ISSUER 'http://i',
+    ASSERTION_SOURCE 'github_actions', ASSERTION_AUDIENCE 'a', IDENTITY_CLIENT_ID 'uami');
+----
+IDENTITY_CLIENT_ID goes with ASSERTION_SOURCE 'azure_managed_identity'
+
+# ASSERTION_AUDIENCE defaults to Entra's federation audience; a user-assigned identity by its client id
+statement ok
+CREATE SECRET mif (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting', FLOW 'federated',
+    CLIENT_ID 'minode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_SOURCE 'azure_managed_identity',
+    IDENTITY_CLIENT_ID 'uami');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS mf (INSECURE_HTTP true, SECRET mif);
+
+query IIII
+SELECT subject, login, idp('mi_resource'), idp('mi_client_id') FROM mf.whoami();
+----
+client:minode	federated	"api://AzureADTokenExchange"	"uami"
+
+statement ok
+DETACH mf;
+
+# a client at the identity provider: it acts for acl's sessions with no secret on the node - the session's
+# token exchanged with the managed identity's token as the assertion
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS mf (INSECURE_HTTP true, SECRET mif, ACT_FOR_SESSIONS true,
+    SESSION_GRANT_WAIT 5);
+
+query I
+SELECT acl_stub_open('mi-s1', 'node-token-alice', 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', 300);
+----
+1
+
+statement ok
+SET acl_stub_session = 'mi-s1';
+
+query II
+SELECT subject, actor FROM mf.whoami();
+----
+alice	client:minode
+
+statement ok
+SET acl_stub_session = '';
+
+statement ok
+SELECT acl_stub_close('mi-s1', 'client');
+
+statement ok
+DETACH mf;
+
+# a token the platform minted for another audience is never the assertion
+statement ok
+CREATE OR REPLACE SECRET mif (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting', FLOW 'federated',
+    CLIENT_ID 'minode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_SOURCE 'azure_managed_identity',
+    IDENTITY_CLIENT_ID 'mismatch');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS mf (INSECURE_HTTP true, SECRET mif);
+----
+not meant for api://AzureADTokenExchange - not sent
+
+statement ok
+DROP SECRET mif;
+
 statement ok
 DROP SECRET mi_acting;
 
@@ -386,6 +453,48 @@ statement error
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/auth0' AS a (INSECURE_HTTP true, SECRET etl_auth0, ACT_FOR_SESSIONS true);
 ----
 pins the audience users' tokens are exchanged for with EXCHANGE_AUDIENCE
+
+# the same at the late call (specs/015); pinned, the exchange asks for that audience, while the node's own
+# token stays the discovery's
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/auth0' AS a (INSECURE_HTTP true, SECRET etl_auth0);
+
+statement error
+CALL a.act_for_sessions();
+----
+pins the audience users' tokens are exchanged for with EXCHANGE_AUDIENCE
+
+query II
+SELECT audience, changed FROM a.act_for_sessions(exchange_audience := 'duckdb-secrets', session_grant_wait := 5);
+----
+duckdb-secrets	true
+
+query I
+SELECT acl_stub_open('auth0-s1', 'node-token-alice', 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', 300);
+----
+1
+
+statement ok
+SET acl_stub_session = 'auth0-s1';
+
+query II
+SELECT subject, actor FROM a.whoami();
+----
+alice	client:etl
+
+statement ok
+SET acl_stub_session = '';
+
+query II
+SELECT idp('exchange_audience'), idp('cc_audience');
+----
+"duckdb-secrets"	"https://api.auth0.example"
+
+statement ok
+SELECT acl_stub_close('auth0-s1', 'client');
+
+statement ok
+DETACH a;
 
 statement ok
 SET tresor_keychain = 'off';

@@ -1,4 +1,5 @@
 #include "tresor_session.hpp"
+#include "tresor_login.hpp"
 #include "tresor_remember.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -186,7 +187,8 @@ ServiceResponse TresorSession::Call(const string &method, const string &path, co
 	                            info.host);
 }
 
-oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bool on_behalf_of, const string &scope) {
+oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bool on_behalf_of, const string &scope,
+                                                 const string &audience) {
 	ServiceCredential proof; // paths and ids: copied under the lock - the files are read and the IdP called outside it
 	{
 		lock_guard<mutex> guard(lock);
@@ -213,7 +215,7 @@ oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bo
 		// asked with a refresh token (specs/010): Keycloak binds the exchanged token to the user's SSO session
 		// only then, and the service's own exchange for a downstream audience (a token for the user) needs that
 		// session. The refresh token itself is dropped at once - the node never renews a user's token
-		out = oidc::TokenExchange(info.endpoints, auth, subject_token, info.audience, scope, "", true);
+		out = oidc::TokenExchange(info.endpoints, auth, subject_token, audience, scope, "", true);
 		if (!out.Ok() && out.error_code != "invalid_client" && out.error_code != "invalid_grant") {
 			// an IdP that issues no refresh token by exchange, whatever it answers (its wording and code vary, and
 			// a strict RFC 8693 answer is refused as invalid_token_type): the plain exchange. A bad client or a
@@ -221,7 +223,7 @@ oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bo
 			// single-use at the IdP (a key signs anew anyway)
 			WipeAuth(auth);
 			if (proof.Auth(auth, why)) {
-				out = oidc::TokenExchange(info.endpoints, auth, subject_token, info.audience, scope);
+				out = oidc::TokenExchange(info.endpoints, auth, subject_token, audience, scope);
 			} else {
 				out = oidc::TokenSet();
 				out.error = why;
@@ -234,6 +236,14 @@ oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bo
 	WipeAuth(auth);
 	proof.Wipe();
 	return out;
+}
+
+vector<string> TresorSession::OwnAudiences(bool &is_jwt) {
+	lock_guard<mutex> guard(lock);
+	auto token = AccessToken(false);
+	auto audiences = JwtAudiences(token, is_jwt);
+	std::fill(token.begin(), token.end(), '\0');
+	return audiences;
 }
 
 LoginKey TresorSession::Key() const {

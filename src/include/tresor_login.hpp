@@ -32,13 +32,18 @@ struct AttachRequest {
 	bool on_behalf_of = false; // EXCHANGE 'on_behalf_of' (Entra); else RFC 8693 token exchange
 	string exchange_scope;
 	string exchange_audience; // EXCHANGE_AUDIENCE: pinned on the node, not taken from the service
-	int64_t grant_wait_seconds = 10;
+	int64_t grant_wait_seconds = DEFAULT_GRANT_WAIT_SECONDS;
 	// a person's login remembered in the OS keychain (specs/012)
 	bool remember = true;
 	bool remember_given = false;
 };
 
 AttachRequest ParseAttach(const string &path, const unordered_map<string, Value> &options);
+
+//! EXCHANGE's value: true for 'on_behalf_of', false for 'token_exchange'; anything else is refused.
+bool ParseExchange(const string &value);
+//! SESSION_GRANT_WAIT, checked: 0 to 600 seconds.
+int64_t ParseGrantWait(int64_t seconds);
 
 //! Is `host` (host[:port][/base]) a loopback name: 127.0.0.1, ::1, localhost.
 bool IsLoopbackHost(const string &host);
