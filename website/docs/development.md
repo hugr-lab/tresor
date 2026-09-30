@@ -23,7 +23,7 @@ scripts/ci/test_keycloak.sh                 # the reference server + Keycloak (d
 duckdb-secrets service and identity provider on a loopback port), passes the port to the tests as
 `TRESOR_TEST_PORT`, and sets `BROWSER` to a script that plays the person's browser.
 
-tresor is built `DONT_LINK`: the test shell does not contain it, so a test can prove that an
+tresor is never statically linked: the test shell does not contain it, so a test can prove that an
 `ATTACH 'tresor:…'` loads the installed extension by itself. Tests load it by build path
 (`LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension'`) or install it from the
 build's local repository.

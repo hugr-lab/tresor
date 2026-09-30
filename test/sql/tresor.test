@@ -2,7 +2,7 @@
 # description: The extension loads, and the tresor ATTACH type is registered (specs/001)
 # group: [sql]
 
-# a DONT_LINK loadable is invisible to `require` - loaded by build path, the runner's pattern
+# a loadable that is not linked is invisible to `require` - loaded by build path, the runner's pattern
 statement ok
 LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
 

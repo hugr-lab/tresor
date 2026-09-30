@@ -64,7 +64,8 @@ find src \( -name '*.cpp' -o -name '*.hpp' \) | xargs clang-format -i      # pin
 cd website && npm ci && npx docusaurus build                               # docs (onBrokenLinks: throw)
 ```
 
-**Test-runner rules.** tresor is `DONT_LINK`, on purpose: the test shell must not contain it, or no
+**Test-runner rules.** tresor is never statically linked (duckdb links only what
+`duckdb_extension_statically_link()` names), on purpose: the test shell must not contain it, or no
 test could prove that `ATTACH 'tresor:…'` loads the installed extension. So `require tresor` does not
 work — load by build path (`LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension'`), or
 `INSTALL tresor FROM '__BUILD_DIRECTORY__/repository'` into `SET extension_directories = [...]`
@@ -76,7 +77,7 @@ distribution build never compiles it; tresor itself does not depend on it. Witho
 skips (`require httpfs`), which CI forbids. The same flag links **acl_stub**
 (`test/extension/acl_stub`, specs/008): duckdb-acl's side of `acl_connection.hpp` (`acl_stub_open`,
 `acl_stub_close`, `SET acl_stub_session`) for the actor tests. Real duckdb-acl: `scripts/ci/acl_checkout.sh
-_acl`, then build with `TRESOR_TEST_ACL_DIR=$PWD/_acl ACL_NO_FLIGHT=1 ACL_NO_QUACK_EMBED=1` (acl `DONT_LINK`,
+_acl`, then build with `TRESOR_TEST_ACL_DIR=$PWD/_acl ACL_NO_FLIGHT=1 ACL_NO_QUACK_EMBED=1` (acl not linked,
 lean, against our duckdb); `test_keycloak.sh` then also runs `test/acl/actor.sql`. CI does both. Tests that need a service
 `require-env TRESOR_TEST_PORT` and run through `scripts/ci/test_attach.sh` (the fake speaks http on
 loopback, so they ATTACH with `INSECURE_HTTP true`; `BROWSER` is the fake browser).
