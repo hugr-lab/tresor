@@ -66,6 +66,8 @@ SELECT acl_session_sql(handle, 'SELECT ''check:session-lake '' || name FROM c.la
 SELECT acl_session_sql(handle, 'SELECT ''check:acl-never '' || changed FROM node.act_for_sessions()') || ';' FROM h;
 .output
 .read @WORK@/under_session.sql
+-- `of true`: the audit is visible here at all - the session's lookups in `owner` (which does not act) were
+-- denied and logged; without any row the zero would prove nothing
 SELECT 'check:never-reached-tresor ' || count(*) FILTER (detail = 'act_for_sessions') || ' of '
     || (count(*) > 0) FROM duckdb_logs_parsed('tresor') WHERE outcome = 'denied';
 SELECT 'check:closed ' || acl_session_close(handle) FROM h;
