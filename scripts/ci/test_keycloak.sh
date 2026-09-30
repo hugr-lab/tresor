@@ -6,6 +6,15 @@
 # test/keycloak/browser.py. Needs docker and go.
 #
 #   scripts/ci/test_keycloak.sh [unittest binary]      # KEEP_KEYCLOAK=1 leaves Keycloak running
+#
+# Another duckdb-secrets/1 service under the same tests (tresor-server's CI):
+#   TRESOR_SERVER_CMD     a shell command that starts it in the foreground, instead of building ref-server;
+#                         it runs with TRESOR_TEST_SERVER_CONFIG (the config, on this run's ports),
+#                         KEYCLOAK_PORT, TRESOR_SERVER_PORT and TRESOR_EXCHANGE_SECRET in its environment
+#   TRESOR_SERVER_CONFIG  the config it is given (default server/testdata/keycloak/server.yaml);
+#                         127.0.0.1:18480 and 127.0.0.1:18443 in it become this run's ports
+# The duckdb-acl part reads the server's log: request lines as ref-server writes them (slog text,
+# `method=POST path=/v1/delegations status=201`).
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 unittest="${1:-$root/build/release/test/unittest}"
@@ -40,13 +49,22 @@ curl -sf "$issuer/.well-known/openid-configuration" >/dev/null || {
 	exit 1
 }
 
-echo "test_keycloak: building and starting ref-server"
-(cd "$root/server" && GOWORK=off go build -o "$work/ref-server" ./cmd/ref-server)
 # the test config, on the ports of this run
 sed -e "s/127.0.0.1:18480/127.0.0.1:$kc_port/g" -e "s/127.0.0.1:18443/127.0.0.1:$server_port/g" \
-	"$root/server/testdata/keycloak/server.yaml" >"$work/server.yaml"
+	"${TRESOR_SERVER_CONFIG:-$root/server/testdata/keycloak/server.yaml}" >"$work/server.yaml"
 # the service's exchange client secret (specs/010): from the environment, as the config names it
-TRESOR_EXCHANGE_SECRET=svc-secret "$work/ref-server" -config "$work/server.yaml" >"$work/server.log" 2>&1 &
+if [ -n "${TRESOR_SERVER_CMD:-}" ]; then
+	server_name="the service under test"
+	echo "test_keycloak: starting $server_name"
+	# exec: the pid is the server's own, for the checks and the cleanup
+	TRESOR_TEST_SERVER_CONFIG="$work/server.yaml" KEYCLOAK_PORT="$kc_port" TRESOR_SERVER_PORT="$server_port" \
+		TRESOR_EXCHANGE_SECRET=svc-secret bash -c "exec $TRESOR_SERVER_CMD" >"$work/server.log" 2>&1 &
+else
+	server_name="ref-server"
+	echo "test_keycloak: building and starting ref-server"
+	(cd "$root/server" && GOWORK=off go build -o "$work/ref-server" ./cmd/ref-server)
+	TRESOR_EXCHANGE_SECRET=svc-secret "$work/ref-server" -config "$work/server.yaml" >"$work/server.log" 2>&1 &
+fi
 server_pid=$!
 # a downstream http API that answers whom a bearer token was minted for (specs/010)
 python3 "$root/test/keycloak/echo.py" --port-file "$work/echo.port" &
@@ -56,7 +74,7 @@ export TRESOR_KC_ECHO="127.0.0.1:$(cat "$work/echo.port")"
 for _ in $(seq 50); do curl -sf "http://127.0.0.1:$server_port/.well-known/duckdb-secrets" >/dev/null && break; sleep 0.2; done
 if ! kill -0 "$server_pid" 2>/dev/null || ! curl -sf "http://127.0.0.1:$server_port/.well-known/duckdb-secrets" >/dev/null; then
 	cat "$work/server.log" >&2
-	echo "test_keycloak: ref-server did not come up" >&2
+	echo "test_keycloak: $server_name did not come up" >&2
 	exit 1
 fi
 
@@ -269,7 +287,7 @@ else
 fi
 "$unittest" --skip-error-messages '' 'test/sql/conformance/*' || status=1
 if [ "$status" != 0 ]; then
-	echo "--- ref-server log ---" >&2
+	echo "--- $server_name log ---" >&2
 	cat "$work/server.log" >&2
 fi
 exit "$status"
