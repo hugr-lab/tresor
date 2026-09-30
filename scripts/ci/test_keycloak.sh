@@ -206,6 +206,7 @@ if [ -n "${TRESOR_ACL_EXTENSION:-}" ]; then
 		'^check:opened true$'
 		'^check:session [0-9a-f-]{36}\|client:acl-node$'
 		'^check:session-lake acl_lake$'
+		'^check:never-reached-tresor 0 of true$'
 		'^check:closed true$'
 		'^check:admin-made 1$'
 		'^check:admin-granted role:analysts$'
@@ -218,6 +219,11 @@ if [ -n "${TRESOR_ACL_EXTENSION:-}" ]; then
 	for check in "${checks[@]}"; do
 		grep -Eq "$check" "$work/acl.log" || { echo "test_keycloak: acl: no line matching $check" >&2; acl_ok=0; }
 	done
+	# act_for_sessions() under a session: refused by duckdb-acl's never set, so no row came back
+	if grep -q '^check:acl-never' "$work/acl.log"; then
+		echo "test_keycloak: acl: act_for_sessions() ran under an acl session" >&2
+		acl_ok=0
+	fi
 	grep -q 'method=POST path=/v1/delegations status=201' "$work/acl_server.log" || {
 		echo "test_keycloak: acl: no grant was made" >&2
 		acl_ok=0
@@ -228,7 +234,8 @@ if [ -n "${TRESOR_ACL_EXTENSION:-}" ]; then
 	}
 	if [ "$acl_ok" = 1 ]; then
 		echo "test_keycloak: with duckdb-acl, a session's statements ran as its user, and its grant was revoked;" \
-			"an admin managed secrets through the node, a user who is none could not"
+			"an admin managed secrets through the node, a user who is none could not;" \
+			"act_for_sessions() under a session stopped by acl's never set"
 	else
 		# the checks and the errors only, and never a token (even a cut-off one) or a session handle: an error
 		# may quote a statement with alice's token or the handle in it

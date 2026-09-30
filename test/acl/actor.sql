@@ -50,14 +50,26 @@ ACL ADMIN GRANT CATALOG c TO ROLE secrets_admin WITH (select, secrets) MAIN;
 SELECT 'check:node ' || subject || '|' || coalesce(actor, 'NULL') FROM node.whoami();
 SELECT 'check:node-lake ' || count(*) FROM which_secret('https://acl-lake.example/x', 'http') WHERE storage = 'node';
 
+-- tresor's own refusals of act_for_sessions() are audited (specs/015): none may be reached from a session
+SET tresor_audit_level = 'denied';
+CALL enable_logging('tresor', storage := 'memory');
+-- the CLI warns once that logging moved, and its colour codes lead the next line: this one, not a check
+SELECT 'logging to memory';
+
 -- alice's session: tresor's observer exchanges her token and obtains the grant
 CREATE TABLE h AS SELECT acl_session_open('@TOKEN@') AS handle;
 SELECT 'check:opened ' || (handle IS NOT NULL) FROM h;
 .output @WORK@/under_session.sql
 SELECT acl_session_sql(handle, 'SELECT ''check:session '' || subject || ''|'' || actor FROM c.me()') || ';' FROM h;
 SELECT acl_session_sql(handle, 'SELECT ''check:session-lake '' || name FROM c.lake()') || ';' FROM h;
+-- the switch is acl's never set (acl spec 092): refused by acl before tresor sees it
+SELECT acl_session_sql(handle, 'SELECT ''check:acl-never '' || changed FROM node.act_for_sessions()') || ';' FROM h;
 .output
 .read @WORK@/under_session.sql
+-- `of true`: the audit is visible here at all - the session's lookups in `owner` (which does not act) were
+-- denied and logged; without any row the zero would prove nothing
+SELECT 'check:never-reached-tresor ' || count(*) FILTER (detail = 'act_for_sessions') || ' of '
+    || (count(*) > 0) FROM duckdb_logs_parsed('tresor') WHERE outcome = 'denied';
 SELECT 'check:closed ' || acl_session_close(handle) FROM h;
 
 -- bob's session: the only tresor catalog is taken (the owner's attachment goes first), the service lets him
