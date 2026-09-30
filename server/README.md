@@ -6,7 +6,7 @@ anyone writing a service. It is not meant for production.
 
 ```bash
 go build -o ref-server ./cmd/ref-server
-./ref-server -config server.yaml        # the config is described in website/docs/reference-server.md
+./ref-server -config server.yaml           # the config is described in website/docs/reference-server.md
 go test ./...                              # token verification, every route, the encrypted store
 docker compose -p tresor-kc up -d          # Keycloak with the test realm (testdata/keycloak), 127.0.0.1:18480
 ```

@@ -47,6 +47,10 @@ var (
 	ErrPrecondition = errors.New("precondition failed")
 )
 
+// sealAAD binds the file to this format. It keeps the binary's former name: a file written before the
+// rename to ref-server still opens.
+const sealAAD = "tresor-server/1"
+
 // Store is safe for concurrent use.
 type Store struct {
 	mu      sync.Mutex
@@ -87,8 +91,7 @@ func Open(path string, key []byte) (*Store, error) {
 	if len(sealed) < n {
 		return nil, errors.New("store: the file is truncated")
 	}
-	// the AAD keeps the binary's former name: a file written before the rename still opens
-	plain, err := s.aead.Open(nil, sealed[:n], sealed[n:], []byte("tresor-server/1"))
+	plain, err := s.aead.Open(nil, sealed[:n], sealed[n:], []byte(sealAAD))
 	if err != nil {
 		return nil, errors.New("store: the file does not decrypt with this key - refusing to start")
 	}
@@ -119,7 +122,7 @@ func (s *Store) persist() error {
 	if _, err := rand.Read(nonce); err != nil {
 		return err
 	}
-	sealed := s.aead.Seal(nonce, nonce, plain, []byte("tresor-server/1"))
+	sealed := s.aead.Seal(nonce, nonce, plain, []byte(sealAAD))
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return err
 	}
