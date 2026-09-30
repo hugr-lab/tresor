@@ -46,7 +46,7 @@ Against the new pin:
 - `test/sql/*` passes;
 - `test_attach.sh` passes (the fake service, no skips);
 - `test_keycloak.sh` passes: conformance, the reference server's tests and private_key_jwt. In CI its
-  duckdb-acl part runs against duckdb-acl #169's head (70fcc1c, duckdb a2af0a7).
+  duckdb-acl part runs against duckdb-acl a5a6e14 (#169, spec 091, duckdb a2af0a7).
 - `test/sql/logoff_options.test` (new) pins what the typed kwargs keep:
   - NULL is refused;
   - names match in any case;
@@ -55,4 +55,4 @@ Against the new pin:
 
 ## Follow-ups
 
-- `ACL_COMMIT` moves from #169's head to its merge commit on duckdb-acl main.
+- `ACL_COMMIT` is a5a6e14, duckdb-acl main with #169 (spec 091).
