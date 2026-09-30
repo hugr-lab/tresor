@@ -106,7 +106,9 @@ it too, when the discovery's `audience_parameter` was on. Now:
   - Auth0's `audience_parameter`: the late call refuses without `EXCHANGE_AUDIENCE`; pinned, the
     exchange asks for the pinned audience while the node's own token was asked for the discovery's.
 - `test/acl/actor.sql` against real duckdb-acl: the node bootstraps this way (attached before `LOAD
-  acl`, then `node.act_for_sessions()`).
+  acl`, then `node.act_for_sessions()`). Under a session the call is stopped by acl's never set (acl
+  spec 092, `ACL_COMMIT` a97c283): no row comes back, and tresor's audit shows no refusal of its own -
+  it never saw the call.
 
 ## Alternatives considered
 
