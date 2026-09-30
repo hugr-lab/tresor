@@ -297,5 +297,5 @@ scripts/dev/entra_live.sh
 | the service answers 401, "aud … does not contain" | a v1 token, or the audience configured as the URI | set the API's token version to 2; the server's `audience` is the API's client id |
 | "from another issuer" / "issuer … is not configured" | a v1 token (`sts.windows.net`) | token version 2 on the API (and on the node's API, for On-Behalf-Of) |
 | a node is treated as a person (no `client:` principal) | no `idtyp` claim | add the optional claim `idtyp` to the API's access tokens |
-| a managed identity: "names the audience '<guid>', but the managed identity's secret is for 'api://…'" | `AUDIENCE` is the Application ID URI | `AUDIENCE` is the API's client id, as the service's audience |
+| a managed identity: `names the audience '<client id>', but the managed identity's secret is for 'api://…'` | `AUDIENCE` is the Application ID URI | `AUDIENCE` is the API's client id, as the service's audience |
 | a person's groups are missing | the groups overage (over 200 groups) | grant through app roles |
