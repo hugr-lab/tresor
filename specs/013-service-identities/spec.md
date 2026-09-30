@@ -233,6 +233,15 @@ With the permission added and admin consent granted, both node logins read
 `role:nodes, client:<node client id>`. It was tenant configuration, not tresor; the Entra page's
 troubleshooting table now has the row.
 
+**A person without duckdb-acl, with real secrets** (the same day, the script extended). The
+person held `secrets_admin` and `analysts` as app roles; whoami read
+`role:analysts, role:secrets_admin` and `can_create *`. As the administrator the person created
+`entra_live`, whose permissions were `annotate, delete, grant, update` and no `use`: DuckDB's
+lookup did not find it. After `grant_secret` to `role:analysts` and `role:nodes` it listed `use`
+and was found; after `revoke_secret` from `role:analysts` it was not. Both node logins then found
+it through `role:nodes`. The portal assigns one role per assignment, and at one point offered no
+role to pick; Microsoft Graph (`appRoleAssignedTo`) assigned them - the Entra page shows the call.
+
 ## Follow-ups
 
 - `ASSERTION_SOURCE 'azure_managed_identity'`: a managed identity as the federated credential of an
