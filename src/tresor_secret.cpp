@@ -27,8 +27,9 @@ const FlowRule &RuleOf(const string &flow) {
 	static const FlowRule client_credentials {{"client_id", "issuer"},
 	                                          {{"client_secret", "private_key_file"}},
 	                                          {"oauth_scope", "key_id", "certificate_file"}};
-	static const FlowRule federated {
-	    {"client_id", "issuer"}, {{"assertion_file", "assertion_source"}}, {"oauth_scope", "assertion_audience"}};
+	static const FlowRule federated {{"client_id", "issuer"},
+	                                 {{"assertion_file", "assertion_source"}},
+	                                 {"oauth_scope", "assertion_audience", "identity_client_id"}};
 	static const FlowRule managed_identity {{"issuer", "audience"}, {}, {"client_id"}};
 	static const FlowRule token {{"token"}, {}, {}};
 	if (flow == "client_credentials") {
@@ -96,12 +97,18 @@ unique_ptr<BaseSecret> CreateTresorSecret(ClientContext &context, CreateSecretIn
 	if ((given("key_id") || given("certificate_file")) && !given("private_key_file")) {
 		throw InvalidInputException("tresor secret: KEY_ID and CERTIFICATE_FILE go with PRIVATE_KEY_FILE");
 	}
+	auto source = StringUtil::Lower(value("assertion_source"));
+	if (given("identity_client_id") && source != "azure_managed_identity") {
+		throw InvalidInputException("tresor secret: IDENTITY_CLIENT_ID goes with ASSERTION_SOURCE "
+		                            "'azure_managed_identity'");
+	}
 	if (given("assertion_source")) {
-		if (StringUtil::Lower(value("assertion_source")) != "github_actions") {
-			throw InvalidInputException("tresor secret: ASSERTION_SOURCE is 'github_actions', not '%s'",
-			                            value("assertion_source"));
+		if (source != "github_actions" && source != "azure_managed_identity") {
+			throw InvalidInputException(
+			    "tresor secret: ASSERTION_SOURCE is 'github_actions' or 'azure_managed_identity', not '%s'",
+			    value("assertion_source"));
 		}
-		if (!given("assertion_audience")) {
+		if (source == "github_actions" && !given("assertion_audience")) {
 			throw InvalidInputException("tresor secret: ASSERTION_SOURCE 'github_actions' needs ASSERTION_AUDIENCE "
 			                            "(what the identity provider's federation expects, e.g. "
 			                            "api://AzureADTokenExchange)");
@@ -186,9 +193,9 @@ void RegisterTresorSecret(ExtensionLoader &loader) {
 	function.secret_type = "tresor";
 	function.provider = Identifier("config");
 	function.function = CreateTresorSecret;
-	for (auto name :
-	     {"flow", "client_id", "client_secret", "token", "oauth_scope", "issuer", "private_key_file", "key_id",
-	      "certificate_file", "assertion_file", "assertion_source", "assertion_audience", "audience"}) {
+	for (auto name : {"flow", "client_id", "client_secret", "token", "oauth_scope", "issuer", "private_key_file",
+	                  "key_id", "certificate_file", "assertion_file", "assertion_source", "assertion_audience",
+	                  "identity_client_id", "audience"}) {
 		function.named_parameters[name] = LogicalType::VARCHAR;
 	}
 	loader.RegisterFunction(function);

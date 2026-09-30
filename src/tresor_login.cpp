@@ -482,12 +482,7 @@ AttachRequest ParseAttach(const string &path, const unordered_map<string, Value>
 			request.act_for_sessions = BooleanValue::Get(value.DefaultCastAs(LogicalType::BOOLEAN));
 		} else if (key == "exchange") {
 			actor_option_given = true;
-			auto kind = StringUtil::Lower(value.ToString());
-			if (kind != "token_exchange" && kind != "on_behalf_of") {
-				throw InvalidInputException("tresor: EXCHANGE is 'token_exchange' or 'on_behalf_of', not '%s'",
-				                            value.ToString());
-			}
-			request.on_behalf_of = kind == "on_behalf_of";
+			request.on_behalf_of = ParseExchange(value.ToString());
 		} else if (key == "exchange_scope") {
 			actor_option_given = true;
 			request.exchange_scope = value.ToString();
@@ -496,10 +491,7 @@ AttachRequest ParseAttach(const string &path, const unordered_map<string, Value>
 			request.exchange_audience = value.ToString();
 		} else if (key == "session_grant_wait") {
 			actor_option_given = true;
-			request.grant_wait_seconds = BigIntValue::Get(value.DefaultCastAs(LogicalType::BIGINT));
-			if (request.grant_wait_seconds < 0 || request.grant_wait_seconds > 600) {
-				throw InvalidInputException("tresor: SESSION_GRANT_WAIT is 0 to 600 seconds");
-			}
+			request.grant_wait_seconds = ParseGrantWait(BigIntValue::Get(value.DefaultCastAs(LogicalType::BIGINT)));
 		} else {
 			throw InvalidInputException(
 			    "tresor: unknown ATTACH option '%s' (known: LOGIN, ISSUER, SECRET, "
@@ -601,6 +593,21 @@ vector<string> JwtAudiences(const string &token, bool &is_jwt) {
 	return out;
 }
 
+bool ParseExchange(const string &value) {
+	auto kind = StringUtil::Lower(value);
+	if (kind != "token_exchange" && kind != "on_behalf_of") {
+		throw InvalidInputException("tresor: EXCHANGE is 'token_exchange' or 'on_behalf_of', not '%s'", value);
+	}
+	return kind == "on_behalf_of";
+}
+
+int64_t ParseGrantWait(int64_t seconds) {
+	if (seconds < 0 || seconds > 600) {
+		throw InvalidInputException("tresor: SESSION_GRANT_WAIT is 0 to 600 seconds");
+	}
+	return seconds;
+}
+
 shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &request) {
 	ServiceInfo info;
 	info.host = request.host;
@@ -618,7 +625,8 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 		throw InvalidInputException(
 		    secret_flow == "managed_identity"
 		        ? "tresor: ACT_FOR_SESSIONS needs a client at the identity provider to exchange tokens as - a "
-		          "managed identity is none (use FLOW 'client_credentials' with a key, or 'federated')"
+		          "managed identity is none (use FLOW 'federated' with ASSERTION_SOURCE 'azure_managed_identity', "
+		          "or 'client_credentials' with a key)"
 		        : "tresor: ACT_FOR_SESSIONS needs a service login - a SECRET of flow client_credentials or federated");
 	}
 	if (service_secret && request.remember_given && request.remember) {
@@ -683,8 +691,19 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 				flow = LoginFlow::FEDERATED;
 				credential.assertion_file = SecretString(*service_secret, "assertion_file");
 				credential.assertion_audience = SecretString(*service_secret, "assertion_audience");
-				credential.kind = credential.assertion_file.empty() ? ServiceCredential::Kind::GITHUB_ACTIONS
-				                                                    : ServiceCredential::Kind::ASSERTION_FILE;
+				auto source = StringUtil::Lower(SecretString(*service_secret, "assertion_source"));
+				if (!credential.assertion_file.empty()) {
+					credential.kind = ServiceCredential::Kind::ASSERTION_FILE;
+				} else if (source == "azure_managed_identity") {
+					// the platform's identity as the app registration's federated credential (specs/015)
+					credential.kind = ServiceCredential::Kind::AZURE_MANAGED_IDENTITY_ASSERTION;
+					credential.identity_client_id = SecretString(*service_secret, "identity_client_id");
+					if (credential.assertion_audience.empty()) {
+						credential.assertion_audience = "api://AzureADTokenExchange";
+					}
+				} else {
+					credential.kind = ServiceCredential::Kind::GITHUB_ACTIONS;
+				}
 				listed = "federated";
 			} else {
 				flow = LoginFlow::CLIENT_CREDENTIALS;
@@ -757,43 +776,6 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 		}
 	}
 
-	if (request.act_for_sessions && info.audience_parameter && request.exchange_audience.empty()) {
-		// the node's own token's audience was the discovery's choice (it was asked for): it proves nothing about
-		// where users' tokens may go - the node pins that itself
-		throw InvalidInputException("tresor: %s asks for the audience parameter - a node acting for sessions pins the "
-		                            "audience users' tokens are exchanged for with EXCHANGE_AUDIENCE",
-		                            request.host);
-	}
-	if (request.act_for_sessions) {
-		// the exchange is made as the node's own client: a client_credentials or federated login has one
-		if (flow != LoginFlow::CLIENT_CREDENTIALS && flow != LoginFlow::FEDERATED) {
-			throw InvalidInputException("tresor: ACT_FOR_SESSIONS needs a service login - a SECRET of flow "
-			                            "client_credentials or federated");
-		}
-		// the audience users' tokens are exchanged for is the node's to decide, not the service's: pinned by
-		// EXCHANGE_AUDIENCE, or the discovery's - only when the node's own token, which the IdP issued for this
-		// login, is meant for it too. A service (or whoever alters its discovery) never picks where tokens go
-		if (!request.exchange_audience.empty()) {
-			info.audience = request.exchange_audience;
-		} else if (!info.audience.empty() && !request.on_behalf_of) {
-			bool is_jwt = false;
-			auto own = JwtAudiences(tokens.access_token, is_jwt);
-			if (std::find(own.begin(), own.end(), info.audience) == own.end()) {
-				throw InvalidInputException("tresor: %s names the audience '%s', which the node's own token is not "
-				                            "issued for - set EXCHANGE_AUDIENCE to the audience users' tokens are "
-				                            "to be exchanged for",
-				                            request.host, info.audience);
-			}
-		}
-		if (request.on_behalf_of) {
-			info.audience.clear(); // On-Behalf-Of targets its scope
-		}
-		if (info.audience.empty() && request.exchange_scope.empty()) {
-			throw InvalidInputException("tresor: %s names no audience for its issuer, and no EXCHANGE_AUDIENCE or "
-			                            "EXCHANGE_SCOPE was given - nothing to exchange a session's token for",
-			                            request.host);
-		}
-	}
 	auto session = make_shared_ptr<TresorSession>(std::move(info), flow, std::move(tokens), std::move(credential));
 	// the login is proven only when the service accepts it: fail closed at ATTACH, not at first use
 	auto whoami = session->Call("GET", "/v1/whoami");

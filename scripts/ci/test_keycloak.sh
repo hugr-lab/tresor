@@ -200,6 +200,7 @@ if [ -n "${TRESOR_ACL_EXTENSION:-}" ]; then
 	[ -n "${TRESOR_ACL_DEBUG:-}" ] && cp "$work/acl_server.log" "$TRESOR_ACL_DEBUG.server"
 	checks=(
 		'^check:refused-before-acl 0$'
+		'^check:acting true$'
 		'^check:node [0-9a-f-]{36}\|NULL$'
 		'^check:node-lake 1$'
 		'^check:opened true$'

@@ -433,6 +433,15 @@ void TresorSecretStorage::Activate(shared_ptr<TresorSession> session_p, vector<D
 	acl_views.clear();
 }
 
+void TresorSecretStorage::SetActor(const TresorSession &which, shared_ptr<TresorActor> actor_p) {
+	lock_guard<mutex> guard(lock);
+	if (session.get() != &which) {
+		return;
+	}
+	actor = std::move(actor_p);
+	acl_views.clear(); // a session's statements were refused until now; nothing of that is kept
+}
+
 void TresorSecretStorage::Deactivate(const TresorSession &which) {
 	lock_guard<mutex> guard(lock);
 	if (session.get() != &which) {

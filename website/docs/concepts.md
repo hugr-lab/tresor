@@ -82,6 +82,22 @@ ATTACH 'tresor:secrets.example' AS corp (SECRET node, ACT_FOR_SESSIONS true);
 
 Load duckdb-acl before this ATTACH: `ACT_FOR_SESSIONS` is refused where nothing publishes acl sessions.
 
+A node that installs duckdb-acl from a repository whose secret the service holds attaches tresor
+first, and turns acting on once acl is loaded, with no re-attach:
+
+```sql
+ATTACH 'tresor:secrets.example' AS corp (SECRET node);   -- the repository's secret is in the lookup now
+INSTALL acl FROM '…'; LOAD acl;
+CALL corp.act_for_sessions();   -- the options below, in lowercase: exchange := 'on_behalf_of', …
+```
+
+- `act_for_sessions()` makes the same checks as `ACT_FOR_SESSIONS`, at the call.
+- It is one way: DETACH ends it.
+- It is idempotent: the same options again change nothing (`changed = false`), and other options are
+  refused.
+- It is refused under an acl session.
+- A session opened before it gets no grant: it ends, and the next one does.
+
 When a user's acl session opens, tresor:
 1. exchanges the session's token at the identity provider for one meant for the service;
 2. trades that token for a delegation grant;

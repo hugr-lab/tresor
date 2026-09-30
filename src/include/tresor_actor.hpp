@@ -45,6 +45,12 @@ struct ActorOptions {
 	weak_ptr<TresorAudit> audit; // the instance's (specs/011)
 };
 
+//! Acting for duckdb-acl's sessions as this login (specs/008, 015), checked the same at ATTACH's
+//! ACT_FOR_SESSIONS and at act_for_sessions(): a client at the IdP, and an exchange audience the node pins
+//! (never the service's alone). Throws when this login cannot act. `service` is the catalog's name.
+ActorOptions ActingOptions(TresorSession &session, bool on_behalf_of, const string &scope,
+                           const string &exchange_audience, int64_t grant_wait_seconds, const string &service);
+
 //! Whom a service call made for a statement goes as: the node, or an acl session through its grant,
 //! or nobody (refused, with the reason). Resolved per statement (TresorSecretStorage::CallerFor).
 struct Caller {
@@ -74,7 +80,12 @@ public:
 	TresorActor(shared_ptr<TresorSession> session, ActorOptions options);
 	~TresorActor();
 
-	//! Check acl's hooks (a registry stamped with another acl_connection version is refused) - at ATTACH.
+	//! What it acts with (fixed for its life).
+	const ActorOptions &Options() const {
+		return options;
+	}
+	//! Check acl's hooks (a registry stamped with another acl_connection version is refused): refused unless
+	//! duckdb-acl publishes its sessions here (ACLC 2).
 	static void CheckHooks(DatabaseInstance &db);
 	//! Register as an observer of acl's sessions, start the workers.
 	void Start(DatabaseInstance &db);

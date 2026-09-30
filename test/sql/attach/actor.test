@@ -247,7 +247,7 @@ SET acl_stub_session = 'never-opened';
 statement error
 SELECT * FROM corp.whoami();
 ----
-opened before the ATTACH
+opened before this catalog acted for sessions
 
 statement ok
 SET acl_stub_session = '';

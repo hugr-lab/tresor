@@ -12,8 +12,6 @@ CREATE SECRET node_early (TYPE tresor, SCOPE 'tresor:early', FLOW 'client_creden
 SELECT 'check:before-acl ' || count(*) FROM duckdb_databases() WHERE database_name = 'early';
 ATTACH 'tresor:@HOST@' AS early (INSECURE_HTTP true, SECRET node_early, ACT_FOR_SESSIONS true);
 SELECT 'check:refused-before-acl ' || count(*) FROM duckdb_databases() WHERE database_name = 'early';
-LOAD '@ACL_EXTENSION@';
-
 -- an admin (the etl service) stores what the node serves, and grants it to the node's role (specs/009)
 CREATE SECRET etl (TYPE tresor, SCOPE 'tresor:@HOST@', FLOW 'client_credentials', CLIENT_ID 'etl',
     CLIENT_SECRET 'etl-secret', ISSUER '@ISSUER@');
@@ -21,14 +19,19 @@ ATTACH 'tresor:@HOST@' AS owner (INSECURE_HTTP true, SECRET etl);
 CREATE OR REPLACE PERSISTENT SECRET acl_lake IN owner (TYPE http, SCOPE 'https://acl-lake.example', BEARER_TOKEN 'x');
 CALL owner.grant_secret('acl_lake', 'role:nodes', ['use']);
 
+-- the node's bootstrap (specs/015): tresor attached before acl - its secrets are what acl is installed with
+CREATE SECRET node (TYPE tresor, SCOPE 'tresor:elsewhere', FLOW 'client_credentials', CLIENT_ID 'acl-node',
+    CLIENT_SECRET 'node-secret', ISSUER '@ISSUER@');
+ATTACH 'tresor:@HOST@' AS node (INSECURE_HTTP true, SECRET node);
+LOAD '@ACL_EXTENSION@';
+
 -- the node: acl trusts Keycloak's tokens for acl-node; tresor acts for acl's sessions
 ATTACH ':memory:' AS store;
 SELECT acl_use_db('store', 'acl', true) AS ok;
 SET GLOBAL acl_allow_anonymous_admin = true;
 SELECT acl_define_issuer('@ISSUER@', '@JWKS@', 'acl-node', 'RS256', 'realm_access.roles', '{}') AS ok;
-CREATE SECRET node (TYPE tresor, SCOPE 'tresor:elsewhere', FLOW 'client_credentials', CLIENT_ID 'acl-node',
-    CLIENT_SECRET 'node-secret', ISSUER '@ISSUER@');
-ATTACH 'tresor:@HOST@' AS node (INSECURE_HTTP true, SECRET node, ACT_FOR_SESSIONS true);
+-- acl is loaded: the attached catalog acts for its sessions from now on, no re-attach
+SELECT 'check:acting ' || changed FROM node.act_for_sessions();
 
 -- what a session's user may call: acl's virtual functions over tresor's
 ACL ADMIN CREATE ROLE analysts;

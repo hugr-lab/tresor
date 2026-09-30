@@ -161,6 +161,7 @@ KEY_CLIENTS = {"keynode": "keynode.pub", "eckeynode": "eckeynode.pub"}
 # federated tokens the fake's "federation" trusts: JWT-shaped, as a platform's are (tresor sends nothing else)
 FEDERATED = {"fednode": {"eyJhbGciOiJub25lIn0.eyJzdWIiOiJmZWRub2RlIn0.c2ln", "eyJhbGciOiJub25lIn0.eyJzdWIiOiJmZWRub2RlMiJ9.c2ln", "github-jwt"}}
 SEEN_JTI = set()
+MI_ASSERTIONS = set()  # specs/015: tokens /msi/token issued for api://AzureADTokenExchange
 
 
 def b64url_decode(text):
@@ -224,6 +225,8 @@ def client_ok(form, token_endpoint):
         if form.get("client_assertion_type") != "urn:ietf:params:oauth:client-assertion-type:jwt-bearer":
             return False
         IDP_STATS["assertions"] += 1
+        if client == "minode":  # specs/015: a managed identity's token as the federated credential
+            return assertion in MI_ASSERTIONS
         if client in FEDERATED:
             IDP_STATS["last_federated"] = assertion  # a test token, not a credential: the rotation is read here
             return assertion in FEDERATED[client]
@@ -371,8 +374,11 @@ class Handler(BaseHTTPRequestHandler):
             resource = query.get("resource", "")
             with LOCK:
                 IDP_STATS["mi_resource"] = resource
+                IDP_STATS["mi_client_id"] = query.get("client_id", "")
                 # a user-assigned identity called "mismatch" gets a token for another audience: never sent on
                 token = jwt_shaped("other" if query.get("client_id") == "mismatch" else resource)
+                if resource == "api://AzureADTokenExchange":
+                    MI_ASSERTIONS.add(token)  # specs/015: what the IdP takes as minode's client assertion
                 TOKENS[token] = {"identity": service_identity("mi"), "uses": 0, "renewed": False}
             self.send(200, {"access_token": token, "expires_in": "300", "resource": resource})
             return

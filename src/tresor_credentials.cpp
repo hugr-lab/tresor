@@ -169,6 +169,28 @@ bool ServiceCredential::Auth(oidc::ClientAuth &auth, string &why) const {
 		auth.assertion = std::move(token.access_token);
 		return true;
 	}
+	case Kind::AZURE_MANAGED_IDENTITY_ASSERTION: {
+		// the platform's token for the federation's audience is the app registration's client assertion
+		// (specs/015) - asked for every time (the platform caches and rotates it), sent only when it is for
+		// that audience
+		oidc::ManagedIdentity identity;
+		identity.resource = assertion_audience;
+		identity.client_id = identity_client_id;
+		auto token = oidc::ManagedIdentityToken(identity);
+		if (!token.Ok()) {
+			why = "the managed identity gave no assertion: " + token.error;
+			return false;
+		}
+		bool is_jwt = false;
+		auto audiences = JwtAudiences(token.access_token, is_jwt);
+		if (!is_jwt || std::find(audiences.begin(), audiences.end(), assertion_audience) == audiences.end()) {
+			tresor::Wipe(token.access_token);
+			why = "the managed identity's token is not meant for " + assertion_audience + " - not sent";
+			return false;
+		}
+		auth.assertion = std::move(token.access_token);
+		return true;
+	}
 	case Kind::MANAGED_IDENTITY:
 		why = "a managed identity is no client at the identity provider";
 		return false;
@@ -215,6 +237,7 @@ string ServiceCredential::LoginName() const {
 		return "private_key_jwt";
 	case Kind::ASSERTION_FILE:
 	case Kind::GITHUB_ACTIONS:
+	case Kind::AZURE_MANAGED_IDENTITY_ASSERTION:
 		return "federated";
 	case Kind::MANAGED_IDENTITY:
 		return "managed_identity";

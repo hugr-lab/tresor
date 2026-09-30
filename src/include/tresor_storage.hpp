@@ -51,6 +51,9 @@ public:
 	//! Serve this session, starting from the list the ATTACH fetched; `actor` (may be null) acts for
 	//! duckdb-acl's sessions (specs/008).
 	void Activate(shared_ptr<TresorSession> session, vector<Descriptor> initial, shared_ptr<TresorActor> actor);
+	//! Act for duckdb-acl's sessions through `actor` from now on (specs/015) - only if `session` is still the one
+	//! served.
+	void SetActor(const TresorSession &session, shared_ptr<TresorActor> actor);
 	//! Stop serving - only if `session` is still the one served (a later ATTACH may have taken over).
 	void Deactivate(const TresorSession &session);
 

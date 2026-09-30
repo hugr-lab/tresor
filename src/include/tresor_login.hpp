@@ -40,6 +40,11 @@ struct AttachRequest {
 
 AttachRequest ParseAttach(const string &path, const unordered_map<string, Value> &options);
 
+//! EXCHANGE's value: true for 'on_behalf_of', false for 'token_exchange'; anything else is refused.
+bool ParseExchange(const string &value);
+//! SESSION_GRANT_WAIT, checked: 0 to 600 seconds.
+int64_t ParseGrantWait(int64_t seconds);
+
 //! Is `host` (host[:port][/base]) a loopback name: 127.0.0.1, ::1, localhost.
 bool IsLoopbackHost(const string &host);
 

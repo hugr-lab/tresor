@@ -29,8 +29,10 @@ struct TresorFunctionInfo : public TableFunctionInfo {
 
 class TresorCatalog : public DuckCatalog {
 public:
+	//! `acting`: ATTACH's ACT_FOR_SESSIONS, already checked (ActingOptions) - started with the catalog; null
+	//! for none (act_for_sessions() may start it later).
 	TresorCatalog(AttachedDatabase &db, shared_ptr<TresorSession> session, TresorSecretStorage &storage,
-	              vector<Descriptor> initial, shared_ptr<TresorActor> actor);
+	              vector<Descriptor> initial, unique_ptr<ActorOptions> acting);
 	//! A catalog that goes without a DETACH (a rolled-back ATTACH, a failure after the storage callback)
 	//! takes its secrets out of the lookup too.
 	~TresorCatalog() override;
@@ -42,19 +44,29 @@ public:
 	//! DETACH is the logout: the session's tokens are dropped and the secrets leave the lookup.
 	void OnDetach(ClientContext &context) override;
 
+	//! Act for duckdb-acl's sessions from now on (specs/015), with options ActingOptions checked. False when it
+	//! already acts with the same options; throws when it acts with others (one way: DETACH to change), when
+	//! nothing publishes acl sessions here, or after the logout.
+	bool ActForSessions(const ActorOptions &options);
+
 	TresorSession &Session() {
 		return *session;
 	}
 	shared_ptr<TresorSession> SharedSession() {
 		return session;
 	}
+	TresorSecretStorage &Storage() {
+		return storage;
+	}
 
 private:
 	shared_ptr<TresorSession> session;
-	TresorSecretStorage &storage;  // owned by the SecretManager, for the instance's lifetime
-	vector<Descriptor> initial;    // the list the ATTACH fetched: the storage starts from it
-	shared_ptr<TresorActor> actor; // ACT_FOR_SESSIONS (specs/008), else null
-	bool shut = false;             // Shutdown ran (DETACH, then the destructor)
+	TresorSecretStorage &storage;    // owned by the SecretManager, for the instance's lifetime
+	vector<Descriptor> initial;      // the list the ATTACH fetched: the storage starts from it
+	unique_ptr<ActorOptions> acting; // ATTACH's ACT_FOR_SESSIONS, started by Initialize
+	mutex actor_lock;                // actor and shut: act_for_sessions() may run beside a DETACH
+	shared_ptr<TresorActor> actor;   // acting for acl's sessions (specs/008, 015), else null
+	bool shut = false;               // Shutdown ran (DETACH, then the destructor)
 
 	//! The end of the catalog, by DETACH or otherwise: out of the lookup, the grants revoked, the login gone.
 	void Shutdown();
@@ -65,6 +77,8 @@ TableFunction WhoamiFunction(shared_ptr<TresorSession> session, TresorSecretStor
 TableFunction SecretsFunction(shared_ptr<TresorSession> session, TresorSecretStorage &storage);
 //! annotate_secret, grants, grant_secret, revoke_secret (tresor_manage.cpp, specs/005).
 vector<TableFunction> ManagementFunctions(shared_ptr<TresorSession> session, TresorSecretStorage &storage);
+//! act_for_sessions (tresor_act.cpp, specs/015).
+TableFunction ActForSessionsFunction(TresorCatalog &catalog);
 
 } // namespace tresor
 } // namespace duckdb

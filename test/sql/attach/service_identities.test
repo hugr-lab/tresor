@@ -329,6 +329,52 @@ a managed identity is none
 statement ok
 DROP SECRET mi;
 
+# --- a managed identity as an app registration's federated credential (specs/015) ------------------------------
+
+statement error
+CREATE SECRET mif (TYPE tresor, SCOPE 'tresor:x', FLOW 'federated', CLIENT_ID 'minode', ISSUER 'http://i',
+    ASSERTION_SOURCE 'github_actions', ASSERTION_AUDIENCE 'a', IDENTITY_CLIENT_ID 'uami');
+----
+IDENTITY_CLIENT_ID goes with ASSERTION_SOURCE 'azure_managed_identity'
+
+# ASSERTION_AUDIENCE defaults to Entra's federation audience; a user-assigned identity by its client id
+statement ok
+CREATE SECRET mif (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting', FLOW 'federated',
+    CLIENT_ID 'minode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_SOURCE 'azure_managed_identity',
+    IDENTITY_CLIENT_ID 'uami');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS mf (INSECURE_HTTP true, SECRET mif);
+
+query IIII
+SELECT subject, login, idp('mi_resource'), idp('mi_client_id') FROM mf.whoami();
+----
+client:minode	federated	"api://AzureADTokenExchange"	"uami"
+
+statement ok
+DETACH mf;
+
+# a client at the identity provider: it can act for acl's sessions, with no secret on the node
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS mf (INSECURE_HTTP true, SECRET mif, ACT_FOR_SESSIONS true);
+
+statement ok
+DETACH mf;
+
+# a token the platform minted for another audience is never the assertion
+statement ok
+CREATE OR REPLACE SECRET mif (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting', FLOW 'federated',
+    CLIENT_ID 'minode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_SOURCE 'azure_managed_identity',
+    IDENTITY_CLIENT_ID 'mismatch');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS mf (INSECURE_HTTP true, SECRET mif);
+----
+not meant for api://AzureADTokenExchange - not sent
+
+statement ok
+DROP SECRET mif;
+
 statement ok
 DROP SECRET mi_acting;
 
