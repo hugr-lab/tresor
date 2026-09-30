@@ -42,21 +42,26 @@ design they are written from.
 | Application ID URI | Expose an API | `api://duckdb-secrets` (or the suggested `api://<client id>`) |
 | A delegated scope | Expose an API → Add a scope | `access_as_user`, who can consent: admins and users |
 | App roles | App roles | `secrets_admin` (allowed member types: users/groups), `nodes` (applications) |
-| Token version 2 | Manifest | `"requestedAccessTokenVersion": 2` (in the older manifest view: `"accessTokenAcceptedVersion": 2`) |
+| Token version 2 | Manifest | `"api": {"requestedAccessTokenVersion": 2}` (in the older manifest view: `"accessTokenAcceptedVersion": 2`) |
+| Who may get tokens | Enterprise applications → duckdb-secrets → Properties | **Assignment required? Yes** (recommended) |
 | The `idtyp` claim | Token configuration → Add optional claim → Access | `idtyp` |
 | Groups (optional) | Token configuration → Add groups claim | security groups, emitted as group object ids |
 
 Why each matters:
 - **Version 2.** A v2 access token's `aud` is the API's **client id** (a GUID), and its `iss` is
   `https://login.microsoftonline.com/<tenant>/v2.0`. Without version 2, Entra issues v1 tokens:
-  `iss` `https://sts.windows.net/<tenant>/`, and `aud` the Application ID URI. The service would
-  refuse them as coming from another issuer.
+  `iss` `https://sts.windows.net/<tenant>/`, and `aud` whatever was asked for (typically the
+  Application ID URI). The service would refuse them as coming from another issuer.
 - **`idtyp`.** The claim says `app` in a token an application got for itself. It is how the
   service tells a node's token from a person's (the `service` rule below). Without it, every node
   would be taken for a person.
 - **App roles.** They become the principals the service grants to: `role:secrets_admin`,
   `role:nodes`. A role is assigned under **Enterprise applications → duckdb-secrets → Users and
-  groups** for people and groups, and granted to applications as an API permission (step 3).
+  groups** for people (for groups, Entra ID P1 or P2), and granted to applications as an API
+  permission (step 3).
+- **Assignment required.** Without it, any user and any application in the tenant can get a token
+  for the API. It has no roles, but it still is a `subject:` (or a `client:`) the service knows.
+  Turn it on, or at least grant only to roles and groups.
 - **Groups.** A group claim becomes `group:<object id>`. Entra leaves the claim out for a user in
   more than 200 groups (the overage): grant through app roles where that can happen.
 
@@ -74,8 +79,13 @@ Note the API's **client id**: it is the service's `audience`, and a managed iden
 | Consent | API permissions | **Grant admin consent** (or let users consent) |
 
 - tresor listens on `http://127.0.0.1:<a free port>/callback` for the browser's answer. Entra
-  ignores the port of a loopback redirect URI but matches the host and the path, so register
-  exactly `http://127.0.0.1/callback`. Without it, the browser shows `AADSTS50011`.
+  ignores the port of a loopback redirect URI but matches the host and the path (case-sensitive),
+  so register exactly `http://127.0.0.1/callback`. Without it, the browser shows `AADSTS50011`.
+- If the portal refuses `http://127.0.0.1/…`, add it in the **Manifest**: under
+  `publicClient.redirectUris` (older view: `replyUrlsWithType` with `"type": "InstalledClient"`).
+- `http://localhost/callback` is not the same URI to Entra; tresor sends the `127.0.0.1` literal.
+- A tenant's Conditional Access may block the device code flow ("Authentication flows"). Then
+  `LOGIN 'device'` fails with `AADSTS53003`, while the browser login works.
 - The client has no secret: it is a public client with PKCE, as every DuckDB on a laptop is.
 - Note its **client id**: it is the discovery's `client_id`.
 
@@ -90,8 +100,16 @@ Certificates & secrets → Federated credentials → Add credential:
   - issuer: the cluster's OIDC issuer URL;
   - subject: `system:serviceaccount:<namespace>:<service account>`;
   - audience: `api://AzureADTokenExchange`.
+  - With Azure workload identity, the pod carries the label `azure.workload.identity/use: "true"`,
+    and the token is mounted at `/var/run/secrets/azure/tokens/azure-identity-token`.
+  - The cluster's OIDC issuer and its keys must be reachable from Entra.
 - **GitHub Actions:**
-  - organization, repository and entity (a branch, an environment, a tag);
+  - organization, repository and entity. The issuer is
+    `https://token.actions.githubusercontent.com`, and the subject is one of:
+    - `repo:<org>/<repo>:ref:refs/heads/<branch>`;
+    - `…:environment:<name>`;
+    - `…:ref:refs/tags/<tag>`;
+    - `…:pull_request`.
   - audience: `api://AzureADTokenExchange`.
 
 Nothing secret exists anywhere: the node presents the platform's token.
@@ -101,11 +119,13 @@ Certificates & secrets → Certificates → Upload:
 
 ```sh
 openssl req -x509 -newkey rsa:2048 -nodes -keyout node.key -out node.crt -days 365 -subj /CN=acl-node
-chmod 600 node.key            # tresor refuses a key others may read
+chmod 600 node.key            # tresor refuses a key others may read (a group may read it: 640/440)
 ```
 
-Entra matches the certificate by its thumbprint (`x5t`), which tresor sends with each signed
-assertion. Keep `node.key` where only the node reads it: a mounted secret, a vault agent.
+Entra matches the certificate by its thumbprint (`x5t#S256`, or the older SHA-1 `x5t`). tresor sends
+both with each assertion, whose `aud` is the tenant's token endpoint. Use an RSA key: Entra's
+certificate credentials are RSA. Keep `node.key` where only the node reads it: a mounted secret, a
+vault agent.
 
 **A client secret** only when neither of the above is possible. It is a shared secret: it lives in
 the node's configuration and is rotated by hand.
@@ -133,8 +153,17 @@ tokens. For every session it trades the user's token for one meant for the servi
   with that audience (`acl_define_issuer`).
 - They must be v2 tokens: the node's API needs version 2 too (step 1's manifest setting, on the
   node's registration). A v1 session token is refused as "from another issuer".
+- Only a user's token (delegated, with `scp`) can be exchanged; an application's cannot.
+- Instead of admin consent, the node's manifest can list the client people use in
+  `knownClientApplications`: users then consent to both in one prompt.
+- **Conditional Access.** Policies on `duckdb-secrets` (MFA, a compliant device) that the user's
+  sign-in did not satisfy make On-Behalf-Of fail with `interaction_required` (`AADSTS50076`,
+  `AADSTS50079`), and the node cannot prompt anyone. Apply the same policies to the node's API, so
+  that they are met when the user signs in.
 - A node that logs in with a **managed identity** cannot act for users: it is no client that can
-  exchange tokens. Use a federated credential or a certificate on an application.
+  exchange tokens. Use a federated credential or a certificate on an application. (A managed
+  identity as the federated credential of the node's application would work in Entra; tresor has
+  no assertion source for it yet.)
 
 ## 4. A managed identity
 
@@ -149,6 +178,11 @@ mi_sp=<the managed identity's object (principal) id>
 az rest --method POST --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$mi_sp/appRoleAssignments" \
   --body "{\"principalId\":\"$mi_sp\",\"resourceId\":\"$api_sp\",\"appRoleId\":\"$role\"}"
 ```
+
+- The Graph call takes the identity's **object (principal) id**. The service, though, knows the
+  identity by its **client (application) id**: the principal is `client:<client id>`.
+- The platform caches the identity's tokens (up to about a day). A role assigned after a token was
+  fetched shows only once the cache has expired or the host has restarted.
 
 ## 5. The service
 
@@ -172,9 +206,13 @@ policy:
 ```
 
 - **Who is who:**
-  - a person is `subject:<issuer>|<sub>`. Entra's v2 `sub` is pairwise: stable for one person and
-    this API, and different for every other application;
+  - a person is `subject:<issuer>|<sub>`. Entra's `sub` is pairwise: stable for one person and this
+    API, and different for every other application. A person is the same `subject:` whether they
+    log in directly or reach the service through a node (On-Behalf-Of): both tokens are for
+    `duckdb-secrets`;
   - a node is `client:<its client id>`, and has `role:nodes` from its app role.
+- **One tenant per issuer entry.** The server matches `iss` exactly. A multi-tenant API needs an
+  entry per tenant; `/common` and `/organizations` are never an issuer.
 - **Secrets that carry the caller's own token** (`token_exchange`,
   [concepts](./concepts.md#a-token-for-the-caller)) do not work with Entra in the reference server
   yet. It mints them with RFC 8693 token exchange; Entra's equivalent is On-Behalf-Of.
@@ -188,8 +226,9 @@ ATTACH 'tresor:secrets.corp.example' AS corp;     -- the browser; LOGIN 'device'
 FROM corp.whoami();
 ```
 
-A node, whichever way it proves itself (`OAUTH_SCOPE` asks Entra for the API's application
-permissions):
+A node, whichever way it proves itself. `OAUTH_SCOPE 'api://…/.default'` is **required** with Entra:
+without it, tresor asks for the discovery's scopes, and client credentials accept only `/.default`
+(`AADSTS1002012`).
 
 ```sql
 -- a federated credential (Kubernetes with Azure workload identity mounts the token here)
@@ -249,9 +288,14 @@ scripts/dev/entra_live.sh
 | `AADSTS7000218` at a device login | public client flows are off | *Allow public client flows: Yes* |
 | `AADSTS65001` | consent is missing | grant admin consent on the API permission |
 | `AADSTS700027` with a certificate | Entra does not know the certificate | upload the `.crt` that belongs to the key, on the same registration |
-| `AADSTS700213` / `AADSTS70021` with a federated credential | the subject, issuer or audience does not match the federated credential | compare the credential with the token's `sub`/`iss`/`aud`; the audience is `api://AzureADTokenExchange` |
+| `AADSTS700213` / `AADSTS700211` / `AADSTS700212` / `AADSTS70021` with a federated credential | the subject / the issuer / the audience does not match, or no federated credential matches | compare the credential with the token's `sub`/`iss`/`aud`; the audience is `api://AzureADTokenExchange` |
+| `AADSTS700024` with a federated credential | the platform's token is out of its validity (a stale file) | the platform rotates the file; check the mount |
+| `AADSTS7000215` | the client secret is wrong or expired | a new secret, or better a certificate |
+| `AADSTS1002012` | a client credentials scope that is not `/.default` | `OAUTH_SCOPE 'api://duckdb-secrets/.default'` |
+| `AADSTS53003` at a device login | Conditional Access blocks the device code flow | the browser login, or an exception in the policy |
+| `AADSTS50076` / `AADSTS50079` for a node acting for a user | Conditional Access the user's sign-in did not satisfy | the same policies on the node's API |
 | the service answers 401, "aud … does not contain" | a v1 token, or the audience configured as the URI | set the API's token version to 2; the server's `audience` is the API's client id |
 | "from another issuer" / "issuer … is not configured" | a v1 token (`sts.windows.net`) | token version 2 on the API (and on the node's API, for On-Behalf-Of) |
 | a node is treated as a person (no `client:` principal) | no `idtyp` claim | add the optional claim `idtyp` to the API's access tokens |
-| a managed identity: "is not meant for" | `AUDIENCE` is the URI, the token's `aud` the client id | `AUDIENCE` is the API's client id |
+| a managed identity: "names the audience '<guid>', but the managed identity's secret is for 'api://…'" | `AUDIENCE` is the Application ID URI | `AUDIENCE` is the API's client id, as the service's audience |
 | a person's groups are missing | the groups overage (over 200 groups) | grant through app roles |
