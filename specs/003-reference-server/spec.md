@@ -39,7 +39,8 @@ Production use is not a goal. Correctness and readability are.
 
 `server/` is its own Go module, `github.com/hugr-lab/tresor/server` (go 1.26):
 
-- `cmd/tresor-server/` — the binary: `tresor-server -config server.yaml`.
+- `cmd/ref-server/` — the binary: `ref-server -config server.yaml`. (It was `tresor-server` until 2026-09-30, when the
+  name went to the production service, `hugr-lab/tresor-server`.)
 - `internal/config` — the YAML config and its validation.
 - `internal/auth` — token verification and principals.
 - `internal/store` — the secrets and their persistence.

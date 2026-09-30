@@ -87,6 +87,7 @@ func Open(path string, key []byte) (*Store, error) {
 	if len(sealed) < n {
 		return nil, errors.New("store: the file is truncated")
 	}
+	// the AAD keeps the binary's former name: a file written before the rename still opens
 	plain, err := s.aead.Open(nil, sealed[:n], sealed[n:], []byte("tresor-server/1"))
 	if err != nil {
 		return nil, errors.New("store: the file does not decrypt with this key - refusing to start")

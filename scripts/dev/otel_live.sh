@@ -51,10 +51,10 @@ curl -sf "$issuer/.well-known/openid-configuration" >/dev/null || {
 	echo "otel_live: Keycloak did not come up" >&2
 	exit 1
 }
-(cd "$root/server" && GOWORK=off go build -o "$work/tresor-server" ./cmd/tresor-server)
+(cd "$root/server" && GOWORK=off go build -o "$work/ref-server" ./cmd/ref-server)
 sed -e "s/127.0.0.1:18480/127.0.0.1:$kc_port/g" -e "s/127.0.0.1:18443/127.0.0.1:$server_port/g" \
 	"$root/server/testdata/keycloak/server.yaml" >"$work/server.yaml"
-TRESOR_EXCHANGE_SECRET=svc-secret "$work/tresor-server" -config "$work/server.yaml" >"$work/server.log" 2>&1 &
+TRESOR_EXCHANGE_SECRET=svc-secret "$work/ref-server" -config "$work/server.yaml" >"$work/server.log" 2>&1 &
 server_pid=$!
 python3 "$root/test/keycloak/echo.py" --port-file "$work/echo.port" &
 echo_pid=$!
@@ -63,7 +63,7 @@ echo_host="127.0.0.1:$(cat "$work/echo.port")"
 for _ in $(seq 50); do curl -sf "http://127.0.0.1:$server_port/.well-known/duckdb-secrets" >/dev/null && break; sleep 0.2; done
 if ! kill -0 "$server_pid" 2>/dev/null || ! curl -sf "http://127.0.0.1:$server_port/.well-known/duckdb-secrets" >/dev/null; then
 	cat "$work/server.log" >&2
-	echo "otel_live: tresor-server did not come up" >&2
+	echo "otel_live: ref-server did not come up" >&2
 	exit 1
 fi
 

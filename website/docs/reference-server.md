@@ -9,6 +9,8 @@ title: Reference server
 protocol in Go. It exists for two reasons: tresor's end-to-end tests run against it next to a real
 Keycloak, and a company writing its own service can read it to see the protocol working end to end.
 It is **not meant for production**: one process, one encrypted file, no high availability.
+For production there is [tresor-server](https://github.com/hugr-lab/tresor-server): state in SQLite,
+PostgreSQL, SQL Server or Kubernetes, material under a KMS key or referenced in Azure Key Vault.
 
 ## What it implements
 
@@ -34,8 +36,8 @@ fetched from them.
 
 ```bash
 cd server
-go build -o tresor-server ./cmd/tresor-server
-TRESOR_SERVER_KEY=$(openssl rand -base64 32) ./tresor-server -config server.yaml
+go build -o ref-server ./cmd/ref-server
+TRESOR_SERVER_KEY=$(openssl rand -base64 32) ./ref-server -config server.yaml
 ```
 
 ```yaml

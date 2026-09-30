@@ -1,7 +1,7 @@
-// tresor-server is the reference duckdb-secrets/1 service (specs/003): for tresor's tests and as an
+// ref-server is the reference duckdb-secrets/1 service (specs/003): for tresor's tests and as an
 // example to read, not for production.
 //
-//	tresor-server -config server.yaml
+//	ref-server -config server.yaml
 package main
 
 import (
@@ -29,7 +29,7 @@ func main() {
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	if err := run(*configPath, log); err != nil {
-		log.Error("tresor-server stopped", "error", err.Error())
+		log.Error("ref-server stopped", "error", err.Error())
 		os.Exit(1)
 	}
 }
@@ -63,7 +63,7 @@ func run(configPath string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	log.Info("tresor-server listening", "listen", listener.Addr().String(), "api", cfg.PublicURL,
+	log.Info("ref-server listening", "listen", listener.Addr().String(), "api", cfg.PublicURL,
 		"tls", cfg.TLS.Cert != "", "store", cfg.Store.Path != "")
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
