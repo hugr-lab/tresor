@@ -277,9 +277,12 @@ void RegisterTresorLogoff(ExtensionLoader &loader) {
 	TableFunctionSet set(Identifier("tresor_logoff"));
 	for (auto arguments : {vector<LogicalType>(), vector<LogicalType> {LogicalType::VARCHAR}}) {
 		TableFunction function(Identifier("tresor_logoff"), arguments, LogoffScan, LogoffBind, LogoffInit);
-		function.named_parameters[Identifier("issuer")] = LogicalType::VARCHAR;
-		function.named_parameters[Identifier("client_id")] = LogicalType::VARCHAR;
-		function.named_parameters[Identifier("service")] = LogicalType::VARCHAR;
+		// options: one left out is not passed at all, so the bind sees only what the call named
+		function.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+			options.Add("issuer", LogicalType::VARCHAR)
+			    .Add("client_id", LogicalType::VARCHAR)
+			    .Add("service", LogicalType::VARCHAR);
+		});
 		set.AddFunction(function);
 	}
 	loader.RegisterFunction(set);
