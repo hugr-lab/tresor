@@ -68,7 +68,8 @@ cd website && npm ci && npx docusaurus build                               # doc
 `duckdb_extension_statically_link()` or `STATICALLY_LINK_EXTENSIONS` names), on purpose: the test shell
 must not contain it, or no test could prove that `ATTACH 'tresor:…'` loads the installed extension. So
 `require tresor` does not work — load by build path
-(`LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension'`), or `INSTALL tresor FROM '__BUILD_DIRECTORY__/repository'` into `SET extension_directories = [...]`
+(`LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension'`), or
+`INSTALL tresor FROM '__BUILD_DIRECTORY__/repository'` into `SET extension_directories = [...]`
 (`extension_directory` is deprecated on 2.0). In gate tests set `autoload_known_extensions = false`.
 With `TRESOR_TEST_HTTPFS=1` (as CI builds) the test build also links **httpfs** (`extension_config.cmake`,
 at the commit duckdb's 2.0 tree pins in `duckdb/.github/config/extensions/httpfs.cmake`; move both with
