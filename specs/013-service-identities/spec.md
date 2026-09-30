@@ -1,6 +1,6 @@
 # Spec 013: a service logs in without a shared secret — private_key_jwt, federated assertions, Azure managed identity; Auth0's audience; Entra checked live
 
-- **Status**: implemented (Entra live: by hand, pending the owner's run)
+- **Status**: implemented (Entra checked live on 2026-09-30: a person, a node with a certificate and with a secret)
 - **Date**: 2026-09-24
 - **Author**: VGSML (with Claude)
 
@@ -163,7 +163,7 @@ expects (apps, API permissions, `accessTokenAcceptedVersion`) is documented in
   - "federated client authentication" with a Kubernetes-style token signed by a test issuer the
     realm trusts, if the pinned Keycloak supports it (26.2+). Otherwise it is skipped, and the spec
     says so.
-- **Entra:** `entra_live.sh`, by hand, against the owner's tenant.
+- **Entra:** `entra_live.sh`, by hand, against the owner's tenant (run on 2026-09-30, below).
 
 ## The review's findings (applied)
 
@@ -214,6 +214,24 @@ expects (apps, API permissions, `accessTokenAcceptedVersion`) is documented in
   certificate on the realm's `keynode` client (`client-jwt`) through the admin API. A DuckDB process
   then logs in with `PRIVATE_KEY_FILE`: the verified-live private_key_jwt.
 - **Go:** the reference server's discovery carries `audience_parameter` only when configured.
+
+## Checked live on Entra (2026-09-30)
+
+`scripts/dev/entra_live.sh` ran against the owner's tenant, with the registrations of
+`website/docs/entra.md`:
+1. **A person, in the browser.** `login=browser`, a v2 issuer, and the pairwise `sub` as the
+   subject. Entra took the `http://127.0.0.1/callback` redirect from the portal and ignored the
+   port.
+2. **The node with its certificate.** `login=private_key_jwt`: the RS256 assertion with
+   `x5t`/`x5t#S256`, `aud` the v2 token endpoint, was accepted. The server saw `client:<node
+   client id>` through the `idtyp` rule.
+3. **The node with its client secret.** The same, as the baseline.
+
+**The node's role.** At first the node's token carried no `roles` claim. The registration had
+only the default `Microsoft Graph / User.Read`, not the API's `nodes` application permission.
+With the permission added and admin consent granted, both node logins read
+`role:nodes, client:<node client id>`. It was tenant configuration, not tresor; the Entra page's
+troubleshooting table now has the row.
 
 ## Follow-ups
 

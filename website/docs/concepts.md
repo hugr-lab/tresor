@@ -109,7 +109,8 @@ exchange):
 - give the users' client an audience mapper that names the node's client;
 - give the node's client an audience mapper that names the service's client.
 
-The test realm in `server/testdata/keycloak` has all three. With Entra, the token's `iss` must equal
+The test realm in `server/testdata/keycloak` has all three. For Entra, see
+[Microsoft Entra ID](./entra.md#a-node-acting-for-its-users-duckdb-acl). With Entra, the token's `iss` must equal
 the issuer the node logs in with: v1 tokens (`https://sts.windows.net/<tenant>/`) against a v2
 issuer are refused as "from another issuer".
 
