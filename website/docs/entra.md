@@ -200,7 +200,8 @@ tokens. For every session it trades the user's token for one meant for the servi
     credential** → scenario **Managed identity** → the identity;
   - the secret: `FLOW 'federated'`, `ASSERTION_SOURCE 'azure_managed_identity'` (below). tresor asks
     the platform for a token for `api://AzureADTokenExchange` and signs in as the application with it.
-    Add `IDENTITY_CLIENT_ID` for a user-assigned identity.
+    Add `IDENTITY_CLIENT_ID` for a user-assigned identity. In a sovereign cloud, set
+    `ASSERTION_AUDIENCE` to its federation audience (e.g. `api://AzureADTokenExchangeUSGov`).
   - Not yet checked against a live tenant (it needs an Azure host).
 
 ## 4. A managed identity

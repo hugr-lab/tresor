@@ -161,6 +161,8 @@ KEY_CLIENTS = {"keynode": "keynode.pub", "eckeynode": "eckeynode.pub"}
 # federated tokens the fake's "federation" trusts: JWT-shaped, as a platform's are (tresor sends nothing else)
 FEDERATED = {"fednode": {"eyJhbGciOiJub25lIn0.eyJzdWIiOiJmZWRub2RlIn0.c2ln", "eyJhbGciOiJub25lIn0.eyJzdWIiOiJmZWRub2RlMiJ9.c2ln", "github-jwt"}}
 SEEN_JTI = set()
+# realms that serve a node acting for acl sessions (specs/008); auth0 too, for the pinned audience (specs/015)
+ACTING_REALMS = ("acting", "shifty", "auth0")
 MI_ASSERTIONS = set()  # specs/015: tokens /msi/token issued for api://AzureADTokenExchange
 
 
@@ -452,7 +454,7 @@ class Handler(BaseHTTPRequestHandler):
                                  "delegation": realm != "expiring"},
             })
             return
-        if realm in ("acting", "shifty") and rest.startswith("/v1/"):
+        if realm in ACTING_REALMS and rest.startswith("/v1/"):
             self.acting_get(rest)
             return
         if rest == "/v1/whoami":
@@ -664,7 +666,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def refuse_delegated_write(self, realm):
         """acting: a write carrying a grant is the actor policy's refusal (as the reference server's default)."""
-        if realm not in ("acting", "shifty") or not self.headers.get("Delegation"):
+        if realm not in ACTING_REALMS or not self.headers.get("Delegation"):
             return False
         identity, actor = self.effective()
         if identity is not None:
@@ -720,7 +722,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         realm, rest = self.split(urllib.parse.urlparse(self.path).path)
-        if realm in ("acting", "shifty") and rest.startswith("/v1/delegations/"):
+        if realm in ACTING_REALMS and rest.startswith("/v1/delegations/"):
             self.acting_delete_grant(urllib.parse.unquote(rest[len("/v1/delegations/"):]))
             return
         if self.refuse_delegated_write(realm):
@@ -770,7 +772,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         url = urllib.parse.urlparse(self.path)
         realm, rest = self.split(url.path)
-        if realm in ("acting", "shifty") and rest == "/v1/delegations":
+        if realm in ACTING_REALMS and rest == "/v1/delegations":
             self.acting_post_grant()
             return
         if rest.startswith("/v1/secrets/") and self.refuse_delegated_write(realm):
@@ -828,6 +830,7 @@ class Handler(BaseHTTPRequestHandler):
             elif grant == "urn:ietf:params:oauth:grant-type:token-exchange":
                 at = "urn:ietf:params:oauth:token-type:access_token"
                 subject = form.get("subject_token")
+                IDP_STATS["exchange_audience"] = form.get("audience", "")  # specs/015: the node's pinned one
                 if not client_ok(form, self.base() + "/" + realm + "/token"):
                     self.send(401, {"error": "invalid_client", "error_description": "bad client credentials"})
                 elif form.get("audience") != "duckdb-secrets" or form.get("subject_token_type") != at:

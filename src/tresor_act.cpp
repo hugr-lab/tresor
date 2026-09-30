@@ -32,7 +32,7 @@ struct ActBindData : public TableFunctionData {
 	bool on_behalf_of = false;
 	string scope;
 	string audience;
-	int64_t grant_wait_seconds = 10;
+	int64_t grant_wait_seconds = DEFAULT_GRANT_WAIT_SECONDS;
 };
 
 struct ActState : public GlobalTableFunctionState {
@@ -98,6 +98,16 @@ void ActScan(ClientContext &context, TableFunctionInput &input, DataChunk &outpu
 	auto acl_state = acl::AclConnection::Reach(context, why);
 	acl::AclSessionView view;
 	if (!acl_state || acl_state->Current(view)) {
+		// whose attempt it was, as far as acl can tell: the session and its user, not the node
+		if (!acl_state) {
+			event.event.acl_session = "?";
+		} else {
+			event.event.acl_session = view.session_id.empty() ? "?" : view.session_id;
+			event.event.user = view.principal.issuer.empty()
+			                       ? view.principal.subject
+			                       : "subject:" + view.principal.issuer + "|" + view.principal.subject;
+			event.event.correlation_id = view.correlation_id;
+		}
 		event.Denied("other", "under a duckdb-acl session");
 		throw PermissionException("act_for_sessions: not under a duckdb-acl session");
 	}

@@ -488,7 +488,9 @@ Caller TresorSecretStorage::CallerFor(optional_ptr<ClientContext> context) {
 	caller.correlation_id = view.correlation_id;
 	caller.traceparent = ValidTraceparent(view.traceparent);
 	if (!acting) {
-		caller.refused = storage_name + " does not act for duckdb-acl sessions (ATTACH it with ACT_FOR_SESSIONS)";
+		caller.refused = storage_name +
+		                 " does not act for duckdb-acl sessions (ATTACH it with ACT_FOR_SESSIONS, or CALL " +
+		                 storage_name + ".act_for_sessions())";
 		return caller;
 	}
 	caller.grant = acting->GrantFor(view.session_id, context, why);

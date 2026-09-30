@@ -38,7 +38,7 @@ CALL corp.act_for_sessions(
     exchange := 'token_exchange' | 'on_behalf_of',   -- as ATTACH's EXCHANGE
     exchange_scope := VARCHAR,                       -- EXCHANGE_SCOPE
     exchange_audience := VARCHAR,                    -- EXCHANGE_AUDIENCE
-    session_grant_wait := INTEGER)                   -- SESSION_GRANT_WAIT (seconds)
+    session_grant_wait := BIGINT)                    -- SESSION_GRANT_WAIT (seconds)
 -- one row: service, exchange, audience, scope, changed
 ```
 
@@ -57,7 +57,10 @@ CALL corp.act_for_sessions(
 - **Never under an acl session.** Like `tresor_logoff`, it is refused when the statement runs under a
   duckdb-acl session, or when acl's connection contract cannot tell. duckdb-acl also puts
   `act_for_sessions` in its never set (by name, in any catalog).
-- **Audited**: TRSA kind `login`, detail `act_for_sessions`. The contract's layout is unchanged.
+- **Audited**: TRSA kind `login`, detail `act_for_sessions`, with outcome `ok` (turned on), `none`
+  (already on), `denied` (under an acl session, attributed to that session and its user) or `error`.
+  The contract's layout is unchanged.
+- **A session opened before the call** gets no grant; the next one does.
 - **Before the call**, a statement under an acl session is refused ("does not act for duckdb-acl
   sessions"), as for a plain ATTACH. Fail closed.
 - `ATTACH … (ACT_FOR_SESSIONS true, …)` goes the same way: the same checks, and the actor started by the
@@ -91,15 +94,19 @@ it too, when the discovery's `audience_parameter` was on. Now:
 ## Testing
 
 - `test/sql/attach/act_for_sessions.test` (the fake service, acl_stub):
-  - refused under an acl session;
-  - refused before a publisher is loaded;
-  - refused for a person's login;
-  - enabled, then `changed = false` for the same options, and an error for other options;
-  - a session's statement refused before the call and served through its grant after it.
-- `test/sql/attach/managed_identity.test` (the fake IMDS):
-  - `ASSERTION_SOURCE 'azure_managed_identity'` logs in as a federated client;
-  - a token for another audience is refused.
-- `test/acl/actor.sql` against real duckdb-acl: the late call on a catalog attached before acl.
+  - refused under an acl session (audited as that session's), before a publisher is loaded, for a
+    person's login, and for a discovery naming an audience the node's token lacks;
+  - turned on, then `changed = false` for the same options, and an error for other options, also on a
+    catalog an ATTACH already made act;
+  - a session opened after the call goes through its grant; one opened before gets nothing.
+- `test/sql/attach/service_identities.test`:
+  - the fake IMDS: `ASSERTION_SOURCE 'azure_managed_identity'` logs in as a federated client, asks
+    for `api://AzureADTokenExchange` with the user-assigned identity; a session's token is exchanged
+    with it; a token for another audience is never the assertion;
+  - Auth0's `audience_parameter`: the late call refuses without `EXCHANGE_AUDIENCE`; pinned, the
+    exchange asks for the pinned audience while the node's own token was asked for the discovery's.
+- `test/acl/actor.sql` against real duckdb-acl: the node bootstraps this way (attached before `LOAD
+  acl`, then `node.act_for_sessions()`).
 
 ## Alternatives considered
 

@@ -16,6 +16,9 @@
 namespace duckdb {
 namespace tresor {
 
+//! SESSION_GRANT_WAIT's default, at ATTACH and at act_for_sessions() alike (specs/008, 015).
+constexpr int64_t DEFAULT_GRANT_WAIT_SECONDS = 10;
+
 //! How the session logged in; `browser` and `device` are people, the rest services.
 enum class LoginFlow : uint8_t { BROWSER, DEVICE, CLIENT_CREDENTIALS, TOKEN, REMEMBERED, FEDERATED, MANAGED_IDENTITY };
 

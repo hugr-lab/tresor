@@ -134,6 +134,13 @@ opened before this catalog acted for sessions
 statement ok
 SET acl_stub_session = '';
 
+# the refused attempt is the session's, not the node's
+query II
+SELECT acl_session, principal IS NOT NULL FROM duckdb_logs_parsed('tresor')
+WHERE kind = 'login' AND detail = 'act_for_sessions' AND outcome = 'denied';
+----
+early	true
+
 # audited: a login event, detail act_for_sessions - ok when it turned on, none when it already was, denied
 # under an acl session, error when refused (nothing publishes sessions, no scope, other options); a call whose
 # options do not bind never reaches it
@@ -153,6 +160,23 @@ SELECT acl_stub_close('s1', 'client');
 
 statement ok
 DETACH corp;
+
+# an ATTACH that already acts: the call with its options changes nothing, with others it is refused
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS acting (INSECURE_HTTP true, ACT_FOR_SESSIONS true, SESSION_GRANT_WAIT 5);
+
+query I
+SELECT changed FROM acting.act_for_sessions(session_grant_wait := 5);
+----
+false
+
+statement error
+CALL acting.act_for_sessions();
+----
+already acts for duckdb-acl sessions, with other options
+
+statement ok
+DETACH acting;
 
 # a service whose discovery names another audience than the node's own token: refused at the call too
 statement ok

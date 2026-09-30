@@ -172,7 +172,7 @@ SELECT count(*) FROM which_secret('s3://acting/x.parquet', 's3') WHERE storage =
 statement error
 SELECT * FROM plain.whoami();
 ----
-does not act for duckdb-acl sessions (ATTACH it with ACT_FOR_SESSIONS)
+does not act for duckdb-acl sessions (ATTACH it with ACT_FOR_SESSIONS, or CALL plain.act_for_sessions())
 
 statement error
 SELECT * FROM plain.secrets();

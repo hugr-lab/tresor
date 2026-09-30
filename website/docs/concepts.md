@@ -15,7 +15,7 @@ title: Concepts
    persistent secrets.
 2. **A catalog of functions** — `corp.secrets()`, `corp.whoami()`, `corp.grants(…)`,
    `corp.annotate_secret(…)`, `corp.grant_secret(…)`, `corp.revoke_secret(…)` — the view, and the
-   management surface for administrators.
+   management surface for administrators; and `corp.act_for_sessions(…)` for a duckdb-acl node.
 3. **A login.** The identity the attach established is what every call to the service carries.
 
 Several services can be attached at once; each is its own storage and its own catalog.

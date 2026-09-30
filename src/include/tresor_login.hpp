@@ -32,7 +32,7 @@ struct AttachRequest {
 	bool on_behalf_of = false; // EXCHANGE 'on_behalf_of' (Entra); else RFC 8693 token exchange
 	string exchange_scope;
 	string exchange_audience; // EXCHANGE_AUDIENCE: pinned on the node, not taken from the service
-	int64_t grant_wait_seconds = 10;
+	int64_t grant_wait_seconds = DEFAULT_GRANT_WAIT_SECONDS;
 	// a person's login remembered in the OS keychain (specs/012)
 	bool remember = true;
 	bool remember_given = false;

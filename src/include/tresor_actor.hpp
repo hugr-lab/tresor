@@ -40,7 +40,7 @@ struct ActorOptions {
 	bool on_behalf_of = false; // EXCHANGE 'on_behalf_of' (Entra); else RFC 8693
 	string scope;              // EXCHANGE_SCOPE
 	string audience;           // the audience an exchanged token must carry (RFC 8693; pinned at ATTACH)
-	int64_t grant_wait_seconds = 10;
+	int64_t grant_wait_seconds = DEFAULT_GRANT_WAIT_SECONDS;
 	string service;              // the attached catalog's name, for the audit
 	weak_ptr<TresorAudit> audit; // the instance's (specs/011)
 };
