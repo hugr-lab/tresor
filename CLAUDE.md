@@ -65,7 +65,7 @@ cd website && npm ci && npx docusaurus build                               # doc
 ```
 
 **Test-runner rules.** tresor is never statically linked (duckdb links only what
-`duckdb_extension_statically_link()` names), on purpose: the test shell must not contain it, or no
+`duckdb_extension_statically_link()` or `STATICALLY_LINK_EXTENSIONS` names), on purpose: the test shell must not contain it, or no
 test could prove that `ATTACH 'tresor:…'` loads the installed extension. So `require tresor` does not
 work — load by build path (`LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension'`), or
 `INSTALL tresor FROM '__BUILD_DIRECTORY__/repository'` into `SET extension_directories = [...]`

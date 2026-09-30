@@ -1,0 +1,31 @@
+# name: test/sql/logoff_options.test
+# description: tresor_logoff's options - named, case-insensitive, never NULL, unknown ones refused (specs/012, 014)
+# group: [sql]
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+# refused at bind: no service, no keychain is touched
+statement ok
+SET tresor_keychain = 'memory';
+
+statement error
+CALL tresor_logoff(issuer := NULL, client_id := 'x', service := 'y');
+----
+issuer must not be NULL
+
+# names match whatever their case; two of the three are not a login's key
+statement error
+CALL tresor_logoff(ISSUER := 'https://idp.example', Client_Id := 'c');
+----
+all three
+
+statement error
+CALL tresor_logoff('corp', service := 'svc.example', issuer := 'https://idp.example', client_id := 'c');
+----
+not both
+
+statement error
+CALL tresor_logoff(bogus := 'x');
+----
+bogus
