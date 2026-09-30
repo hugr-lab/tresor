@@ -163,7 +163,7 @@ expects (apps, API permissions, `accessTokenAcceptedVersion`) is documented in
   - "federated client authentication" with a Kubernetes-style token signed by a test issuer the
     realm trusts, if the pinned Keycloak supports it (26.2+). Otherwise it is skipped, and the spec
     says so.
-- **Entra:** `entra_live.sh`, by hand, against the owner's tenant.
+- **Entra:** `entra_live.sh`, by hand, against the owner's tenant (run on 2026-09-30, below).
 
 ## The review's findings (applied)
 
@@ -233,7 +233,7 @@ With the permission added and admin consent granted, both node logins read
 `role:nodes, client:<node client id>`. It was tenant configuration, not tresor; the Entra page's
 troubleshooting table now has the row.
 
-
+## Follow-ups
 
 - `ASSERTION_SOURCE 'azure_managed_identity'`: a managed identity as the federated credential of an
   app registration, so an Azure node without a secret can act for sessions.

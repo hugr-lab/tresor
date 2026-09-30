@@ -1,5 +1,5 @@
 ---
-sidebar_position: 4
+sidebar_position: 3.5
 title: Microsoft Entra ID
 ---
 
@@ -33,7 +33,7 @@ Checked live against an Entra tenant on 2026-09-30 (`scripts/dev/entra_live.sh`,
   (`role:nodes`).
 
 Not yet checked live: On-Behalf-Of for a duckdb-acl node, a federated credential, and a managed
-identity (it needs an Azure host). They are tested against the protocol's shapes.
+identity (it needs an Azure host). They are tested against the fake service and Keycloak, in CI.
 :::
 
 ## 1. The service's API
@@ -79,7 +79,7 @@ Note the API's **client id**: it is the service's `audience`, and a managed iden
 | --- | --- | --- |
 | Redirect URI | Authentication → Add a platform → **Mobile and desktop applications** | `http://127.0.0.1/callback` |
 | Public client flows | Authentication → Advanced settings | **Allow public client flows: Yes** (the device code flow) |
-| API permission | API permissions → My APIs → duckdb-secrets → Delegated | `access_as_user` |
+| API permission | API permissions → Add a permission → **APIs my organization uses** → `duckdb-secrets` → Delegated | `access_as_user` |
 | Consent | API permissions | **Grant admin consent** (or let users consent) |
 
 - tresor listens on `http://127.0.0.1:<a free port>/callback` for the browser's answer. Entra
@@ -138,8 +138,12 @@ Then give the node its role on the API:
 
 | Setting | Where | Value |
 | --- | --- | --- |
-| API permission | API permissions → My APIs → duckdb-secrets → **Application permissions** | `nodes` |
+| API permission | API permissions → Add a permission → **APIs my organization uses** → `duckdb-secrets` → **Application permissions** | `nodes` |
 | Consent | API permissions | **Grant admin consent** |
+
+The API shows under **My APIs** only for its owners; **APIs my organization uses** finds it for
+everyone (search by its name or client id). A new registration has only Graph's `User.Read`: the
+API's permission is added by hand.
 
 ### A node acting for its users (duckdb-acl)
 
@@ -150,13 +154,14 @@ tokens. For every session it trades the user's token for one meant for the servi
 | Setting | Where | Value |
 | --- | --- | --- |
 | The node's own API | Expose an API | Application ID URI `api://acl-node`, a delegated scope (e.g. `sessions`) |
-| On-Behalf-Of | API permissions → duckdb-secrets → **Delegated** | `access_as_user`, with admin consent |
+| Token version 2 | the node's Manifest | `"api": {"requestedAccessTokenVersion": 2}`: session tokens for the node are v2 |
+| On-Behalf-Of | API permissions → Add a permission → **APIs my organization uses** → `duckdb-secrets` → **Delegated** | `access_as_user`, with admin consent |
 | The client people reach the node with | its API permissions | the node's `sessions` scope |
 
 - Users' tokens arrive at the node with `aud` = the node's client id. duckdb-acl's issuer is set up
   with that audience (`acl_define_issuer`).
-- They must be v2 tokens: the node's API needs version 2 too (step 1's manifest setting, on the
-  node's registration). A v1 session token is refused as "from another issuer".
+- They must be v2 tokens: the node's API needs version 2 too. A v1 session token is refused as
+  `this acl session's token is from another issuer than <host>'s login`.
 - Only a user's token (delegated, with `scp`) can be exchanged; an application's cannot.
 - Instead of admin consent, the node's manifest can list the client people use in
   `knownClientApplications`: users then consent to both in one prompt.
@@ -199,6 +204,7 @@ issuers:
     client_id: <people's client id>
     scopes: [openid, offline_access, api://duckdb-secrets/access_as_user]
     human_flows: [authorization_code, device_code]
+    # token_exchange here: a node acting for its users (delegation grants)
     service_flows: [client_credentials, private_key_jwt, federated, managed_identity, token_exchange]
     roles_claim: roles
     groups_claim: groups
@@ -211,9 +217,9 @@ policy:
 
 - **Who is who:**
   - a person is `subject:<issuer>|<sub>`. Entra's `sub` is pairwise: stable for one person and this
-    API, and different for every other application. A person is the same `subject:` whether they
-    log in directly or reach the service through a node (On-Behalf-Of): both tokens are for
-    `duckdb-secrets`;
+    API, and different for every other application. A person should be the same `subject:` whether
+    they log in directly or reach the service through a node (On-Behalf-Of), since both tokens are
+    for `duckdb-secrets`; this is not yet checked live;
   - a node is `client:<its client id>`, and has `role:nodes` from its app role.
 - **One tenant per issuer entry.** The server matches `iss` exactly. A multi-tenant API needs an
   entry per tenant; `/common` and `/organizations` are never an issuer.
@@ -230,9 +236,10 @@ ATTACH 'tresor:secrets.corp.example' AS corp;     -- the browser; LOGIN 'device'
 FROM corp.whoami();
 ```
 
-A node, whichever way it proves itself. `OAUTH_SCOPE 'api://…/.default'` is **required** with Entra:
-without it, tresor asks for the discovery's scopes, and client credentials accept only `/.default`
-(`AADSTS1002012`).
+A node, whichever way it proves itself. For `client_credentials` and `federated`,
+`OAUTH_SCOPE 'api://…/.default'` is **required** with Entra: without it, tresor asks for the
+discovery's scopes, and client credentials accept only `/.default` (`AADSTS1002012`). A managed
+identity takes no `OAUTH_SCOPE`: it names `AUDIENCE` instead.
 
 ```sql
 -- a federated credential (Kubernetes with Azure workload identity mounts the token here)
@@ -254,9 +261,9 @@ CREATE SECRET node (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'clie
     PRIVATE_KEY_FILE '/etc/tresor/node.key', CERTIFICATE_FILE '/etc/tresor/node.crt');
 
 -- a managed identity: no credential; AUDIENCE is the API's client id
+-- (add CLIENT_ID '<user-assigned identity client id>' for a user-assigned one)
 CREATE SECRET node (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'managed_identity',
     ISSUER 'https://login.microsoftonline.com/<tenant id>/v2.0', AUDIENCE '<the API client id>');
-    -- CLIENT_ID '<user-assigned identity client id>' for a user-assigned one
 
 ATTACH 'tresor:secrets.corp.example' AS corp;
 ```
@@ -275,7 +282,9 @@ ATTACH 'tresor:secrets.corp.example' AS corp (ACT_FOR_SESSIONS true,
 - as the node with its certificate;
 - with its secret too, when given.
 
-It takes everything from the environment, and never writes a credential or prints a token:
+It takes everything from the environment, and never writes a credential or prints a token. It
+needs a release build of this repository (`build/release/duckdb` and the extension) and Go, for
+the server. `ENTRA_SKIP_PERSON=1` skips the browser step.
 
 ```sh
 export ENTRA_TENANT=<tenant id> ENTRA_API_CLIENT_ID=<API client id> ENTRA_API_URI=api://duckdb-secrets \
@@ -298,8 +307,11 @@ scripts/dev/entra_live.sh
 | `AADSTS1002012` | a client credentials scope that is not `/.default` | `OAUTH_SCOPE 'api://duckdb-secrets/.default'` |
 | `AADSTS53003` at a device login | Conditional Access blocks the device code flow | the browser login, or an exception in the policy |
 | `AADSTS50076` / `AADSTS50079` for a node acting for a user | Conditional Access the user's sign-in did not satisfy | the same policies on the node's API |
-| the service answers 401, "aud … does not contain" | a v1 token, or the audience configured as the URI | set the API's token version to 2; the server's `audience` is the API's client id |
-| "from another issuer" / "issuer … is not configured" | a v1 token (`sts.windows.net`) | token version 2 on the API (and on the node's API, for On-Behalf-Of) |
+| the service answers 401, `aud [...] does not contain "<audience>"` | the server's `audience` is the Application ID URI; a v2 token's `aud` is the client id | the server's `audience` is the API's client id |
+| the service answers 401, `issuer "https://sts.windows.net/<tenant>/" is not configured` | a v1 token: the API is not on token version 2 | token version 2 on the API (step 1) |
+| a node acting for a user: `this acl session's token is from another issuer than …` | the user's session token is v1: the node's API is not on version 2 | token version 2 on the node's API |
+| `AADSTS50105` at a person's login | *Assignment required* is on, and the person holds no role | assign the person (or a group) under Enterprise applications → duckdb-secrets → Users and groups |
+| `AADSTS501051` at a node's login | *Assignment required* is on, and the node holds no role | the `nodes` application permission, with admin consent |
 | a node is treated as a person (no `client:` principal) | no `idtyp` claim | add the optional claim `idtyp` to the API's access tokens |
 | a managed identity: `names the audience '<client id>', but the managed identity's secret is for 'api://…'` | `AUDIENCE` is the Application ID URI | `AUDIENCE` is the API's client id, as the service's audience |
 | a person's groups are missing | the groups overage (over 200 groups) | grant through app roles |

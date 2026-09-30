@@ -2,8 +2,8 @@
 # tresor against a real Entra ID tenant (specs/013), by hand: the reference server accepting the tenant's v2
 # tokens, and a DuckDB that logs in to it as a person (the browser), as a node with its certificate
 # (private_key_jwt), and - when given - as a node with a client secret. Everything comes from the environment;
-# nothing is written to the repository, and no token is ever printed. See website/docs/reference-server.md
-# ("Entra ID, checked live") for the app registrations it expects.
+# nothing is written to the repository, and no token is ever printed. See website/docs/entra.md for the app
+# registrations it expects.
 #
 #   ENTRA_TENANT            the tenant id
 #   ENTRA_API_CLIENT_ID     the service API app's client id (a v2 token's aud)
