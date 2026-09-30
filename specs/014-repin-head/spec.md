@@ -11,7 +11,8 @@
 
 The duckdb submodule moves from d4e7256 (2026-09-22) to a2af0a7, the head of `v2.0-cyanoptera` on
 2026-09-30, on the owner's decision to take the current head. httpfs moves with it to 3f81d97.
-duckdb-acl and acl-otel re-pin to the same commit; `ACL_COMMIT` follows once duckdb-acl has.
+duckdb-acl re-pinned to the same commit (#169, spec 091) and acl-otel follows (#37); `ACL_COMMIT` is
+duckdb-acl's.
 
 ## Problem
 
@@ -51,7 +52,7 @@ Against the new pin:
   - NULL is refused;
   - names match in any case;
   - an unknown name is refused.
-- The distribution build is run on the branch, at the head.
+- The distribution build, run on the branch at the head, passes on all six platforms (run 36697057112).
 
 ## Follow-ups
 
