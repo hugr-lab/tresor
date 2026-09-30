@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The reference server next to a real Keycloak (specs/003): start Keycloak with the test realm
-# (server/docker-compose.yml), build and start tresor-server, then run the conformance suite
+# (server/docker-compose.yml), build and start ref-server, then run the conformance suite
 # (test/sql/conformance/*) and the reference server's own tests (test/sql/reference_server/*) against
 # the pair - a service login with client credentials, and a person's browser login played by
 # test/keycloak/browser.py. Needs docker and go.
@@ -40,13 +40,13 @@ curl -sf "$issuer/.well-known/openid-configuration" >/dev/null || {
 	exit 1
 }
 
-echo "test_keycloak: building and starting tresor-server"
-(cd "$root/server" && GOWORK=off go build -o "$work/tresor-server" ./cmd/tresor-server)
+echo "test_keycloak: building and starting ref-server"
+(cd "$root/server" && GOWORK=off go build -o "$work/ref-server" ./cmd/ref-server)
 # the test config, on the ports of this run
 sed -e "s/127.0.0.1:18480/127.0.0.1:$kc_port/g" -e "s/127.0.0.1:18443/127.0.0.1:$server_port/g" \
 	"$root/server/testdata/keycloak/server.yaml" >"$work/server.yaml"
 # the service's exchange client secret (specs/010): from the environment, as the config names it
-TRESOR_EXCHANGE_SECRET=svc-secret "$work/tresor-server" -config "$work/server.yaml" >"$work/server.log" 2>&1 &
+TRESOR_EXCHANGE_SECRET=svc-secret "$work/ref-server" -config "$work/server.yaml" >"$work/server.log" 2>&1 &
 server_pid=$!
 # a downstream http API that answers whom a bearer token was minted for (specs/010)
 python3 "$root/test/keycloak/echo.py" --port-file "$work/echo.port" &
@@ -56,7 +56,7 @@ export TRESOR_KC_ECHO="127.0.0.1:$(cat "$work/echo.port")"
 for _ in $(seq 50); do curl -sf "http://127.0.0.1:$server_port/.well-known/duckdb-secrets" >/dev/null && break; sleep 0.2; done
 if ! kill -0 "$server_pid" 2>/dev/null || ! curl -sf "http://127.0.0.1:$server_port/.well-known/duckdb-secrets" >/dev/null; then
 	cat "$work/server.log" >&2
-	echo "test_keycloak: tresor-server did not come up" >&2
+	echo "test_keycloak: ref-server did not come up" >&2
 	exit 1
 fi
 
@@ -269,7 +269,7 @@ else
 fi
 "$unittest" --skip-error-messages '' 'test/sql/conformance/*' || status=1
 if [ "$status" != 0 ]; then
-	echo "--- tresor-server log ---" >&2
+	echo "--- ref-server log ---" >&2
 	cat "$work/server.log" >&2
 fi
 exit "$status"

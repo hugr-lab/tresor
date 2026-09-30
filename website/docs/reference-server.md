@@ -9,6 +9,8 @@ title: Reference server
 protocol in Go. It exists for two reasons: tresor's end-to-end tests run against it next to a real
 Keycloak, and a company writing its own service can read it to see the protocol working end to end.
 It is **not meant for production**: one process, one encrypted file, no high availability.
+A production service is being designed separately:
+[tresor-server](https://github.com/hugr-lab/tresor-server).
 
 ## What it implements
 
@@ -34,8 +36,8 @@ fetched from them.
 
 ```bash
 cd server
-go build -o tresor-server ./cmd/tresor-server
-TRESOR_SERVER_KEY=$(openssl rand -base64 32) ./tresor-server -config server.yaml
+go build -o ref-server ./cmd/ref-server
+REF_SERVER_KEY=$(openssl rand -base64 32) ./ref-server -config server.yaml
 ```
 
 ```yaml
@@ -44,7 +46,7 @@ public_url: http://127.0.0.1:8443        # what discovery calls `api`
 # tls: {cert: server.crt, key: server.key}   # required unless listening on loopback
 store:
   path: data/secrets.enc                 # AES-256-GCM; omit for memory only
-  key_env: TRESOR_SERVER_KEY             # 32 bytes, base64
+  key_env: REF_SERVER_KEY                # 32 bytes, base64
 issuers:
   - issuer: https://login.corp.example/realms/main
     audience: duckdb-secrets             # the token's `aud` must contain it

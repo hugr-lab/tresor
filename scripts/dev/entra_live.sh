@@ -54,8 +54,8 @@ issuers:
 policy:
   admins: [role:$admin_role]
 YAML
-(cd "$root/server" && GOWORK=off go build -o "$work/tresor-server" ./cmd/tresor-server)
-"$work/tresor-server" -config "$work/server.yaml" >"$work/server.log" 2>&1 &
+(cd "$root/server" && GOWORK=off go build -o "$work/ref-server" ./cmd/ref-server)
+"$work/ref-server" -config "$work/server.yaml" >"$work/server.log" 2>&1 &
 server_pid=$!
 for _ in $(seq 50); do curl -sf "http://127.0.0.1:$port/.well-known/duckdb-secrets" >/dev/null && break; sleep 0.2; done
 curl -sf "http://127.0.0.1:$port/.well-known/duckdb-secrets" >/dev/null || {

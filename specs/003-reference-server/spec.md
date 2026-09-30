@@ -39,7 +39,8 @@ Production use is not a goal. Correctness and readability are.
 
 `server/` is its own Go module, `github.com/hugr-lab/tresor/server` (go 1.26):
 
-- `cmd/tresor-server/` — the binary: `tresor-server -config server.yaml`.
+- `cmd/ref-server/` — the binary: `ref-server -config server.yaml` (named `tresor-server` until
+  2026-09-30; that name is now the production service's, `hugr-lab/tresor-server`).
 - `internal/config` — the YAML config and its validation.
 - `internal/auth` — token verification and principals.
 - `internal/store` — the secrets and their persistence.
@@ -56,7 +57,7 @@ public_url: http://127.0.0.1:8443        # discovery's `api`
 tls: {cert: server.crt, key: server.key} # without it, plain http - only on a loopback listen address
 store:
   path: data/secrets.enc                 # empty: memory only
-  key_env: TRESOR_SERVER_KEY             # 32 bytes, base64; required with a path
+  key_env: REF_SERVER_KEY                # 32 bytes, base64; required with a path
 issuers:
   - issuer: http://127.0.0.1:18480/realms/tresor
     audience: duckdb-secrets             # `aud` must contain it
