@@ -26,10 +26,13 @@ A managed identity (Azure VMs, App Service, Functions, Container Apps) needs no 
 own: it is given a role on the API.
 
 :::note
-tresor's Entra support is tested against the protocol's shapes: v2 tokens, `x5t` certificate
-matching, On-Behalf-Of, managed identity endpoints. The live run against a tenant is
-`scripts/dev/entra_live.sh` (below). Until it has been run on yours, treat the steps here as the
-design they are written from.
+Checked live against an Entra tenant on 2026-09-30 (`scripts/dev/entra_live.sh`, below):
+- a person's browser login, through the `http://127.0.0.1/callback` redirect, any port;
+- a node with its certificate (`private_key_jwt`), and with a client secret;
+- v2 tokens throughout, and the `idtyp` rule telling the node from the person.
+
+Not yet checked live: On-Behalf-Of for a duckdb-acl node, a federated credential, and a managed
+identity (it needs an Azure host). They are tested against the protocol's shapes.
 :::
 
 ## 1. The service's API
