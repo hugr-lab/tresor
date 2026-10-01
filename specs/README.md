@@ -33,3 +33,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | [013](013-service-identities/spec.md) | a service logs in without a shared secret — private_key_jwt, federated assertions, Azure managed identity; Auth0's audience | implemented |
 | [014](014-repin-head/spec.md) | re-pin duckdb to the head of v2.0-cyanoptera - typed kwargs, no more DONT_LINK | implemented |
 | [015](015-late-acting/spec.md) | a node's bootstrap - `act_for_sessions()` on a live catalog, a managed identity as the federated assertion | implemented |
+| [016](016-names-and-errors/spec.md) | what a service may refuse in a name; `service_error` (500), an error that is not "try later" | implemented |

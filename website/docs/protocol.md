@@ -30,7 +30,17 @@ fixes only what a client sees.
   and, across issuers, by same-named clients. Ownership and identity are therefore always
   `subject:`.
 - Names of secrets are compared exactly. A client sends them in one canonical form (tresor: lower
-  case, as DuckDB compares secret names case-insensitively).
+  case, as DuckDB compares secret names case-insensitively). A service whose store compares otherwise
+  (SQL Server's trailing spaces, a case-insensitive collation) still compares exactly.
+- A service **MAY** refuse, with `422 invalid_secret`, a secret's name or a grant's id that:
+  - is empty, or longer than 200 characters;
+  - is not UTF-8;
+  - begins or ends with whitespace;
+  - holds a control character.
+
+  A client never creates one (tresor refuses it at `CREATE PERSISTENT SECRET`, before the request). A
+  service that accepts such names lets them be read, dropped and granted as any other. Any other name
+  is the service's to accept.
 - Bodies: a client sends only the fields listed here. A service may refuse unknown fields with
   `422 invalid_secret`.
 - Every error is a problem document, including an unknown route or method (`404 not_found`).
@@ -321,7 +331,11 @@ a session ran. tresor sends it only when that statement has one and it is well-f
 | `not_found` | 404 | no such secret (or not visible) |
 | `precondition_failed` | 412 | `If-None-Match` / `If-Match` not met |
 | `invalid_secret` | 422 | the secret does not validate |
-| `service_unavailable` | 503 | try later |
+| `service_unavailable` | 503 | try later: the service or what it depends on is unreachable for now |
+| `service_error` | 500 | the service cannot serve this, and trying again will not help until an operator acts: a value it holds that does not open (its key changed), a store in a state it refuses. The detail says what, never the value |
+
+A client that does not know a `type` acts on the status: a `4xx` as a refusal of the request, a
+`5xx` as the service's failure.
 
 ## Conformance
 

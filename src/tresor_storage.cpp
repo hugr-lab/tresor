@@ -375,6 +375,58 @@ string CanonicalName(const string &name) {
 	return StringUtil::Lower(name);
 }
 
+bool ProtocolName(const string &name, string &why) {
+	// the decoder is lenient (overlongs, surrogates): a name reaches here from SQL, which DuckDB's parser has
+	// already checked for valid UTF-8 - the code points are what the rules look at
+	if (name.empty()) {
+		why = "is empty";
+		return false;
+	}
+	idx_t characters = 0;
+	uint32_t first = 0;
+	uint32_t last = 0;
+	for (idx_t i = 0; i < name.size();) {
+		auto byte = static_cast<unsigned char>(name[i]);
+		idx_t length = byte < 0x80 ? 1 : (byte >> 5) == 0x6 ? 2 : (byte >> 4) == 0xE ? 3 : (byte >> 3) == 0x1E ? 4 : 0;
+		if (length == 0 || i + length > name.size()) {
+			why = "is not UTF-8";
+			return false;
+		}
+		uint32_t code = length == 1 ? byte : byte & (0xFF >> (length + 1));
+		for (idx_t k = 1; k < length; k++) {
+			auto next = static_cast<unsigned char>(name[i + k]);
+			if ((next & 0xC0) != 0x80) {
+				why = "is not UTF-8";
+				return false;
+			}
+			code = (code << 6) | (next & 0x3F);
+		}
+		if (code < 0x20 || code == 0x7F || (code >= 0x80 && code < 0xA0)) {
+			why = "holds a control character";
+			return false;
+		}
+		if (characters == 0) {
+			first = code;
+		}
+		last = code;
+		characters++;
+		i += length;
+	}
+	auto space = [](uint32_t code) {
+		return code == ' ' || code == 0xA0 || code == 0x1680 || (code >= 0x2000 && code <= 0x200A) || code == 0x2028 ||
+		       code == 0x2029 || code == 0x202F || code == 0x205F || code == 0x3000;
+	};
+	if (space(first) || space(last)) {
+		why = "begins or ends with whitespace";
+		return false;
+	}
+	if (characters > 200) {
+		why = "is longer than 200 characters";
+		return false;
+	}
+	return true;
+}
+
 string EncodePathSegment(const string &segment) {
 	return Encode(segment);
 }
@@ -953,6 +1005,12 @@ unique_ptr<SecretEntry> TresorSecretStorage::StoreSecret(unique_ptr<const BaseSe
 		// httpfs's REFRESH auto re-created a service secret through the tresor provider, which fetched it
 		// from the service (and cached it): a refresh, not a write - nothing goes back
 		return make_uniq<SecretEntry>(EntryOf(secret->Clone()));
+	}
+	// a name the protocol lets a service refuse is never written (specs/016): checked first, before any request -
+	// even the listing that finds an existing spelling - and also where a permissive service holds one already
+	string why;
+	if (!ProtocolName(CanonicalName(secret->GetName().GetIdentifierName()), why)) {
+		throw InvalidInputException("tresor: a secret's name in %s %s", storage_name, why);
 	}
 	auto name = ServiceName(caller, secret->GetName().GetIdentifierName());
 	auto audited = Audit("write", caller, transaction ? transaction->context : nullptr);
