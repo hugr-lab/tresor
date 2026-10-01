@@ -261,7 +261,7 @@ An independent review, with the defects reproduced against the fake:
 
 ## Follow-ups
 
-- specs/003 — the secret storage, `corp.secrets()`. Done: specs/004.
+- specs/003 — the secret storage, `corp.secrets()`. Became specs/004.
 - The reference server (`server/`, Go) + Keycloak in CI + the conformance suite. Done: specs/003.
 - duckdb-ext-common: `private_key_jwt`, federated assertions, Azure identities → the `tresor` secret's
   further flows. Done: specs/013, 015.

@@ -44,7 +44,7 @@ scripts/ci/smoke_load.sh
 ```
 
 The full test setup (the fake service, Keycloak, duckdb-acl) is on the
-[Development](https://hugr-lab.github.io/tresor/development) page.
+[Development](https://hugr-lab.github.io/tresor/development/) page.
 
 tresor tracks the DuckDB 2.0 line at the same commit as
 [duckdb-acl](https://github.com/hugr-lab/duckdb-acl).

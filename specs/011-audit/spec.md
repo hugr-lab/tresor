@@ -210,6 +210,6 @@ Seen, for acl and acl-otel:
 ## Follow-ups
 
 - acl-otel consumes `TRSA` 1 (task handed to duckdb-acl): OTLP logs, spans parented by the event's
-  `traceparent`, and the `tresor.*` metrics. Done in acl-otel.
+  `traceparent`, and the `tresor.*` metrics. Done in acl-otel (its specs/011-tresor-audit).
 - A session-wide trace, if the owner wants one.
 - Gauges (live grants, cached materials) when a consumer asks for them.

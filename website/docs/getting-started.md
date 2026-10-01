@@ -7,7 +7,8 @@ title: Getting started
 
 :::note Before the first release
 tresor is released with DuckDB 2.0. Until then, build it from source ([Development](./development.md))
-and load it by path, or `INSTALL tresor FROM '<your build>/repository'`.
+and load it by path, or `INSTALL tresor FROM '<your build>/repository'`. A build of your own is
+unsigned: start DuckDB with `-unsigned`, or with `allow_unsigned_extensions` set.
 :::
 
 ## Install

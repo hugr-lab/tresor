@@ -37,14 +37,19 @@ not depend on DuckDB's tag is done now, so that the release is mechanical:
    - the duckdb submodule moves to the `v2.0.0` tag;
    - `distribution.yml`: `duckdb_version: v2.0.0`;
    - httpfs at the tag's own pin (`duckdb/.github/config/extensions/httpfs.cmake`);
-   - extension-ci-tools at the branch matching the release;
-   - `ACL_COMMIT` moves to duckdb-acl's release commit.
+   - extension-ci-tools at the release's branch (it cuts one per release, `v2.0.0`): the submodule,
+     and in `distribution.yml` both `uses: …@v2.0.0` and `ci_tools_version: v2.0.0`;
+   - `ACL_COMMIT` moves to duckdb-acl's release commit;
+   - duckdb-ext-common: the three repositories' tags carry the same contract stamps (ACLC, TRSA);
+     acl-otel re-pinned to the same duckdb commit, its TRSA test green.
 2. **The gate**: CI green, the distribution build on all six platforms, and `test_keycloak.sh` with
    the real duckdb-acl. Before the tag, one live Entra run (`scripts/dev/entra_live.sh`).
 3. **The protocol becomes normative**: the *Draft* banner on `protocol.md` is replaced by "version 1";
    from then on a change is a new version.
 4. **The version**: `CHANGELOG.md`'s *Unreleased* becomes `[0.1.0] - <date>`, and the tag is `v0.1.0`.
-   `tresor_version()` reports it: extension-ci-tools sets `EXT_VERSION_TRESOR` from the tag.
+   DuckDB's build sets `EXT_VERSION_TRESOR` from `git describe --tags` when the tag is checked out (a
+   checkout without it gives the commit). Check it on the tag's distribution artifact:
+   `SELECT tresor_version()` returns `v0.1.0`.
 5. **Community extensions**: a PR to duckdb/community-extensions with `description.yml`, its `ref` being
    the tag. Their CI builds and runs the tests. Check before the PR how their runner treats
    `require-env TRESOR_TEST_PORT` (the tests that need a service should skip), and tresor loaded by
@@ -56,7 +61,10 @@ not depend on DuckDB's tag is done now, so that the release is mechanical:
 
 - **The first version number**: `0.1.0` is proposed. A `1.0.0` would say the protocol and the SQL
   surface are stable.
-- **Community extensions or the organisation's repository**: both work. Community needs their review.
+- **Community extensions or the organisation's repository**: both work.
+  - Community needs their review, and its builds are signed.
+  - An organisation's own repository serves unsigned binaries: DuckDB then needs
+    `allow_unsigned_extensions` (`duckdb -unsigned`) on every node.
 
 ## Testing
 
