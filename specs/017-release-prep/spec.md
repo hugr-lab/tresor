@@ -63,8 +63,9 @@ not depend on DuckDB's tag is done now, so that the release is mechanical:
 
 - **The first version is `0.1.0`.** The tag is `v0.1.0`.
 - **Published to both**, after DuckDB 2.0's release:
-  - hugr lab's own extension repository (still to come). Its binaries are unsigned, so nodes run with
-    `allow_unsigned_extensions` (`duckdb -unsigned`).
+  - hugr lab's own extension repository (still to come): an external repository of the kind DuckDB 2.0
+    supports, which signs what it serves with its own key. Nodes trust that key and need no
+    `allow_unsigned_extensions`.
   - duckdb/community-extensions, signed, through their review.
 
 ## Testing
