@@ -51,9 +51,11 @@ not depend on DuckDB's tag is done now, so that the release is mechanical:
    checkout without it gives the commit). Check it on the tag's distribution artifact:
    `SELECT tresor_version()` returns `v0.1.0`.
 5. **Publishing**: to hugr lab's repository, then a PR to duckdb/community-extensions with
-   `description.yml`, its `ref` being the tag. Their CI builds and runs the tests. Check before the PR how their runner treats
-   `require-env TRESOR_TEST_PORT` (the tests that need a service should skip), and tresor loaded by
-   build path. Fall back to `test_config` with a skip, as mssql-extension does.
+   `description.yml`, its `ref` being the tag.
+   - Their CI builds and runs the tests. Before the PR, check how their runner treats
+     `require-env TRESOR_TEST_PORT` (the tests that need a service should skip), and tresor loaded by
+     build path.
+   - Fall back to `test_config` with a skip, as mssql-extension does.
 6. **The docs**: the home page's status note says "released", and getting started installs from
    `community`.
 
