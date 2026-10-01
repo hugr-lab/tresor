@@ -85,3 +85,34 @@ func TestVariableBodies(t *testing.T) {
 		t.Errorf("64 KiB exactly: %d %s", r.status, r.body)
 	}
 }
+
+// the namespace comes from the route, never the path: a secret's name may hold "/v1/variables" (review of #28)
+func TestSecretNamedLikeVariables(t *testing.T) {
+	f := newFixture(t, "")
+	if r := f.do("PUT", "/v1/secrets/a%2Fv1%2Fvariables", f.admin, s3Secret); r.status != 201 {
+		t.Fatalf("create: %d %s", r.status, r.body)
+	}
+	if r := f.do("GET", "/v1/secrets", f.admin, ""); !strings.Contains(string(r.body), `"a/v1/variables"`) {
+		t.Fatalf("not listed as a secret: %s", r.body)
+	}
+	if r := f.do("GET", "/v1/variables", f.admin, ""); strings.Contains(string(r.body), "a/v1/variables") {
+		t.Fatalf("listed as a variable: %s", r.body)
+	}
+	if r := f.do("DELETE", "/v1/secrets/a%2Fv1%2Fvariables", f.admin, ""); r.status != 204 {
+		t.Fatalf("drop: %d %s", r.status, r.body)
+	}
+}
+
+func TestVariableIfMatch(t *testing.T) {
+	f := newFixture(t, "")
+	r := f.do("PUT", "/v1/variables/v", f.admin, `{"value":"a"}`)
+	if r.status != 201 {
+		t.Fatalf("create: %d", r.status)
+	}
+	if r := f.do("PUT", "/v1/variables/v", f.admin, `{"value":"b"}`, "If-Match", `"7"`); r.status != 412 {
+		t.Fatalf("a stale If-Match: %d", r.status)
+	}
+	if r := f.do("PUT", "/v1/variables/v", f.admin, `{"value":"b"}`, "If-Match", `"1"`); r.status != 200 {
+		t.Fatalf("the current If-Match: %d %s", r.status, r.body)
+	}
+}

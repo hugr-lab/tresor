@@ -219,7 +219,7 @@ principals are administrators is the service's configuration.
 
 | Verb | Level | Held by |
 | --- | --- | --- |
-| `create` | service | administrators (in `whoami`: `permissions.create` is `true` or `false`) |
+| `create` | service | administrators, for secrets and variables (in `whoami`: `permissions.create` is `true` or `false`) |
 | `use` | secret | the principals a grant names: roles and groups |
 | `update` | secret | administrators: replace params / material |
 | `delete` | secret | administrators |
@@ -293,8 +293,7 @@ secret: it takes no part in a secret lookup, and a client reads it only by name.
   the service allows. A reference that does not resolve fails the read: `503 service_unavailable`
   when it may resolve later, `500 service_error` when it will not.
 - **`sensitive`.** It is `true` when the value is, or holds, material the service keeps as a secret
-  (a resolved reference does). A service may also let an administrator set it. A client handles a
-  sensitive value as secret material:
+  (a resolved reference does). A client handles a sensitive value as secret material:
   - it never writes one to a log, an audit or an error;
   - it caches it no longer than a secret's material;
   - it never serves one fetched for one caller to another.
@@ -383,7 +382,7 @@ a session ran. tresor sends it only when that statement has one and it is well-f
 | `no_verb` | 403 | the caller's roles do not hold the verb |
 | `actor_not_allowed` | 403 | the server may not act for users for this verb |
 | `mint_refused` | 403 | material minted for the caller could not be minted (the detail says why) |
-| `not_found` | 404 | no such secret (or not visible) |
+| `not_found` | 404 | no such secret or variable (or not visible) |
 | `precondition_failed` | 412 | `If-None-Match` / `If-Match` not met |
 | `invalid_secret` | 422 | the secret does not validate |
 | `service_unavailable` | 503 | try later: the service or what it depends on is unreachable for now |
@@ -399,7 +398,8 @@ repository (`test/sql/conformance/`), driven against the service's URL through e
 variables. It checks what a client can observe:
 - a service login and a person login, each followed by `whoami`;
 - a secret the service holds, found by DuckDB's lookup, its material delivered;
-- writes: create, conflict, replace, annotate, grant, revoke, drop.
+- writes: create, conflict, replace, annotate, grant, revoke, drop;
+- variables, only for a service that advertises them (`TRESOR_CONFORMANCE_VARIABLES`).
 
 The suite grows with the client. The
 [reference server](./reference-server.md) passes it in CI, next to a real Keycloak.

@@ -137,7 +137,9 @@ unique_ptr<FunctionData> ManageBind(ClientContext &context, TableFunctionBindInp
 	if (VARIABLE) {
 		RequireVariables(*info.session, info.storage->GetName());
 	}
-	data->name = CanonicalName(Arg(input, 0, VARIABLE ? "the variable's name" : "the secret's name"));
+	// a secret's name is a DuckDB identifier (canonical: lower case); a variable's a string, sent as given
+	auto name = Arg(input, 0, VARIABLE ? "the variable's name" : "the secret's name");
+	data->name = VARIABLE ? name : CanonicalName(name);
 	auto add = [&](const char *name, LogicalType type) {
 		names.emplace_back(name);
 		return_types.push_back(std::move(type));

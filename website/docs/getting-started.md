@@ -271,8 +271,10 @@ CALL corp.revoke_variable('lake_bucket', 'role:analysts');
 CALL corp.drop_variable('lake_bucket', if_exists := true);
 ```
 
-- **Use is granted, as for a secret.** A missing variable is an error, unless you give a fallback. One
-  you may not use stays an error, fallback or not.
+- **Use is granted, as for a secret.** A variable you cannot see is a missing one: an error, unless you
+  give a fallback. One you see without `use` (an administrator whose roles are not granted it) stays an
+  error, fallback or not, and so does a reference the service cannot resolve.
+- **A name is a string, sent as given:** `'Lake_Bucket'` and `'lake_bucket'` are two variables.
 - **References.** A service may let an administrator write a value that names where its content lives,
   such as a vault (tresor-server: `ref+azkv://…`). You receive the resolved string, and such a value is
   marked `sensitive`.

@@ -164,16 +164,20 @@ FEDERATED = {"fednode": {"eyJhbGciOiJub25lIn0.eyJzdWIiOiJmZWRub2RlIn0.c2ln", "ey
 SEEN_JTI = set()
 # realms that serve a node acting for acl sessions (specs/008); auth0 too, for the pinned audience (specs/015)
 ACTING_REALMS = ("acting", "shifty", "auth0")
-MI_ASSERTIONS = set()
-# specs/018: variables, in every realm but novars (no capability). db_password is a reference the service
-# resolves (sensitive); hidden is listed but not usable; whoami_var answers whom it was read for
+MI_ASSERTIONS = set()  # specs/015: tokens /msi/token issued for api://AzureADTokenExchange
+# specs/018: variables, in every realm but novars (no capability), as the protocol describes them:
+# - db_password is a reference the service resolves (sensitive); broken_ref one that does not resolve (503);
+# - hidden is invisible to the caller (no verb): not listed, and 404 like a missing one;
+# - admin_only is visible to an administrator without use: listed, and 403;
+# - whoami_var answers whom it was read for.
 VARIABLES = {
     "lake_bucket": {"value": "s3://corp-lake", "comment": "the lake", "version": 1, "permissions": ["use"]},
     "db_password": {"value": "ref+fake://db-pass", "comment": "", "version": 1, "permissions": ["use"]},
+    "broken_ref": {"value": "ref+fake-down://x", "comment": "", "version": 1, "permissions": ["use"]},
     "hidden": {"value": "nope", "comment": "", "version": 1, "permissions": []},
+    "admin_only": {"value": "nope", "comment": "", "version": 1, "permissions": ["update", "delete", "annotate", "grant"]},
     "whoami_var": {"value": "", "comment": "", "version": 1, "permissions": ["use"]},
 }
-VARIABLE_READS = {}  # name -> GETs of its value  # specs/015: tokens /msi/token issued for api://AzureADTokenExchange
 
 
 def b64url_decode(text):
@@ -692,7 +696,7 @@ class Handler(BaseHTTPRequestHandler):
         body = self.body() if method in ("PUT", "PATCH") else None
         with LOCK:
             if not parts:
-                self.send(200, [self.variable_view(n, v) for n, v in sorted(VARIABLES.items())])
+                self.send(200, [self.variable_view(n, v) for n, v in sorted(VARIABLES.items()) if v["permissions"]])
                 return True
             name = parts[0]
             var = VARIABLES.get(name)
@@ -713,12 +717,13 @@ class Handler(BaseHTTPRequestHandler):
                     self.problem(404, "not_found", "no grant")
                 return True
             if method == "GET":
-                if var is None:
-                    self.problem(404, "not_found", "no variable %s" % name)
+                if var is None or not var["permissions"]:
+                    self.problem(404, "not_found", "no variable %s" % name)  # invisible: as a missing one
                 elif "use" not in var["permissions"]:
                     self.problem(403, "no_verb", "the caller's roles do not hold use")
+                elif var["value"].startswith("ref+fake-down://"):
+                    self.problem(503, "service_unavailable", "the vault the reference names does not answer")
                 else:
-                    VARIABLE_READS[name] = VARIABLE_READS.get(name, 0) + 1
                     value = var["value"]
                     if value.startswith("ref+fake://"):
                         value = "resolved:" + value[len("ref+fake://"):]  # a reference, resolved on read

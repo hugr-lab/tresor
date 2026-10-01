@@ -311,9 +311,10 @@ type namespace interface {
 	Update(name string, fn func(current *store.Secret) (*store.Secret, error)) (*store.Secret, error)
 }
 
-// of answers the namespace a request addresses, and what to call one of its entries.
+// of answers the namespace a request addresses, and what to call one of its entries - from the route it
+// matched, never from its path: a secret's name may hold "/v1/variables" (percent-encoded on the wire).
 func (s *Server) of(r *http.Request) (namespace, string) {
-	if strings.Contains(r.URL.Path, "/v1/variables") {
+	if strings.Contains(r.Pattern, "/v1/variables") {
 		return s.vars, "variable"
 	}
 	return s.store, "secret"

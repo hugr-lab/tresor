@@ -68,14 +68,21 @@ organisation runs. It lacks only a value that is not a DuckDB secret.
     way against any service.
 - **`corp.variable(name [, fallback])`** is a **scalar** function of the catalog that returns
   `VARCHAR`.
-  - A missing variable, or one the caller may not `use`, is an error (`404` / `403`, in the service's
-    words). With a `fallback`, a `404` gives the fallback; a `403` stays an error.
+  - A missing variable is an error, and so is one the caller cannot see (the protocol answers both `404`).
+    With a `fallback`, a `404` gives the fallback. A `403` (seen without `use`: an administrator) and a
+    failure (a reference that does not resolve) stay errors.
+  - A NULL name gives NULL.
+  - **A name is a string, sent as given**, not a DuckDB identifier: no lower case. Only a new one
+    (`set_variable`) is checked against the names a service may refuse (spec 016). An existing one is
+    the service's to judge, and it can be read, dropped and granted whatever its shape.
   - `fallback` is passed by position or as `fallback := …`. It is not called `default`, because
     `default := …` is a syntax error in DuckDB (a reserved word).
   - It is a scalar so that a value goes where an expression goes: `SET VARIABLE`, a `WHERE`, a
     `read_parquet(corp.variable('lake') || '/*.parquet')`.
-  - It is evaluated once per statement for a constant argument, so the service is asked once per
-    statement and name, not once per row.
+  - It is **volatile**: never folded into a plan, where `EXPLAIN` and the profiler would show a value,
+    sensitive ones included. A prepared statement reads anew.
+  - Each name is asked once per chunk, a missing one included: a per-row fallback does not send a
+    request per row. Then the caller's cache answers.
 - **Caching.** A value is cached per caller, as secret material is:
   - the node, and each acl session through its grant, have their own cache;
   - a non-sensitive value is reused for as long as a list is trusted (30 s);
@@ -89,7 +96,7 @@ organisation runs. It lacks only a value that is not a DuckDB secret.
     replaces; `if_not_exists := true` sends `If-None-Match: *`.
   - `annotate_variable`, `drop_variable` (with `if_exists := true`), `grant_variable`,
     `revoke_variable` and `variable_grants` mirror the secrets' functions (specs/005).
-  - A name the protocol lets a service refuse is never sent (spec 016).
+  - A new name the protocol lets a service refuse is never sent (spec 016).
 - **Audit.** It uses TRSA's existing kinds with `secret_type = 'variable'`: `lookup` for a read,
   `write`, `drop`, `annotate`, `grant` and `revoke`. There is no new kind, and the contract layout is
   unchanged. A value never appears in an event.
@@ -101,6 +108,10 @@ organisation runs. It lacks only a value that is not a DuckDB secret.
 - It advertises `variables: true` and keeps variables in its store beside secrets: the same encrypted
   file, the same grants and policy.
 - It resolves no references (it has no vault), so `sensitive` is always `false` there.
+- The namespace comes from the route a request matched, never from its path: a secret's name may hold
+  `/v1/variables`.
+- A store written by this version keeps its variables in a field an older reference server does not
+  know. Such a server would drop them at its next write.
 - `PUT` checks the name (spec 016) and the value: UTF-8, up to 64 KiB.
 
 ## Enforcement & security

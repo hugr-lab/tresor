@@ -32,9 +32,9 @@ string Required(const Value &value, const char *what) {
 	return value.ToString();
 }
 
-//! A name the protocol lets a service refuse is never sent (specs/016).
-string VariableName(const string &raw) {
-	auto name = CanonicalName(raw);
+//! A variable's name is a string, sent as given: no DuckDB identifier rule (case) applies to it. Only a new one
+//! is checked against what the protocol lets a service refuse (specs/016); an existing one is the service's.
+string NewVariableName(const string &name) {
 	string why;
 	if (!ProtocolName(name, why)) {
 		throw InvalidInputException("tresor: a variable's name %s", why);
@@ -50,18 +50,25 @@ void ReadVariable(TresorSecretStorage &storage, const shared_ptr<TresorSession> 
 	RequireVariables(*session, storage.GetName());
 	auto caller = storage.CallerFor(&context);
 	auto with_fallback = args.ColumnCount() > 1;
-	// a constant name (the usual call) is asked once per chunk, not once per row
+	// a constant name (the usual call) is asked once per chunk, not once per row; and each name once per chunk
+	// whatever the rows - a missing one included (a per-row fallback must not send a request per row)
 	auto rows = args.AllConstant() ? 1 : args.size();
+	unordered_map<string, std::pair<bool, string>> asked;
 	for (idx_t row = 0; row < rows; row++) {
 		auto raw = args.data[0].GetValue(row);
 		if (raw.IsNull()) {
-			result.SetValue(row, Value(LogicalType::VARCHAR));
+			result.SetValue(row, Value(LogicalType::VARCHAR)); // a NULL name: NULL, as most functions do
 			continue;
 		}
-		auto name = VariableName(raw.ToString());
-		string value;
-		if (storage.VariableOf(caller, name, value, &context)) {
-			result.SetValue(row, Value(value));
+		auto name = raw.ToString();
+		auto known = asked.find(name);
+		if (known == asked.end()) {
+			string value;
+			auto found = storage.VariableOf(caller, name, value, &context);
+			known = asked.emplace(name, std::make_pair(found, std::move(value))).first;
+		}
+		if (known->second.first) {
+			result.SetValue(row, Value(known->second.second));
 		} else if (with_fallback) {
 			result.SetValue(row, args.data[1].GetValue(row));
 		} else {
@@ -183,7 +190,8 @@ unique_ptr<FunctionData> WriteBind(ClientContext &context, TableFunctionBindInpu
 	auto &info = input.info->Cast<TresorFunctionInfo>();
 	RequireVariables(*info.session, info.storage->GetName());
 	auto data = make_uniq<WriteBindData>(WRITE, info.session, *info.storage);
-	data->name = VariableName(Required(input.inputs[0], "the variable's name"));
+	auto name = Required(input.inputs[0], "the variable's name");
+	data->name = WRITE == Write::SET ? NewVariableName(name) : name;
 	if (WRITE == Write::SET) {
 		data->value = Required(input.inputs[1], "the value");
 	}
@@ -321,8 +329,9 @@ ScalarFunctionSet VariableFunction(shared_ptr<TresorSession> session, TresorSecr
 	                              FunctionParameter(Identifier("fallback"), LogicalType::VARCHAR)},
 	                             LogicalType::VARCHAR, read);
 	for (auto *function : {&plain, &with_fallback}) {
-		// the service is asked at execution, never folded into a plan (a prepared statement reads it anew)
-		function->SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
+		// volatile: never folded into a plan, where EXPLAIN and the profiler would show a (sensitive) value, and
+		// asked at execution only - each name once per chunk (above), the rest from the caller's cache
+		function->SetVolatile();
 		function->SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING); // a NULL fallback is a value
 		function->SetFallible();                                           // a refusal, a failure: it throws
 		set.AddFunction(*function);

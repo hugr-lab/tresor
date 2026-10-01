@@ -32,6 +32,10 @@ The first release, with DuckDB 2.0.
   - `ACT_FOR_SESSIONS` at ATTACH, or `corp.act_for_sessions()` later;
   - a session's user token exchanged (RFC 8693 or Entra On-Behalf-Of) for a delegation grant,
     revoked when the session ends (specs/008, 015).
+- **Variables**, optional in the protocol (`capabilities.variables`): named strings a service holds,
+  read with `corp.variable(name[, fallback])`, listed with `corp.variables()`, managed with
+  `set_variable` and its siblings. A value may be a reference the service resolves. Such a value is
+  `sensitive` and is handled as secret material (specs/018).
 - **Audit and traces**: every login, lookup, write and grant as a typed event, for DuckDB's log and
   for OpenTelemetry through acl-otel (`tresor_audit_level`, TRSA 1) (specs/011).
 - **The protocol `duckdb-secrets/1`** (draft until this release), a reference server in Go and a
