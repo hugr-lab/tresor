@@ -3,6 +3,7 @@
 #include "duckdb/catalog/catalog_transaction.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/main/attached_database.hpp"
+#include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
 namespace duckdb {
@@ -55,6 +56,15 @@ void TresorCatalog::Initialize(bool load_builtin) {
 		manage.internal = false;
 		CreateTableFunction(transaction, manage);
 	}
+	// specs/018: registered whatever the service holds - against one without variables they say so
+	for (auto &function : VariableTableFunctions(session, storage)) {
+		CreateTableFunctionInfo variable_info(std::move(function));
+		variable_info.internal = false;
+		CreateTableFunction(transaction, variable_info);
+	}
+	CreateScalarFunctionInfo variable(VariableFunction(session, storage));
+	variable.internal = false;
+	CreateFunction(transaction, variable);
 	CreateTableFunctionInfo act(ActForSessionsFunction(*this));
 	act.internal = false;
 	CreateTableFunction(transaction, act);

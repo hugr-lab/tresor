@@ -135,6 +135,8 @@ export TRESOR_CONFORMANCE_SECRET_KEY=key_id TRESOR_CONFORMANCE_SECRET_VALUE=AKIA
 export TRESOR_CONFORMANCE_HOST=127.0.0.1:$server_port TRESOR_CONFORMANCE_INSECURE=true
 export TRESOR_CONFORMANCE_ISSUER="$issuer" TRESOR_CONFORMANCE_CLIENT_ID=etl TRESOR_CONFORMANCE_CLIENT_SECRET=etl-secret
 export TRESOR_CONFORMANCE_PERSON=1 TRESOR_KC_HOST=127.0.0.1:$server_port TRESOR_KC_ISSUER="$issuer"
+# variables are optional (specs/018): the reference server holds them; another service under test says so itself
+[ -z "${TRESOR_SERVER_CMD:-}" ] && export TRESOR_CONFORMANCE_VARIABLES=1
 export BROWSER="$root/test/keycloak/browser.py" TRESOR_KC_USER=alice TRESOR_KC_PASS=alice-pass
 # a person's login is remembered in this instance's memory only (specs/012): the suite never touches the OS keychain
 export TRESOR_KEYCHAIN=memory

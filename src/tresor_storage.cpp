@@ -909,6 +909,83 @@ shared_ptr<TresorSession> TresorSecretStorage::Current() {
 	return session;
 }
 
+bool TresorSecretStorage::VariableOf(const Caller &caller, const string &name, string &value,
+                                     optional_ptr<ClientContext> context) {
+	if (!caller.refused.empty()) {
+		throw PermissionException("tresor: %s: %s", storage_name, caller.refused);
+	}
+	auto view = ViewOf(caller);
+	if (!view) {
+		throw InvalidInputException("tresor: %s is detached", storage_name);
+	}
+	auto now = NowSeconds();
+	{
+		lock_guard<mutex> guard(lock);
+		auto cached = view->variables.find(name);
+		if (cached != view->variables.end() && cached->second.valid_until > now) {
+			value = cached->second.value;
+			if (auto live = audit.lock()) {
+				live->Count("lookup", "ok", true);
+			}
+			return true;
+		}
+	}
+	auto audited = Audit("lookup", caller, context);
+	audited.Secret(name, "variable").Called();
+	ServiceResponse response;
+	try {
+		response = caller.Call("GET", "/v1/variables/" + Encode(name));
+	} catch (std::exception &ex) {
+		audited.Failed(ex);
+		throw;
+	}
+	auto &host = caller.session->Info().host;
+	if (response.status == 404) {
+		audited.Answer(response);
+		return false;
+	}
+	if (response.status == 403) {
+		audited.Answer(response);
+		throw PermissionException("tresor: you may not use the variable %s in %s (%s)", name, host,
+		                          DescribeProblem(response.status, response.body));
+	}
+	if (response.status != 200) {
+		audited.Answer(response);
+		throw IOException("tresor: the variable %s of %s: %s", name, host,
+		                  DescribeProblem(response.status, response.body));
+	}
+	JsonDoc doc(response.body);
+	auto root = doc.Root();
+	auto found = root && yyjson_is_obj(root) ? yyjson_obj_get(root, "value") : nullptr;
+	if (!found || !yyjson_is_str(found)) {
+		audited.Error("invalid", "the variable came without a string value");
+		throw IOException("tresor: the variable %s of %s came without a string value", name, host);
+	}
+	auto sensitive = yyjson_obj_get(root, "sensitive");
+	value = string(yyjson_get_str(found), yyjson_get_len(found));
+	// a sensitive value (material the service keeps as a secret) no longer than a secret's material; another for
+	// as long as a list is trusted - each caller's own, never shared
+	auto lifetime = sensitive && yyjson_is_true(sensitive) ? STATIC_MATERIAL_SECONDS : LIST_TTL_SECONDS;
+	{
+		lock_guard<mutex> guard(lock);
+		auto &entry = view->variables[name];
+		entry.value = value;
+		entry.valid_until = now + lifetime;
+	}
+	audited.Ok();
+	return true;
+}
+
+void TresorSecretStorage::InvalidateVariable(const string &name) {
+	lock_guard<mutex> guard(lock);
+	if (node) {
+		node->variables.erase(name);
+	}
+	for (auto &view : acl_views) {
+		view.second->variables.erase(name);
+	}
+}
+
 void TresorSecretStorage::Invalidate(const string &name) {
 	lock_guard<mutex> guard(lock);
 	generation++;

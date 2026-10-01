@@ -156,7 +156,7 @@ jobs:
             echo -n ci | gnome-keyring-daemon --unlock --components=secrets >/dev/null
             TRESOR_KC_KEYCHAIN=1 TRESOR_ACL_EXTENSION="$PWD/build/release/extension/acl/acl.duckdb_extension" \
               scripts/ci/test_keycloak.sh' 2>&1 | tee keycloak.log
-          scripts/ci/assert_ran.sh keycloak.log 4 45 'require-env TRESOR_CONFORMANCE'
+          scripts/ci/assert_ran.sh keycloak.log 5 45 'require-env TRESOR_CONFORMANCE'
           grep -q "with duckdb-acl, a session's statements ran as its user" keycloak.log
           grep -q "keychain: a second process logged in without a browser" keycloak.log
           grep -q "private_key_jwt: a node logged in to Keycloak with its key" keycloak.log

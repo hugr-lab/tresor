@@ -63,7 +63,7 @@ fixes only what a client sees.
       "service_flows": ["client_credentials", "private_key_jwt", "token_exchange", "federated", "managed_identity"]
     }
   ],
-  "capabilities": {"write": true, "annotate": true, "dynamic": true, "delegation": false}
+  "capabilities": {"write": true, "annotate": true, "dynamic": true, "delegation": false, "variables": false}
 }
 ```
 
@@ -97,6 +97,8 @@ fixes only what a client sees.
 - `client_id` — a **public** client for people (authorization code with PKCE, loopback redirect).
 - `capabilities.delegation` — whether the optional [delegation](#delegation) resources exist.
   Grants are not optional in version 1.
+- `capabilities.variables` — whether the optional [variables](#variables) resources exist. Absent
+  means `false`.
 
 ## Identity
 
@@ -217,7 +219,7 @@ principals are administrators is the service's configuration.
 
 | Verb | Level | Held by |
 | --- | --- | --- |
-| `create` | service | administrators (in `whoami`: `permissions.create` is `true` or `false`) |
+| `create` | service | administrators, for secrets and variables (in `whoami`: `permissions.create` is `true` or `false`) |
 | `use` | secret | the principals a grant names: roles and groups |
 | `update` | secret | administrators: replace params / material |
 | `delete` | secret | administrators |
@@ -245,6 +247,58 @@ Writes are immediate: a client has no transaction to join them to, and tresor do
 
 A grant names a `role:` or a `group:` principal and the verbs `["use"]`, nothing else. Any other
 principal or verb is `422 invalid_secret`. The id is the client's choice.
+
+## Variables
+
+Optional (`capabilities.variables`). A **variable** is a named string the service holds for its
+callers: a bucket, an endpoint, a dataset's path, a setting shared by a team. It is not a DuckDB
+secret: it takes no part in a secret lookup, and a client reads it only by name.
+
+- A service without variables is a complete `duckdb-secrets/1` service. A client looks at the
+  capability, never at a route: where it is `false` or absent, the routes below do not exist, and a
+  client does not call them.
+- Variables follow the rules of secrets: [names](#conventions), [permissions](#permissions),
+  conditional writes, [errors](#errors) and [delegation](#delegation). Only what differs is below.
+
+| Method | Path | Meaning |
+| --- | --- | --- |
+| `GET` | `/v1/variables` | the variables the caller may see, **without values** |
+| `GET` | `/v1/variables/{name}` | one variable **with its value**, which requires `use` |
+| `PUT` | `/v1/variables/{name}` | create or replace `{value, comment?}`, as [Conditional writes](#conditional-writes) |
+| `DELETE` | `/v1/variables/{name}` | delete, which requires `delete` |
+| `PATCH` | `/v1/variables/{name}` | `{"comment": "…"}`, which requires `annotate` |
+| `GET` / `PUT` / `DELETE` | `/v1/variables/{name}/grants[/{id}]` | the variable's grants, as [Grants](#grants) |
+
+```json
+{
+  "name": "lake_bucket",
+  "comment": "The sales team's lake",
+  "owner": "subject:https://idp.example/realms/corp|8f1c2d3e-…",
+  "created_at": "2026-10-01T10:00:00Z",
+  "updated_at": "2026-10-01T10:00:00Z",
+  "version": "3",
+  "sensitive": false,
+  "permissions": ["use"]
+}
+```
+
+`GET /v1/variables/{name}` adds `"value": "<string>"`.
+
+- **The value is a UTF-8 string.** A service MAY refuse a longer value than it keeps (`422
+  invalid_secret`); 64 KiB is always accepted.
+- **References.** A service MAY let a value name where its content lives: a vault, a key store. Its
+  syntax is the service's own (tresor-server: `ref+azkv://…`). The service resolves it when the value
+  is read, and the client receives the resolved string. A service that does not resolve references
+  stores a value as it was written. Only an administrator writes a reference, and only to a store
+  the service allows. A reference that does not resolve fails the read: `503 service_unavailable`
+  when it may resolve later, `500 service_error` when it will not.
+- **`sensitive`.** It is `true` when the value is, or holds, material the service keeps as a secret
+  (a resolved reference does). A client handles a sensitive value as secret material:
+  - it never writes one to a log, an audit or an error;
+  - it caches it no longer than a secret's material;
+  - it never serves one fetched for one caller to another.
+- **`use` comes only from a grant**, as for a secret. Under a delegation grant, a server reads with
+  its own grants, and passes management on for administrators only.
 
 ## Delegation
 
@@ -328,7 +382,7 @@ a session ran. tresor sends it only when that statement has one and it is well-f
 | `no_verb` | 403 | the caller's roles do not hold the verb |
 | `actor_not_allowed` | 403 | the server may not act for users for this verb |
 | `mint_refused` | 403 | material minted for the caller could not be minted (the detail says why) |
-| `not_found` | 404 | no such secret (or not visible) |
+| `not_found` | 404 | no such secret or variable (or not visible) |
 | `precondition_failed` | 412 | `If-None-Match` / `If-Match` not met |
 | `invalid_secret` | 422 | the secret does not validate |
 | `service_unavailable` | 503 | try later: the service or what it depends on is unreachable for now |
@@ -344,7 +398,8 @@ repository (`test/sql/conformance/`), driven against the service's URL through e
 variables. It checks what a client can observe:
 - a service login and a person login, each followed by `whoami`;
 - a secret the service holds, found by DuckDB's lookup, its material delivered;
-- writes: create, conflict, replace, annotate, grant, revoke, drop.
+- writes: create, conflict, replace, annotate, grant, revoke, drop;
+- variables, only for a service that advertises them (`TRESOR_CONFORMANCE_VARIABLES`).
 
 The suite grows with the client. The
 [reference server](./reference-server.md) passes it in CI, next to a real Keycloak.

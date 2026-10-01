@@ -245,6 +245,43 @@ The service decides whether each of these is allowed, from your role. Some thing
   name. By name tresor only finds secrets you may `use`, and it fetches the material, which the
   service may record as a use. `FROM corp` needs only `delete`.
 
+## Variables
+
+A service may also hold **variables**: named strings a team shares, such as a bucket, an endpoint or a
+dataset's path. They are an optional part of the protocol. A service that holds them says so in its
+discovery, and against one that does not, these functions say exactly that.
+
+```sql
+SELECT corp.variable('lake_bucket');                          -- the value, if your roles are granted it
+SELECT corp.variable('region', 'eu-west-1');                  -- a fallback for a missing one (also fallback := …)
+SET VARIABLE lake = corp.variable('lake_bucket');             -- into DuckDB's own variables
+FROM read_parquet(getvariable('lake') || '/sales/*.parquet');
+FROM corp.variables();                                        -- name, comment, sensitive, version, permissions
+```
+
+Administrators manage them as they manage secrets:
+
+```sql
+CALL corp.set_variable('lake_bucket', 's3://corp-lake', comment := 'The sales lake');
+CALL corp.set_variable('lake_bucket', 's3://other', if_not_exists := true);   -- nothing if it exists
+CALL corp.annotate_variable('lake_bucket', 'The sales team''s lake');
+CALL corp.grant_variable('lake_bucket', 'role:analysts', ['use']);
+FROM corp.variable_grants('lake_bucket');
+CALL corp.revoke_variable('lake_bucket', 'role:analysts');
+CALL corp.drop_variable('lake_bucket', if_exists := true);
+```
+
+- **Use is granted, as for a secret.** A variable you cannot see is a missing one: an error, unless you
+  give a fallback. One you see without `use` (an administrator whose roles are not granted it) stays an
+  error, fallback or not, and so does a reference the service cannot resolve.
+- **A name is a string, sent as given:** `'Lake_Bucket'` and `'lake_bucket'` are two variables.
+- **References.** A service may let an administrator write a value that names where its content lives,
+  such as a vault (tresor-server: `ref+azkv://…`). You receive the resolved string, and such a value is
+  marked `sensitive`.
+- **Sensitive values are handled as secret material.** They never reach the audit or a log, and each
+  caller caches its own, for no longer than a secret's material. Other values are cached for 30
+  seconds, and a write through tresor is read at once.
+
 ## Detach
 
 ```sql
