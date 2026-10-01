@@ -38,8 +38,9 @@ fixes only what a client sees.
   - begins or ends with whitespace;
   - holds a control character.
 
-  A client never sends one (tresor refuses it before the request). Any other name is the service's
-  to accept.
+  A client never creates one (tresor refuses it at `CREATE PERSISTENT SECRET`, before the request). A
+  service that accepts such names lets them be read, dropped and granted as any other. Any other name
+  is the service's to accept.
 - Bodies: a client sends only the fields listed here. A service may refuse unknown fields with
   `422 invalid_secret`.
 - Every error is a problem document, including an unknown route or method (`404 not_found`).

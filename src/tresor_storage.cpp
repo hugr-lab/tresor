@@ -376,6 +376,8 @@ string CanonicalName(const string &name) {
 }
 
 bool ProtocolName(const string &name, string &why) {
+	// the decoder is lenient (overlongs, surrogates): a name reaches here from SQL, which DuckDB's parser has
+	// already checked for valid UTF-8 - the code points are what the rules look at
 	if (name.empty()) {
 		why = "is empty";
 		return false;
@@ -1004,12 +1006,13 @@ unique_ptr<SecretEntry> TresorSecretStorage::StoreSecret(unique_ptr<const BaseSe
 		// from the service (and cached it): a refresh, not a write - nothing goes back
 		return make_uniq<SecretEntry>(EntryOf(secret->Clone()));
 	}
-	auto name = ServiceName(caller, secret->GetName().GetIdentifierName());
+	// a name the protocol lets a service refuse is never written (specs/016): checked first, before any request -
+	// even the listing that finds an existing spelling - and also where a permissive service holds one already
 	string why;
-	if (!ProtocolName(name, why)) {
-		// a name the protocol lets a service refuse: never sent (specs/016)
+	if (!ProtocolName(CanonicalName(secret->GetName().GetIdentifierName()), why)) {
 		throw InvalidInputException("tresor: a secret's name in %s %s", storage_name, why);
 	}
+	auto name = ServiceName(caller, secret->GetName().GetIdentifierName());
 	auto audited = Audit("write", caller, transaction ? transaction->context : nullptr);
 	audited.Secret(name, secret->GetType().GetIdentifierName()).Called();
 	std::map<std::string, std::string> headers;

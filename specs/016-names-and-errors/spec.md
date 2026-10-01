@@ -45,7 +45,10 @@ sends or reads.
   - a client that does not know a type acts on its status: a 4xx is a refusal of the request, a 5xx is
     the service's failure.
 - **tresor:** `ProtocolName` (tresor_storage.cpp) refuses such a name at `CREATE PERSISTENT SECRET …
-  IN corp`, before any request.
+  IN corp`, before any request (even the listing that looks for an existing spelling).
+  - It also refuses replacing such a name that a permissive service already holds. tresor never writes
+    one, while DROP, annotate and grant still reach it.
+  - Only creation is checked. Names in the other calls come from the service or name what it holds.
   - Characters are counted as code points.
   - Whitespace is Unicode's: space, NBSP, the U+2000 block and others.
   - Controls are C0, DEL and C1.
@@ -62,7 +65,9 @@ sends or reads.
 
 ## Testing
 
-- `test/sql/attach/writes.test`: an edge space and 201 characters are refused before any request.
+- `test/sql/attach/writes.test`:
+  - refused before any request: an edge space, an edge NBSP, a tab, 201 characters;
+  - accepted: 200 two-byte characters.
 - `server/internal/api`, `TestProtocolNames`:
   - refused: an edge space (leading, trailing, NBSP), a control, a tab, invalid UTF-8, 201 characters,
     and a grant id with an edge space;
