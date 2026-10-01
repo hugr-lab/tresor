@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/hugr-lab/tresor/server/internal/auth"
 	"github.com/hugr-lab/tresor/server/internal/config"
@@ -492,9 +494,38 @@ func validParams(params map[string]json.RawMessage, redact []string) error {
 	return nil
 }
 
+// protocolName refuses what protocol.md lets a service refuse in a secret's name or a grant's id (specs/016):
+// empty, over 200 characters, not UTF-8, whitespace at an edge, a control character.
+func protocolName(name string) error {
+	if name == "" {
+		return errors.New("is empty")
+	}
+	if !utf8.ValidString(name) {
+		return errors.New("is not UTF-8")
+	}
+	if utf8.RuneCountInString(name) > 200 {
+		return errors.New("is longer than 200 characters")
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return errors.New("holds a control character")
+		}
+	}
+	first, _ := utf8.DecodeRuneInString(name)
+	last, _ := utf8.DecodeLastRuneInString(name)
+	if unicode.IsSpace(first) || unicode.IsSpace(last) {
+		return errors.New("begins or ends with whitespace")
+	}
+	return nil
+}
+
 func (s *Server) putSecret(w http.ResponseWriter, r *http.Request) {
 	c := callerOf(r)
 	name := r.PathValue("name")
+	if err := protocolName(name); err != nil {
+		problem(w, http.StatusUnprocessableEntity, "invalid_secret", "the secret's name "+err.Error())
+		return
+	}
 	var body secretBody
 	if err := readJSON(r, &body); err != nil {
 		problem(w, http.StatusUnprocessableEntity, "invalid_secret", "the body is not a secret: "+err.Error())
@@ -709,6 +740,10 @@ func (s *Server) putGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	if err := protocolName(id); err != nil {
+		problem(w, http.StatusUnprocessableEntity, "invalid_secret", "the grant's id "+err.Error())
+		return
+	}
 	saved, ok := s.mutate(w, r, "grant", func(current *store.Secret) (*store.Secret, error) {
 		// a grant gives `use` to a role or a group (specs/009): never one user, never a management verb
 		role, isRole := strings.CutPrefix(body.Principal, "role:")

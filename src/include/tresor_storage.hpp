@@ -156,6 +156,9 @@ string SecretBody(const KeyValueSecret &secret);
 //! The service's name for a secret: DuckDB compares secret names case-insensitively, the protocol asks for
 //! one canonical form - lower case.
 string CanonicalName(const string &name);
+//! A name the protocol lets a service refuse (specs/016): empty, over 200 characters, not UTF-8, whitespace at
+//! an edge, a control character. `why` says which; never sent.
+bool ProtocolName(const string &name, string &why);
 
 //! A string as JSON text.
 string JsonString(const string &text);

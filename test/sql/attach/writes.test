@@ -16,6 +16,17 @@ ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
 
 # the test shell registers no secret type but tresor's own without an extension: a tresor-typed secret
 # stands in for any key-value secret
+# a name the protocol lets a service refuse is never sent (specs/016)
+statement error
+CREATE PERSISTENT SECRET "edge " IN corp (TYPE tresor, SCOPE 'tresor:written.invalid', FLOW 'token', TOKEN 'x');
+----
+a secret's name in corp begins or ends with whitespace
+
+statement error
+CREATE PERSISTENT SECRET "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" IN corp (TYPE tresor, SCOPE 'tresor:written.invalid', FLOW 'token', TOKEN 'x');
+----
+is longer than 200 characters
+
 statement ok
 CREATE PERSISTENT SECRET Written_One IN corp (TYPE tresor, SCOPE 'tresor:written.invalid', FLOW 'token', TOKEN 'tok-1');
 

@@ -392,6 +392,36 @@ func TestInvalidSecrets(t *testing.T) {
 	}
 }
 
+// what protocol.md lets a service refuse in a name or a grant's id (specs/016): refused, never stored
+func TestProtocolNames(t *testing.T) {
+	f := newFixture(t, "")
+	body := `{"type":"s3","params":{"a":"b"}}`
+	for label, name := range map[string]string{
+		"an edge space":     "a%20",
+		"a leading space":   "%20a",
+		"a control":         "a%01b",
+		"a tab":             "a%09",
+		"not UTF-8":         "a%FF",
+		"over 200":          strings.Repeat("x", 201),
+		"a non-break space": "%C2%A0a",
+	} {
+		if r := f.do("PUT", "/v1/secrets/"+name, f.admin, body); r.status != 422 || r.problemType(t) != "invalid_secret" {
+			t.Errorf("%s: %d %s", label, r.status, r.body)
+		}
+	}
+	// 200 characters (not bytes), an inner space: accepted
+	if r := f.do("PUT", "/v1/secrets/"+strings.Repeat("%C3%A9", 200), f.admin, body); r.status != 201 && r.status != 200 {
+		t.Errorf("200 characters: %d %s", r.status, r.body)
+	}
+	if r := f.do("PUT", "/v1/secrets/a%20b", f.admin, body); r.status != 201 && r.status != 200 {
+		t.Errorf("an inner space: %d %s", r.status, r.body)
+	}
+	grant := `{"principal":"role:analysts","verbs":["use"]}`
+	if r := f.do("PUT", "/v1/secrets/a%20b/grants/%20g", f.admin, grant); r.status != 422 || r.problemType(t) != "invalid_secret" {
+		t.Errorf("a grant id with an edge space: %d %s", r.status, r.body)
+	}
+}
+
 // grants from before specs/009 (to a subject: or a client:, or of management verbs) give nothing, and are
 // reported at start
 func TestLegacyGrantsIgnored(t *testing.T) {
