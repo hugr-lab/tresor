@@ -267,7 +267,7 @@ node's grant, list or material, and no deadlock. It found these:
 
 - ~~acl stamps its presence in the contract~~: done, ACLC 2 (the addendum).
 
-- tresor's audit hook (`tresor_audit.hpp`): grant created, used, revoked, and refused.
+- tresor's audit hook (`tresor_audit.hpp`): grant created, used, revoked, and refused. Done: specs/011.
 
 ## Addendum: the publisher mark (ACLC 2, duckdb-ext-common v0.6.0)
 

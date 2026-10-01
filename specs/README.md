@@ -34,3 +34,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | [014](014-repin-head/spec.md) | re-pin duckdb to the head of v2.0-cyanoptera - typed kwargs, no more DONT_LINK | implemented |
 | [015](015-late-acting/spec.md) | a node's bootstrap - `act_for_sessions()` on a live catalog, a managed identity as the federated assertion | implemented |
 | [016](016-names-and-errors/spec.md) | what a service may refuse in a name; `service_error` (500), an error that is not "try later" | implemented |
+| [017](017-release-prep/spec.md) | the first release - what is ready, the checklist for DuckDB 2.0 | accepted |
