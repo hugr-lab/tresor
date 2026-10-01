@@ -124,3 +124,36 @@ func TestPersistFailureRollsBack(t *testing.T) {
 		t.Fatal("a delete that did not persist must not stay in memory")
 	}
 }
+
+// variables (specs/018): their own namespace, kept in the same encrypted file
+func TestVariablesRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	k := key(t)
+	s, err := Open(filepath.Join(dir, "secrets.enc"), k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	put := func(name, value string) func(*Secret) (*Secret, error) {
+		return func(*Secret) (*Secret, error) {
+			raw, _ := json.Marshal(value)
+			return &Secret{Type: "variable", Params: map[string]json.RawMessage{"value": raw}, Version: 1}, nil
+		}
+	}
+	if _, err := s.Variables().Update("lake", put("lake", "s3://corp-lake")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get("lake"); err != ErrNotFound {
+		t.Fatalf("a variable is no secret: %v", err)
+	}
+	again, err := Open(filepath.Join(dir, "secrets.enc"), k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := again.Variables().Get("lake")
+	if err != nil || string(got.Params["value"]) != `"s3://corp-lake"` {
+		t.Fatalf("after reopening: %v %v", got, err)
+	}
+	if len(again.List()) != 0 || len(again.Variables().List()) != 1 {
+		t.Fatalf("namespaces mixed: %d secrets, %d variables", len(again.List()), len(again.Variables().List()))
+	}
+}

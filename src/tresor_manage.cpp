@@ -5,7 +5,8 @@
 #include "duckdb/common/exception.hpp"
 
 // The service's management surface as table functions of the catalog (specs/005, 009): annotate_secret,
-// grants, grant_secret, revoke_secret - an administrator's (the service refuses anyone else). Each call runs
+// grants, grant_secret, revoke_secret - an administrator's (the service refuses anyone else) - and the same for
+// variables (specs/018): annotate_variable, variable_grants, grant_variable, revoke_variable. Each call runs
 // once, when its table function is scanned; the service decides whether it is allowed.
 
 namespace duckdb {
@@ -22,10 +23,11 @@ struct ManageBindData : public TableFunctionData {
 	    : action(action_p), session(std::move(session_p)), storage(storage_p) {
 	}
 	Action action;
+	bool variable = false; // a variable's (specs/018), else a secret's
 	shared_ptr<TresorSession> session;
 	reference<TresorSecretStorage> storage; // owned by the SecretManager, for the instance's lifetime
 	Caller caller;                          // resolved per call: the node, or a duckdb-acl session's user
-	string name;                            // the secret, canonical
+	string name;                            // the secret or the variable, canonical
 	string argument;                        // the comment, or the principal
 	vector<string> verbs;
 	//! The change being made (per call), told of the service's refusal; mutable: told from const paths.
@@ -58,19 +60,24 @@ string Arg(TableFunctionBindInput &input, idx_t index, const char *what) {
 		data.audited->Answer(response);
 	}
 	auto &host = data.session->Info().host;
+	auto what = data.variable ? "variable" : "secret";
 	if (response.status == 404) {
-		throw InvalidInputException("tresor: no secret %s in %s", data.name, host);
+		throw InvalidInputException("tresor: no %s %s in %s", what, data.name, host);
 	}
 	if (response.status == 403) {
-		throw PermissionException("tresor: you may not %s the secret %s in %s (%s)", doing, data.name, host,
+		throw PermissionException("tresor: you may not %s the %s %s in %s (%s)", doing, what, data.name, host,
 		                          DescribeProblem(response.status, response.body));
 	}
-	throw InvalidInputException("tresor: %s the secret %s in %s: %s", doing, data.name, host,
+	throw InvalidInputException("tresor: %s the %s %s in %s: %s", doing, what, data.name, host,
 	                            DescribeProblem(response.status, response.body));
 }
 
+string BasePath(const ManageBindData &data) {
+	return data.variable ? "/v1/variables/" : "/v1/secrets/";
+}
+
 vector<Grant> ReadGrants(const ManageBindData &data) {
-	auto response = data.caller.Call("GET", "/v1/secrets/" + EncodePathSegment(data.name) + "/grants");
+	auto response = data.caller.Call("GET", BasePath(data) + EncodePathSegment(data.name) + "/grants");
 	if (response.status != 200) {
 		Refused(data, response, "list the grants of");
 	}
@@ -121,12 +128,16 @@ string GrantId(const string &principal) {
 	return StringUtil::Format("g-%016llx", (unsigned long long)hash);
 }
 
-template <Action ACTION>
+template <Action ACTION, bool VARIABLE>
 unique_ptr<FunctionData> ManageBind(ClientContext &context, TableFunctionBindInput &input,
                                     vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto &info = input.info->Cast<TresorFunctionInfo>();
 	auto data = make_uniq<ManageBindData>(ACTION, info.session, *info.storage);
-	data->name = CanonicalName(Arg(input, 0, "the secret's name"));
+	data->variable = VARIABLE;
+	if (VARIABLE) {
+		RequireVariables(*info.session, info.storage->GetName());
+	}
+	data->name = CanonicalName(Arg(input, 0, VARIABLE ? "the variable's name" : "the secret's name"));
 	auto add = [&](const char *name, LogicalType type) {
 		names.emplace_back(name);
 		return_types.push_back(std::move(type));
@@ -147,7 +158,8 @@ unique_ptr<FunctionData> ManageBind(ClientContext &context, TableFunctionBindInp
 			                            data->argument);
 		}
 		if (input.inputs[2].IsNull()) {
-			throw InvalidInputException("tresor: the verbs must not be NULL - revoke_secret takes all away");
+			throw InvalidInputException("tresor: the verbs must not be NULL - %s takes all away",
+			                            VARIABLE ? "revoke_variable" : "revoke_secret");
 		}
 		for (auto &verb : ListValue::GetChildren(input.inputs[2])) {
 			if (verb.IsNull()) {
@@ -156,8 +168,8 @@ unique_ptr<FunctionData> ManageBind(ClientContext &context, TableFunctionBindInp
 			data->verbs.push_back(verb.ToString());
 		}
 		if (data->verbs.size() != 1 || data->verbs[0] != "use") {
-			throw InvalidInputException(
-			    "tresor: a grant gives use, and only use - ['use'] (revoke_secret takes it away)");
+			throw InvalidInputException("tresor: a grant gives use, and only use - ['use'] (%s takes it away)",
+			                            VARIABLE ? "revoke_variable" : "revoke_secret");
 		}
 		DUCKDB_EXPLICIT_FALLTHROUGH;
 	case Action::GRANTS:
@@ -200,8 +212,10 @@ void ManageScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 	auto &storage = data.storage.get();
 	// the service's own spelling: DuckDB compares names case-insensitively, the service exactly
 	data.caller = storage.CallerFor(&context);
-	data.name = storage.ServiceName(data.caller, data.name);
-	auto path = "/v1/secrets/" + EncodePathSegment(data.name);
+	if (!data.variable) {
+		data.name = storage.ServiceName(data.caller, data.name);
+	}
+	auto path = BasePath(data) + EncodePathSegment(data.name);
 	if (data.action == Action::GRANTS) {
 		// reading the grants changes nothing: not audited
 		state.rows = ReadGrants(data);
@@ -212,7 +226,7 @@ void ManageScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 	}
 	auto kind = data.action == Action::ANNOTATE ? "annotate" : data.action == Action::GRANT ? "grant" : "revoke";
 	auto audited = storage.Audit(kind, data.caller, &context);
-	audited.Secret(data.name).Called();
+	audited.Secret(data.name, data.variable ? "variable" : "").Called();
 	if (data.action != Action::ANNOTATE) {
 		audited.Target(data.argument);
 	}
@@ -228,7 +242,16 @@ void ManageScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 	audited.Ok();
 }
 
-//! annotate_secret, grant_secret, revoke_secret: the change, made; a refusal throws.
+//! After a change: the cached lists (a secret) or values (a variable) are stale.
+void Forget(const ManageBindData &data, TresorSecretStorage &storage) {
+	if (data.variable) {
+		storage.InvalidateVariable(data.name);
+	} else {
+		storage.Invalidate(data.name);
+	}
+}
+
+//! annotate_secret, grant_secret, revoke_secret (and the variables'): the change, made; a refusal throws.
 void Change(ManageBindData &data, ManageState &state, TresorSecretStorage &storage, const string &path,
             DataChunk &output) {
 	switch (data.action) {
@@ -237,7 +260,7 @@ void Change(ManageBindData &data, ManageState &state, TresorSecretStorage &stora
 		if (response.status != 200) {
 			Refused(data, response, "annotate");
 		}
-		storage.Invalidate(data.name);
+		Forget(data, storage);
 		JsonDoc doc(response.body);
 		auto version = yyjson_obj_get(doc.Root(), "version");
 		output.data[0].Append(Value(data.name));
@@ -276,7 +299,7 @@ void Change(ManageBindData &data, ManageState &state, TresorSecretStorage &stora
 				}
 			}
 		}
-		storage.Invalidate(data.name); // the caller's own verbs may have changed
+		Forget(data, storage); // the caller's own verbs may have changed
 		EmitGrant(output, 0, Grant {id, data.argument, data.verbs});
 		return;
 	}
@@ -291,9 +314,10 @@ void Change(ManageBindData &data, ManageState &state, TresorSecretStorage &stora
 			}
 			EmitGrant(output, 0, grant);
 		}
-		storage.Invalidate(data.name);
+		Forget(data, storage);
 		if (output.size() == 0) {
-			throw InvalidInputException("tresor: %s holds no grant on the secret %s", data.argument, data.name);
+			throw InvalidInputException("tresor: %s holds no grant on the %s %s", data.argument,
+			                            data.variable ? "variable" : "secret", data.name);
 		}
 		return;
 	}
@@ -312,10 +336,17 @@ TableFunction Manage(const char *name, vector<LogicalType> arguments, table_func
 vector<TableFunction> ManagementFunctions(shared_ptr<TresorSession> session, TresorSecretStorage &storage) {
 	auto text = LogicalType::VARCHAR;
 	return {
-	    Manage("annotate_secret", {text, text}, ManageBind<Action::ANNOTATE>, session, storage),
-	    Manage("grants", {text}, ManageBind<Action::GRANTS>, session, storage),
-	    Manage("grant_secret", {text, text, LogicalType::LIST(text)}, ManageBind<Action::GRANT>, session, storage),
-	    Manage("revoke_secret", {text, text}, ManageBind<Action::REVOKE>, session, storage),
+	    Manage("annotate_secret", {text, text}, ManageBind<Action::ANNOTATE, false>, session, storage),
+	    Manage("grants", {text}, ManageBind<Action::GRANTS, false>, session, storage),
+	    Manage("grant_secret", {text, text, LogicalType::LIST(text)}, ManageBind<Action::GRANT, false>, session,
+	           storage),
+	    Manage("revoke_secret", {text, text}, ManageBind<Action::REVOKE, false>, session, storage),
+	    // specs/018: the same for variables, where the service holds them
+	    Manage("annotate_variable", {text, text}, ManageBind<Action::ANNOTATE, true>, session, storage),
+	    Manage("variable_grants", {text}, ManageBind<Action::GRANTS, true>, session, storage),
+	    Manage("grant_variable", {text, text, LogicalType::LIST(text)}, ManageBind<Action::GRANT, true>, session,
+	           storage),
+	    Manage("revoke_variable", {text, text}, ManageBind<Action::REVOKE, true>, session, storage),
 	};
 }
 

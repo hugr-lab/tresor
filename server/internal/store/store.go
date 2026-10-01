@@ -1,5 +1,6 @@
-// Package store keeps the secrets (specs/003): one JSON document in memory, written after every change
-// to an AES-256-GCM-encrypted file when a path is configured. Nothing here logs material.
+// Package store keeps the secrets (specs/003) and the variables (specs/018): one JSON document in memory,
+// written after every change to an AES-256-GCM-encrypted file when a path is configured. Nothing here logs
+// material or a value.
 package store
 
 import (
@@ -53,20 +54,22 @@ const sealAAD = "tresor-server/1"
 
 // Store is safe for concurrent use.
 type Store struct {
-	mu      sync.Mutex
-	secrets map[string]*Secret
-	path    string
-	aead    cipher.AEAD
+	mu        sync.Mutex
+	secrets   map[string]*Secret
+	variables map[string]*Secret // specs/018: a variable is kept as a secret whose params hold "value"
+	path      string
+	aead      cipher.AEAD
 }
 
 type document struct {
-	Secrets []*Secret `json:"secrets"`
+	Secrets   []*Secret `json:"secrets"`
+	Variables []*Secret `json:"variables,omitempty"`
 }
 
 // Open returns an in-memory store for an empty path; otherwise it decrypts the file (a missing file is
 // an empty store). A file that does not decrypt is an error: the store is never overwritten blind.
 func Open(path string, key []byte) (*Store, error) {
-	s := &Store{secrets: map[string]*Secret{}, path: path}
+	s := &Store{secrets: map[string]*Secret{}, variables: map[string]*Secret{}, path: path}
 	if path == "" {
 		return s, nil
 	}
@@ -102,6 +105,9 @@ func Open(path string, key []byte) (*Store, error) {
 	for _, sec := range doc.Secrets {
 		s.secrets[sec.Name] = sec
 	}
+	for _, v := range doc.Variables {
+		s.variables[v.Name] = v
+	}
 	return s, nil
 }
 
@@ -113,6 +119,9 @@ func (s *Store) persist() error {
 	doc := document{Secrets: make([]*Secret, 0, len(s.secrets))}
 	for _, sec := range s.secrets {
 		doc.Secrets = append(doc.Secrets, sec)
+	}
+	for _, v := range s.variables {
+		doc.Variables = append(doc.Variables, v)
 	}
 	plain, err := json.Marshal(doc)
 	if err != nil {
@@ -157,58 +166,78 @@ func clone(sec *Secret) *Secret {
 }
 
 // List returns copies of every secret, sorted by name.
-func (s *Store) List() []*Secret {
+func (s *Store) List() []*Secret { return s.list(s.secrets) }
+
+// Get returns a copy of one secret.
+func (s *Store) Get(name string) (*Secret, error) { return s.get(s.secrets, name) }
+
+// Update runs fn on the current secret (nil when absent) under the store's lock. fn returns the new
+// secret (nil: delete) or an error that aborts the change; the result is persisted before Update
+// returns. This is the one write path, so every check fn makes is atomic with the write.
+func (s *Store) Update(name string, fn func(current *Secret) (*Secret, error)) (*Secret, error) {
+	return s.update(s.secrets, name, fn)
+}
+
+// Variables is the store's other namespace (specs/018): the same methods, its own names, the same file.
+type Variables struct{ s *Store }
+
+// Variables returns the variables' namespace.
+func (s *Store) Variables() *Variables { return &Variables{s} }
+
+func (v *Variables) List() []*Secret                  { return v.s.list(v.s.variables) }
+func (v *Variables) Get(name string) (*Secret, error) { return v.s.get(v.s.variables, name) }
+func (v *Variables) Update(name string, fn func(current *Secret) (*Secret, error)) (*Secret, error) {
+	return v.s.update(v.s.variables, name, fn)
+}
+
+func (s *Store) list(m map[string]*Secret) []*Secret {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]*Secret, 0, len(s.secrets))
-	for _, sec := range s.secrets {
+	out := make([]*Secret, 0, len(m))
+	for _, sec := range m {
 		out = append(out, clone(sec))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
-// Get returns a copy of one secret.
-func (s *Store) Get(name string) (*Secret, error) {
+func (s *Store) get(m map[string]*Secret, name string) (*Secret, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sec, ok := s.secrets[name]
+	sec, ok := m[name]
 	if !ok {
 		return nil, ErrNotFound
 	}
 	return clone(sec), nil
 }
 
-// Update runs fn on the current secret (nil when absent) under the store's lock. fn returns the new
-// secret (nil: delete) or an error that aborts the change; the result is persisted before Update
-// returns. This is the one write path, so every check fn makes is atomic with the write.
-func (s *Store) Update(name string, fn func(current *Secret) (*Secret, error)) (*Secret, error) {
+func (s *Store) update(m map[string]*Secret, name string, fn func(current *Secret) (*Secret, error)) (*Secret, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var current *Secret
-	if sec, ok := s.secrets[name]; ok {
+	if sec, ok := m[name]; ok {
 		current = clone(sec)
 	}
 	next, err := fn(current)
 	if err != nil {
 		return nil, err
 	}
-	previous, existed := s.secrets[name]
+	previous, existed := m[name]
 	if next == nil {
 		if !existed {
 			return nil, ErrNotFound
 		}
-		delete(s.secrets, name)
+		delete(m, name)
 	} else {
 		next.Name = name
-		s.secrets[name] = clone(next)
+		m[name] = clone(next)
 	}
 	if err := s.persist(); err != nil {
 		// the change did not reach the disk: undo it in memory too
 		if existed {
-			s.secrets[name] = previous
+			m[name] = previous
 		} else {
-			delete(s.secrets, name)
+			delete(m, name)
 		}
 		return nil, fmt.Errorf("store: %w", err)
 	}

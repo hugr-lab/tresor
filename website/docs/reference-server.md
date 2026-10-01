@@ -18,6 +18,8 @@ A production service is being designed separately:
 - Secrets: list, read, create/replace with preconditions (`If-None-Match: *`, `If-Match`), delete,
   annotate.
 - Grants.
+- Variables (optional in the protocol, `capabilities.variables`): the secrets' rules in a namespace of
+  their own. It resolves no references, so none of its variables is sensitive.
 - Token verification against any number of OIDC issuers:
   - the signature against the issuer's JWKS;
   - `iss` (verbatim: an issuer ending in `/`, like Auth0 or Entra v1, works), expiry, and the

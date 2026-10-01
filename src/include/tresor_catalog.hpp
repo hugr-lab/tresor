@@ -12,6 +12,7 @@
 #include "tresor_storage.hpp"
 
 #include "duckdb/catalog/duck_catalog.hpp"
+#include "duckdb/function/function_set.hpp"
 #include "duckdb/function/table_function.hpp"
 
 namespace duckdb {
@@ -77,6 +78,12 @@ TableFunction WhoamiFunction(shared_ptr<TresorSession> session, TresorSecretStor
 TableFunction SecretsFunction(shared_ptr<TresorSession> session, TresorSecretStorage &storage);
 //! annotate_secret, grants, grant_secret, revoke_secret (tresor_manage.cpp, specs/005).
 vector<TableFunction> ManagementFunctions(shared_ptr<TresorSession> session, TresorSecretStorage &storage);
+//! Variables (tresor_variables.cpp, specs/018): refused unless the service advertises capabilities.variables.
+void RequireVariables(const TresorSession &session, const string &catalog);
+//! variable(name[, fallback]) - a scalar.
+ScalarFunctionSet VariableFunction(shared_ptr<TresorSession> session, TresorSecretStorage &storage);
+//! variables(), set_variable, drop_variable.
+vector<TableFunction> VariableTableFunctions(shared_ptr<TresorSession> session, TresorSecretStorage &storage);
 //! act_for_sessions (tresor_act.cpp, specs/015).
 TableFunction ActForSessionsFunction(TresorCatalog &catalog);
 

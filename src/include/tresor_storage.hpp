@@ -86,6 +86,13 @@ public:
 	void Invalidate(const string &name);
 	//! An acl session is over: its list and material go.
 	void ForgetSession(const string &acl_session);
+
+	//! A variable's value for `caller` (specs/018): from the caller's cache, else GET /v1/variables/{name}.
+	//! False when the service has no such variable (404); throws when it refuses (403) or fails. An error
+	//! never carries the value.
+	bool VariableOf(const Caller &caller, const string &name, string &value, optional_ptr<ClientContext> context);
+	//! After a variable's write: its cached values go, for every caller.
+	void InvalidateVariable(const string &name);
 	//! Fresh material for a listed secret, bypassing the cache (the tresor provider: httpfs's REFRESH auto).
 	unique_ptr<const BaseSecret> RefreshMaterial(const string &name, optional_ptr<CatalogTransaction> transaction);
 
@@ -100,6 +107,10 @@ public:
 	string ServiceName(const Caller &caller, const string &name);
 
 private:
+	struct CachedVariable {
+		string value;
+		int64_t valid_until = 0;
+	};
 	struct Material {
 		string version;
 		int64_t refreshed_at = 0; // minted by a refresh (RefreshMaterial): parallel refreshes share it
@@ -114,6 +125,7 @@ private:
 		int64_t failed_at = 0;
 		bool listed = false; // a view never listed waits for its first list instead of matching nothing
 		unordered_map<string, Material> materials;
+		unordered_map<string, CachedVariable> variables; // specs/018: this caller's values, by name
 	};
 
 	//! The view of a caller (created for a new acl session); null when the caller cannot be served.

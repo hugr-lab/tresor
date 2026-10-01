@@ -1,0 +1,107 @@
+# name: test/sql/conformance/variables.test
+# description: duckdb-secrets/1 conformance - variables, for a service that advertises them (capabilities.variables, specs/018)
+# group: [conformance]
+
+# variables are optional: set TRESOR_CONFORMANCE_VARIABLES for a service that holds them (scripts/ci/test_keycloak.sh
+# does for the reference server). The conformance client must be an administrator, and hold at least one role: the
+# variable is granted to it, as an administrator's role gives no use by itself
+require-env TRESOR_CONFORMANCE_VARIABLES
+
+require-env TRESOR_CONFORMANCE_HOST
+
+require-env TRESOR_CONFORMANCE_INSECURE
+
+require-env TRESOR_CONFORMANCE_ISSUER
+
+require-env TRESOR_CONFORMANCE_CLIENT_ID
+
+require-env TRESOR_CONFORMANCE_CLIENT_SECRET
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+CREATE SECRET conformance_login (TYPE tresor, SCOPE 'tresor:{TRESOR_CONFORMANCE_HOST}',
+    FLOW 'client_credentials', CLIENT_ID '{TRESOR_CONFORMANCE_CLIENT_ID}',
+    CLIENT_SECRET '{TRESOR_CONFORMANCE_CLIENT_SECRET}', ISSUER '{TRESOR_CONFORMANCE_ISSUER}');
+
+statement ok
+ATTACH 'tresor:{TRESOR_CONFORMANCE_HOST}' AS svc (INSECURE_HTTP {TRESOR_CONFORMANCE_INSECURE});
+
+statement ok
+CALL svc.drop_variable('conformance_var', if_exists := true);
+
+query I
+SELECT version IS NOT NULL FROM svc.set_variable('conformance_var', 'v1', comment := 'written by the conformance suite');
+----
+true
+
+# CREATE semantics: an existing one is left
+query I
+SELECT version IS NULL FROM svc.set_variable('conformance_var', 'other', if_not_exists := true);
+----
+true
+
+query II
+SELECT comment, list_contains(permissions, 'update') FROM svc.variables() WHERE name = 'conformance_var';
+----
+written by the conformance suite	true
+
+# use comes from a grant to one of the caller's roles
+statement ok
+SET VARIABLE conformance_role = (SELECT list_filter(roles, lambda r: r LIKE 'role:%')[1] FROM svc.whoami());
+
+query I
+SELECT principal = getvariable('conformance_role') FROM svc.grant_variable('conformance_var', getvariable('conformance_role'), ['use']);
+----
+true
+
+query I
+SELECT svc.variable('conformance_var');
+----
+v1
+
+# a replace is read at once
+statement ok
+CALL svc.set_variable('conformance_var', 'v2');
+
+query I
+SELECT svc.variable('conformance_var');
+----
+v2
+
+query I
+SELECT comment FROM svc.annotate_variable('conformance_var', 'annotated');
+----
+annotated
+
+query I
+SELECT count(*) FROM svc.variable_grants('conformance_var');
+----
+1
+
+statement ok
+CALL svc.revoke_variable('conformance_var', getvariable('conformance_role'));
+
+statement error
+SELECT svc.variable('conformance_var');
+----
+conformance_var
+
+query I
+SELECT svc.variable('conformance_absent', 'fallback');
+----
+fallback
+
+query I
+SELECT dropped FROM svc.drop_variable('conformance_var');
+----
+true
+
+query I
+SELECT count(*) FROM svc.variables() WHERE name = 'conformance_var';
+----
+0
+
+statement ok
+DETACH svc;

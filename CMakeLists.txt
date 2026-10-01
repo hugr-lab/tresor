@@ -42,6 +42,7 @@ set(EXTENSION_SOURCES
     src/tresor_credentials.cpp
     src/tresor_logoff.cpp
     src/tresor_act.cpp
+    src/tresor_variables.cpp
     ${DUCKDB_EXT_COMMON_OIDC_SOURCES}
     ${DUCKDB_EXT_COMMON_KEYCHAIN_SOURCES})
 

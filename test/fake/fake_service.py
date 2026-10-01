@@ -54,7 +54,7 @@ SERVICE = {"subject": "client:etl", "roles": ["role:etl"], "create": True}
 CLIENTS = {"etl": "s3cr3t"}
 STATIC_TOKENS = {"static-token": {"subject": "client:static", "roles": [], "create": False}}
 REALMS = {"", "multi", "wrong", "expiring", "revoking", "noflows", "broken", "nolist", "acting", "shifty", "picky",
-          "second", "auth0"}
+          "second", "auth0", "novars"}
 ISSUERS = {"idp", "idp2", "idp-revoking"}
 FIRST_USES = 2  # expiring/revoking: how many whoami calls a token as first issued survives
 
@@ -154,7 +154,8 @@ STATS = {"exchanges": 0, "grants": 0, "revoked": 0, "refresh_asked": 0}
 IDP_STATS = {"authorize": 0, "refresh": 0, "refresh_scope": "", "revoked_tokens": 0,
              # specs/013: what the audience parameter, the platform endpoints and the assertions carried
              "authorize_audience": "", "cc_audience": "", "mi_resource": "", "gh_audience": "", "assertions": 0,
-             "device_audience": "", "last_federated": "", "last_kid": "", "last_x5t": ""}
+             "device_audience": "", "last_federated": "", "last_kid": "", "last_x5t": "",
+             "variable_requests": 0}  # specs/018: every /v1/variables request, whatever the realm
 # specs/013: services that prove themselves without a secret - public keys from the test script's key directory
 KEYS = os.environ.get("TRESOR_TEST_KEYS", "")
 KEY_CLIENTS = {"keynode": "keynode.pub", "eckeynode": "eckeynode.pub"}
@@ -163,7 +164,16 @@ FEDERATED = {"fednode": {"eyJhbGciOiJub25lIn0.eyJzdWIiOiJmZWRub2RlIn0.c2ln", "ey
 SEEN_JTI = set()
 # realms that serve a node acting for acl sessions (specs/008); auth0 too, for the pinned audience (specs/015)
 ACTING_REALMS = ("acting", "shifty", "auth0")
-MI_ASSERTIONS = set()  # specs/015: tokens /msi/token issued for api://AzureADTokenExchange
+MI_ASSERTIONS = set()
+# specs/018: variables, in every realm but novars (no capability). db_password is a reference the service
+# resolves (sensitive); hidden is listed but not usable; whoami_var answers whom it was read for
+VARIABLES = {
+    "lake_bucket": {"value": "s3://corp-lake", "comment": "the lake", "version": 1, "permissions": ["use"]},
+    "db_password": {"value": "ref+fake://db-pass", "comment": "", "version": 1, "permissions": ["use"]},
+    "hidden": {"value": "nope", "comment": "", "version": 1, "permissions": []},
+    "whoami_var": {"value": "", "comment": "", "version": 1, "permissions": ["use"]},
+}
+VARIABLE_READS = {}  # name -> GETs of its value  # specs/015: tokens /msi/token issued for api://AzureADTokenExchange
 
 
 def b64url_decode(text):
@@ -404,6 +414,8 @@ class Handler(BaseHTTPRequestHandler):
         query = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
         base = self.base()
         realm, rest = self.split(url.path)
+        if self.variables("GET", realm, rest):  # specs/018
+            return
 
         if realm in ISSUERS:
             if rest == "/.well-known/openid-configuration":
@@ -451,7 +463,7 @@ class Handler(BaseHTTPRequestHandler):
                 "issuers": issuers,
                 # delegation is offered everywhere but the expiring realm (specs/007: the client checks it)
                 "capabilities": {"write": True, "annotate": True, "dynamic": True,
-                                 "delegation": realm != "expiring"},
+                                 "delegation": realm != "expiring", "variables": realm != "novars"},
             })
             return
         if realm in ACTING_REALMS and rest.startswith("/v1/"):
@@ -651,6 +663,97 @@ class Handler(BaseHTTPRequestHandler):
         self.send(204, b"", "text/plain")
 
     # --- writes (specs/005): any realm, any authenticated caller; names starting forbidden_ are refused ---
+    # --- variables (specs/018) ---------------------------------------------------------------------------
+    @staticmethod
+    def variable_view(name, var):
+        sensitive = var["value"].startswith("ref+")
+        return {"name": name, "comment": var["comment"], "owner": "client:etl", "version": str(var["version"]),
+                "created_at": "2026-10-01T10:00:00Z", "updated_at": "2026-10-01T10:00:00Z",
+                "sensitive": sensitive, "permissions": var["permissions"]}
+
+    def variables(self, method, realm, rest):
+        """True when the request was a variable's (answered here)."""
+        if not (rest == "/v1/variables" or rest.startswith("/v1/variables/")):
+            return False
+        with LOCK:
+            IDP_STATS["variable_requests"] += 1
+        if realm == "novars":
+            self.problem(404, "not_found", "this service holds no variables")
+            return True
+        identity, actor = self.effective() if realm in ACTING_REALMS else (self.bearer_identity(), None)
+        if identity is None:
+            if realm not in ACTING_REALMS:
+                self.problem(401, "unauthenticated", "token missing, invalid or expired")
+            return True
+        if method != "GET" and actor is not None:
+            self.problem(403, "actor_not_allowed", "this actor may not write for users")
+            return True
+        parts = [urllib.parse.unquote(p) for p in rest[len("/v1/variables/"):].split("/")] if rest != "/v1/variables" else []
+        body = self.body() if method in ("PUT", "PATCH") else None
+        with LOCK:
+            if not parts:
+                self.send(200, [self.variable_view(n, v) for n, v in sorted(VARIABLES.items())])
+                return True
+            name = parts[0]
+            var = VARIABLES.get(name)
+            if len(parts) >= 2 and parts[1] == "grants":
+                if var is None:
+                    self.problem(404, "not_found", "no variable")
+                    return True
+                grants = var.setdefault("grants", {})
+                if method == "GET":
+                    self.send(200, list(grants.values()))
+                elif method == "PUT":
+                    grants[parts[2]] = {"id": parts[2], "principal": body["principal"], "verbs": body["verbs"]}
+                    self.send(200, list(grants.values()))
+                elif parts[2] in grants:
+                    del grants[parts[2]]
+                    self.send(204, b"", "text/plain")
+                else:
+                    self.problem(404, "not_found", "no grant")
+                return True
+            if method == "GET":
+                if var is None:
+                    self.problem(404, "not_found", "no variable %s" % name)
+                elif "use" not in var["permissions"]:
+                    self.problem(403, "no_verb", "the caller's roles do not hold use")
+                else:
+                    VARIABLE_READS[name] = VARIABLE_READS.get(name, 0) + 1
+                    value = var["value"]
+                    if value.startswith("ref+fake://"):
+                        value = "resolved:" + value[len("ref+fake://"):]  # a reference, resolved on read
+                    if name == "whoami_var":
+                        value = "for:" + identity["subject"]
+                    self.send(200, dict(self.variable_view(name, var), value=value))
+                return True
+            if name.startswith("forbidden_"):
+                self.problem(403, "no_verb", "the caller may not write this variable")
+                return True
+            if method == "PUT":
+                if not isinstance(body, dict) or not isinstance(body.get("value"), str):
+                    self.problem(422, "invalid_secret", "a variable is {value, comment?}")
+                    return True
+                if var is not None and self.headers.get("If-None-Match") == "*":
+                    self.problem(412, "precondition_failed", "the variable exists")
+                    return True
+                VARIABLES[name] = {"value": body["value"], "comment": body.get("comment", (var or {}).get("comment", "")),
+                                   "version": (var or {}).get("version", 0) + 1,
+                                   "permissions": ["use", "update", "delete", "annotate", "grant"],
+                                   "grants": (var or {}).get("grants", {})}
+                self.send(201 if var is None else 200, self.variable_view(name, VARIABLES[name]))
+                return True
+            if var is None:
+                self.problem(404, "not_found", "no variable %s" % name)
+                return True
+            if method == "PATCH":
+                var["comment"] = body["comment"]
+                var["version"] += 1
+                self.send(200, self.variable_view(name, var))
+            else:  # DELETE
+                del VARIABLES[name]
+                self.send(204, b"", "text/plain")
+            return True
+
     def authorised(self):
         auth = self.headers.get("Authorization", "")
         token = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
@@ -675,6 +778,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         realm, rest = self.split(urllib.parse.urlparse(self.path).path)
+        if self.variables("PUT", realm, rest):  # specs/018
+            return
         if self.refuse_delegated_write(realm):
             return
         if not rest.startswith("/v1/secrets/") or not self.authorised():
@@ -722,6 +827,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         realm, rest = self.split(urllib.parse.urlparse(self.path).path)
+        if self.variables("DELETE", realm, rest):  # specs/018
+            return
         if realm in ACTING_REALMS and rest.startswith("/v1/delegations/"):
             self.acting_delete_grant(urllib.parse.unquote(rest[len("/v1/delegations/"):]))
             return
@@ -750,6 +857,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PATCH(self):
         realm, rest = self.split(urllib.parse.urlparse(self.path).path)
+        if self.variables("PATCH", realm, rest):  # specs/018
+            return
         if self.refuse_delegated_write(realm):
             return
         if not rest.startswith("/v1/secrets/"):

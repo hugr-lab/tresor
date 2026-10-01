@@ -1,6 +1,6 @@
 # Spec 018: variables - named strings a service holds, an optional part of the protocol
 
-- **Status**: draft
+- **Status**: implemented
 - **Date**: 2026-10-01
 - **Author**: hugr lab
 - **Asked by**: the owner, with tresor-server (the `tresor_value` idea of spec 016's follow-ups)
@@ -78,9 +78,10 @@ organisation runs. It lacks only a value that is not a DuckDB secret.
     statement and name, not once per row.
 - **Caching.** A value is cached per caller, as secret material is:
   - the node, and each acl session through its grant, have their own cache;
-  - a non-sensitive value is reused while its version is unchanged in the list (the list refreshes
-    as the secrets' does);
-  - a sensitive value is reused no longer than a material is.
+  - a non-sensitive value is reused for as long as a list is trusted (30 s);
+  - a sensitive value is reused no longer than static material (5 min);
+  - a write through tresor (set, drop, a grant) drops the name's cached values at once;
+  - DETACH and an acl session's end drop them too.
 - **`corp.variables()`** is a table function: `name, comment, sensitive, version, permissions`, with no
   value.
 - **Management** (administrators):
@@ -115,18 +116,21 @@ organisation runs. It lacks only a value that is not a DuckDB secret.
 ## Testing
 
 - `test/sql/attach/variables.test` (the fake service, which advertises the capability):
-  - read; the fallback on a `404`; an error on a `403`;
+  - read; the fallback on a `404` (by position, by name, NULL); an error on a `403`;
+  - a resolved reference, marked sensitive;
   - the list;
+  - the cache: a second read asks nothing;
   - set, replace and `if_not_exists`;
-  - annotate, grant, revoke and drop;
-  - a sensitive value absent from the audit log;
-  - the cache per caller under an acl session (acl_stub).
-- `test/sql/attach/no_variables.test`: a fake realm without the capability gives the clear error, and
-  sends no request (the fake counts them).
+  - annotate, grant, revoke and drop (with `if_exists`);
+  - no value in the audit log;
+  - per caller under an acl session (acl_stub): the node and the session's user read different values;
+  - a realm without the capability: the clear error from every function, and no request sent (the
+    fake counts them).
 - `test/sql/conformance/variables.test` runs against the reference server and Keycloak
   (`require-env TRESOR_CONFORMANCE_VARIABLES`, which `test_keycloak.sh` sets for the reference server).
   A service without variables does not run it.
-- The reference server's Go tests cover the routes, preconditions, grants, names and value size.
+- The reference server's Go tests cover the routes, preconditions, grants, names and value size, and the
+  store keeps variables apart from secrets in its encrypted file.
 
 ## Alternatives considered
 

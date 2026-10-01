@@ -1,0 +1,256 @@
+# name: test/sql/attach/variables.test
+# description: variables - named strings a service holds, read, listed and managed; optional in the protocol (specs/018)
+# group: [attach]
+
+require-env TRESOR_TEST_PORT
+
+require httpfs
+
+require acl_stub
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+SET tresor_audit_level = 'all';
+
+statement ok
+CALL enable_logging('tresor');
+
+statement ok
+CREATE MACRO idp(what) AS (SELECT regexp_extract(content, '"' || what || '": ([^,}]*)', 1) FROM read_text('http://127.0.0.1:{TRESOR_TEST_PORT}/_stats'));
+
+statement ok
+CREATE SECRET etl_login (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'client_credentials',
+    CLIENT_ID 'etl', CLIENT_SECRET 's3cr3t', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+
+# --- reading --------------------------------------------------------------------------------------------------
+
+query I
+SELECT corp.variable('lake_bucket');
+----
+s3://corp-lake
+
+# a scalar: it goes where an expression goes
+statement ok
+SET VARIABLE bucket = corp.variable('lake_bucket');
+
+query I
+SELECT getvariable('bucket') || '/sales/*.parquet';
+----
+s3://corp-lake/sales/*.parquet
+
+statement error
+SELECT corp.variable('nope');
+----
+no variable nope
+
+# a fallback answers a missing variable - by position or by name; NULL is a fallback like any other
+query III
+SELECT corp.variable('nope', 'fb'), corp.variable('nope', fallback := 'fb2'), corp.variable('nope', NULL) IS NULL;
+----
+fb	fb2	true
+
+# one the caller may not use stays an error, fallback or not
+statement error
+SELECT corp.variable('hidden');
+----
+you may not use the variable hidden
+
+statement error
+SELECT corp.variable('hidden', 'fb');
+----
+you may not use the variable hidden
+
+# a reference the service resolves: the value as resolved, and marked sensitive
+query I
+SELECT corp.variable('db_password');
+----
+resolved:db-pass
+
+query II
+SELECT name, sensitive FROM corp.variables() ORDER BY name;
+----
+db_password	true
+hidden	false
+lake_bucket	false
+whoami_var	false
+
+# a name the protocol lets a service refuse is never sent (specs/016)
+statement error
+SELECT corp.variable(' edge');
+----
+a variable's name begins or ends with whitespace
+
+# cached per caller: a second read asks nothing of the service
+statement ok
+SET VARIABLE before = (SELECT idp('variable_requests')::INTEGER);
+
+query I
+SELECT corp.variable('lake_bucket');
+----
+s3://corp-lake
+
+query I
+SELECT idp('variable_requests')::INTEGER - getvariable('before');
+----
+0
+
+# --- managing (an administrator: etl) ----------------------------------------------------------------------
+
+query I
+SELECT version IS NOT NULL FROM corp.set_variable('team', 'blue', comment := 'the team');
+----
+true
+
+query I
+SELECT corp.variable('team');
+----
+blue
+
+# if_not_exists leaves an existing one
+query I
+SELECT version IS NULL FROM corp.set_variable('team', 'green', if_not_exists := true);
+----
+true
+
+# a write drops the cached value: the next read is the new one
+statement ok
+CALL corp.set_variable('team', 'red');
+
+query I
+SELECT corp.variable('team');
+----
+red
+
+statement error
+CALL corp.set_variable('forbidden_x', 'v');
+----
+you may not set the variable forbidden_x
+
+query I
+SELECT comment FROM corp.annotate_variable('team', 'the red team');
+----
+the red team
+
+query II
+SELECT principal, verbs FROM corp.grant_variable('team', 'role:analysts', ['use']);
+----
+role:analysts	[use]
+
+query I
+SELECT principal FROM corp.variable_grants('team');
+----
+role:analysts
+
+query I
+SELECT principal FROM corp.revoke_variable('team', 'role:analysts');
+----
+role:analysts
+
+query I
+SELECT dropped FROM corp.drop_variable('team');
+----
+true
+
+statement error
+CALL corp.drop_variable('team');
+----
+no variable team
+
+query I
+SELECT dropped FROM corp.drop_variable('team', if_exists := true);
+----
+false
+
+# --- the audit: the reads and writes, never a value ----------------------------------------------------------
+
+query I
+SELECT count(*) > 0 FROM duckdb_logs_parsed('tresor') WHERE secret_type = 'variable' AND kind = 'lookup';
+----
+true
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE type = 'tresor'
+    AND (message LIKE '%db-pass%' OR message LIKE '%corp-lake%' OR message LIKE '%red%team%' AND message LIKE '%value%');
+----
+0
+
+# --- per caller under a duckdb-acl session: the node's value is never the session user's ----------------------
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS act (INSECURE_HTTP true, ACT_FOR_SESSIONS true, SESSION_GRANT_WAIT 5);
+
+query I
+SELECT act.variable('whoami_var');
+----
+for:client:etl
+
+query I
+SELECT acl_stub_open('v1', 'node-token-alice', 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', 300);
+----
+1
+
+statement ok
+SET acl_stub_session = 'v1';
+
+query I
+SELECT act.variable('whoami_var');
+----
+for:alice
+
+statement ok
+SET acl_stub_session = '';
+
+query I
+SELECT act.variable('whoami_var');
+----
+for:client:etl
+
+statement ok
+SELECT acl_stub_close('v1', 'client');
+
+statement ok
+DETACH act;
+
+# --- a service without variables: a clear error, and nothing asked of it ----------------------------------------
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/novars' AS plain (INSECURE_HTTP true);
+
+statement ok
+SET VARIABLE before = (SELECT idp('variable_requests')::INTEGER);
+
+statement error
+SELECT plain.variable('lake_bucket');
+----
+plain's service does not hold variables (capabilities.variables)
+
+statement error
+FROM plain.variables();
+----
+does not hold variables
+
+statement error
+CALL plain.set_variable('x', 'y');
+----
+does not hold variables
+
+statement error
+CALL plain.grant_variable('x', 'role:analysts', ['use']);
+----
+does not hold variables
+
+query I
+SELECT idp('variable_requests')::INTEGER - getvariable('before');
+----
+0
+
+statement ok
+DETACH plain;
+
+statement ok
+DETACH corp;

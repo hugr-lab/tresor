@@ -35,4 +35,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | [015](015-late-acting/spec.md) | a node's bootstrap - `act_for_sessions()` on a live catalog, a managed identity as the federated assertion | implemented |
 | [016](016-names-and-errors/spec.md) | what a service may refuse in a name; `service_error` (500), an error that is not "try later" | implemented |
 | [017](017-release-prep/spec.md) | the first release - what is ready, the checklist for DuckDB 2.0 | accepted |
-| [018](018-variables/spec.md) | variables - named strings a service holds, an optional part of the protocol | draft |
+| [018](018-variables/spec.md) | variables - named strings a service holds, an optional part of the protocol | implemented |
