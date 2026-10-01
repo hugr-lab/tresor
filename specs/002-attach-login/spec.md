@@ -261,9 +261,9 @@ An independent review, with the defects reproduced against the fake:
 
 ## Follow-ups
 
-- specs/003 — the secret storage, `corp.secrets()`.
-- The reference server (`server/`, Go) + Keycloak in CI + the conformance suite.
+- specs/003 — the secret storage, `corp.secrets()`. Done: specs/004.
+- The reference server (`server/`, Go) + Keycloak in CI + the conformance suite. Done: specs/003.
 - duckdb-ext-common: `private_key_jwt`, federated assertions, Azure identities → the `tresor` secret's
-  further flows.
-- OS keychain for the refresh token (design §13).
-- `audience` as an authorization parameter for IdPs that need it (Auth0).
+  further flows. Done: specs/013, 015.
+- OS keychain for the refresh token (design §13). Done: specs/012.
+- `audience` as an authorization parameter for IdPs that need it (Auth0). Done: specs/013.

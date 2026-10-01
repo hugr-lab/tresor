@@ -245,6 +245,6 @@ role to pick; Microsoft Graph (`appRoleAssignedTo`) assigned them - the Entra pa
 ## Follow-ups
 
 - `ASSERTION_SOURCE 'azure_managed_identity'`: a managed identity as the federated credential of an
-  app registration, so an Azure node without a secret can act for sessions.
+  app registration, so an Azure node without a secret can act for sessions. Done: specs/015.
 - mssql-extension adopts ext-common 012 for its `managed_identity` provider.
 - AWS (IAM Roles Anywhere, Cognito) and GCP (workload identity federation) as sources.

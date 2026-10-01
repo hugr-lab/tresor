@@ -19,10 +19,11 @@ ATTACH '' AS crm (TYPE mssql, SECRET crm_ro);          -- a secret from the serv
 FROM 's3://lake/sales/*.parquet';                      -- found by scope, like any secret
 ```
 
-:::caution Status
-tresor is being built. This site describes the design it is built to; pages mark what exists.
-Attaching a service, logging in and `corp.whoami()` work today. Next come the secrets themselves:
-lookup, then writes.
+:::note Status
+Everything on this site works today: attaching, the logins of people and of services, the
+secrets in DuckDB's lookup, writes and grants, dynamic secrets, acting for duckdb-acl's sessions
+and the audit. The first release ships with DuckDB 2.0. Until then, build it from source
+([Development](./development.md)), and the [protocol](./protocol.md) is a draft.
 :::
 
 ## What it is

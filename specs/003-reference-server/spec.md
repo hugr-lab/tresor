@@ -233,6 +233,6 @@ An independent review, several of them reproduced:
 
 ## Follow-ups
 
-- Delegation and dynamic secrets in the server, alongside the client specs.
+- Delegation and dynamic secrets in the server, alongside the client specs. Done: specs/007-010.
 - A second reference backend (OpenBao) as an example.
-- Entra ID live validation (the claims shape is unit-tested).
+- Entra ID live validation (the claims shape is unit-tested). Done: specs/013 (2026-09-30).

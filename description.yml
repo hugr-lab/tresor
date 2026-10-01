@@ -1,0 +1,42 @@
+# The community-extensions descriptor (duckdb/community-extensions), filled at the release: `version` and
+# `repo.ref` become the release's tag. See specs/017.
+extension:
+  name: tresor
+  description: "One OIDC login, role-based secrets: attach an external secrets service (duckdb-secrets/1)."
+  version: "0.1.0"
+  language: "C++"
+  build: "cmake"
+  licence: "MIT"
+  maintainers:
+    - "VGSML"
+  excluded_platforms:
+    - "wasm_mvp"
+    - "wasm_eh"
+    - "wasm_threads"
+
+repo:
+  github: "hugr-lab/tresor"
+  ref: "v0.1.0"
+
+docs:
+  hello_world: |
+    INSTALL tresor FROM community;
+    -- no LOAD: attaching a tresor: path loads it
+    ATTACH 'tresor:secrets.corp.example' AS corp;   -- a browser login, once
+    FROM corp.secrets();                              -- what your roles may use
+    FROM 's3://lake/sales/*.parquet';                 -- found by scope, like any secret
+
+  extended_description: |
+    tresor is the DuckDB client of an external secrets service: one login through any OIDC identity
+    provider (Keycloak, Okta, Entra ID, Auth0), and the secrets your roles may use join DuckDB's own
+    secret lookup. The service is anything that implements the open protocol duckdb-secrets/1; a
+    production one is tresor-server.
+
+    - People log in through the browser or the device flow; services with a client secret, a key, a
+      federated token or an Azure managed identity. Single sign-on through the OS keychain.
+    - Administrators store secrets with CREATE PERSISTENT SECRET ... IN corp and grant their use to
+      roles; dynamic secrets are minted per caller.
+    - On a duckdb-acl node, tresor acts for each user's session through a delegation grant.
+    - Every action is audited, for DuckDB's log and OpenTelemetry.
+
+    Docs: https://hugr-lab.github.io/tresor/

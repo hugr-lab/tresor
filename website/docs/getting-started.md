@@ -5,9 +5,9 @@ title: Getting started
 
 # Getting started
 
-:::caution Work in progress
-Attaching, logging in, `corp.whoami()`, `corp.secrets()` and using the service's secrets work today.
-*Store and manage* describes what comes next.
+:::note Before the first release
+tresor is released with DuckDB 2.0. Until then, build it from source ([Development](./development.md))
+and load it by path, or `INSTALL tresor FROM '<your build>/repository'`.
 :::
 
 ## Install

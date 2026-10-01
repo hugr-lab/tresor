@@ -20,19 +20,31 @@ CREATE PERSISTENT SECRET lake_rw IN corp (TYPE s3, …); -- stored in the servic
 - **Your role decides** what you may use; administrators manage secrets and grant their use to roles
   — through the CLI, or through a server acting for you, which serves you its own grants.
 
-**Status: early.** The `tresor` ATTACH type is registered and loads the extension by prefix;
-attaching a service is next. Design: [specs/001](specs/001-architecture/spec.md). Docs:
-<https://hugr-lab.github.io/tresor/>.
+**Status: complete for its first release, which ships with DuckDB 2.0.** It covers:
+- people's and services' logins: browser and device flows, keys, federated tokens, managed identities;
+- single sign-on through the OS keychain;
+- the service's secrets in DuckDB's lookup, writes and grants;
+- dynamic secrets;
+- acting for [duckdb-acl](https://github.com/hugr-lab/duckdb-acl)'s sessions;
+- an audit for DuckDB's log and OpenTelemetry.
+
+Until the release, build it from source (below). See the [CHANGELOG](CHANGELOG.md), the design
+([specs/001](specs/001-architecture/spec.md)) and the docs (<https://hugr-lab.github.io/tresor/>).
+A production service: [tresor-server](https://github.com/hugr-lab/tresor-server).
 
 ## Building
 
 ```bash
 git clone --recurse-submodules https://github.com/hugr-lab/tresor.git
 cd tresor
+make vcpkg-setup          # once: OpenSSL (or VCPKG_TOOLCHAIN_PATH=<a vcpkg>/scripts/buildsystems/vcpkg.cmake)
 GEN=ninja make
 build/release/test/unittest 'test/sql/*'
 scripts/ci/smoke_load.sh
 ```
+
+The full test setup (the fake service, Keycloak, duckdb-acl) is on the
+[Development](https://hugr-lab.github.io/tresor/development) page.
 
 tresor tracks the DuckDB 2.0 line at the same commit as
 [duckdb-acl](https://github.com/hugr-lab/duckdb-acl).

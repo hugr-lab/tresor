@@ -341,6 +341,10 @@ A client that does not know a `type` acts on the status: a `4xx` as a refusal of
 
 A service is `duckdb-secrets/1` when it passes the **conformance suite**: sqllogictests in tresor's
 repository (`test/sql/conformance/`), driven against the service's URL through environment
-variables. It checks what a client can observe; today that is a service login and a person login,
-each followed by `whoami`. The suite grows with the client. The
+variables. It checks what a client can observe:
+- a service login and a person login, each followed by `whoami`;
+- a secret the service holds, found by DuckDB's lookup, its material delivered;
+- writes: create, conflict, replace, annotate, grant, revoke, drop.
+
+The suite grows with the client. The
 [reference server](./reference-server.md) passes it in CI, next to a real Keycloak.

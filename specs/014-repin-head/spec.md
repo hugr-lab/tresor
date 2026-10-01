@@ -56,4 +56,4 @@ Against the new pin:
 
 ## Follow-ups
 
-- `ACL_COMMIT` is a5a6e14, duckdb-acl main with #169 (spec 091).
+- `ACL_COMMIT` is a5a6e14, duckdb-acl main with #169 (spec 091). Since moved to a97c283 (acl spec 092, PR #25).
