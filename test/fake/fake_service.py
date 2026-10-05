@@ -153,6 +153,8 @@ STATS = {"exchanges": 0, "grants": 0, "revoked": 0, "refresh_asked": 0}
 # the IdP's side of a person's remembered login (specs/012): browser visits, refreshes (and the scope asked),
 # revocations - read by the tests at GET /_stats
 IDP_STATS = {"authorize": 0, "refresh": 0, "refresh_scope": "", "revoked_tokens": 0,
+             # specs/020: headers of DuckDB's that reached the IdP or the API, and the discovery's client
+             "leaked": 0, "discovery_agent": "",
              # specs/013: what the audience parameter, the platform endpoints and the assertions carried
              "authorize_audience": "", "cc_audience": "", "mi_resource": "", "gh_audience": "", "assertions": 0,
              "device_audience": "", "last_federated": "", "last_kid": "", "last_x5t": "",
@@ -359,6 +361,20 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if not head:
             self.wfile.write(chunk)
+
+    def parse_request(self):
+        # specs/020: what reached the IdP and the API besides what tresor means to send - an `http` secret's bearer
+        # token or extra_http_headers of DuckDB's - and which client asked for the discovery (its User-Agent).
+        # The test's own reads (/_stats, /_page_login, the dynamic bucket) are not tresor's requests.
+        ok = super().parse_request()
+        path = urllib.parse.urlparse(self.path).path
+        if ok and not path.startswith("/_") and not path.startswith("/dynbucket"):
+            with LOCK:
+                if self.headers.get("X-Tresor-Leak") or self.headers.get("Authorization") == "Bearer leak-token":
+                    IDP_STATS["leaked"] += 1
+                if path.endswith("/.well-known/duckdb-secrets"):
+                    IDP_STATS["discovery_agent"] = (self.headers.get("User-Agent") or "").split("/")[0]
+        return ok
 
     def do_HEAD(self):
         if urllib.parse.urlparse(self.path).path in ("/_stats", "/_forget", "/_page_login"):

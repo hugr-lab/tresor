@@ -1,4 +1,5 @@
 #include "tresor_http.hpp"
+#include "tresor_extension.hpp"
 
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception.hpp"
@@ -9,6 +10,8 @@
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/main/http/http_util.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/common/file_opener.hpp"
+#include "duckdb/logging/logger.hpp"
 
 #include <cstdlib>
 
@@ -44,6 +47,50 @@ void CheckClient(ClientContext &, SetScope, Value &parameter) {
 	ParseClient(parameter);
 }
 
+//! What DuckDB's HTTP client is told about a tresor request (specs/020): an allow-list, never the instance or a
+//! connection. Without them no `http` secret (a bearer token, extra headers), no `extra_http_headers` and no logger
+//! (DuckDB's HTTP log writes the headers, an Authorization included) reach a request to the IdP or the service.
+//! Certificates are always verified, against `ca_cert_file` when set; everything else is the client's default.
+//! Given before the parameters are built: httpfs pins the transport settings it saw then.
+class TresorHttpOpener : public FileOpener {
+public:
+	TresorHttpOpener(DatabaseInstance &db, int timeout_seconds) : db(db), timeout_seconds(timeout_seconds) {
+	}
+
+	SettingLookupResult TryGetCurrentSetting(const Identifier &key, Value &result) override {
+		auto name = StringUtil::Lower(key.GetIdentifierName());
+		if (name == "enable_server_cert_verification" || name == "enable_curl_server_cert_verification") {
+			result = Value::BOOLEAN(true);
+		} else if (name == "http_retries") {
+			result = Value::UBIGINT(0); // tresor retries what it may (a 401 renews once), nothing else
+		} else if (name == "http_timeout") {
+			result =
+			    Value::UBIGINT(timeout_seconds > 0 ? uint64_t(timeout_seconds) : HTTPParams::DEFAULT_TIMEOUT_SECONDS);
+		} else if (name == "ca_cert_file") {
+			return db.TryGetCurrentSetting(key, result);
+		} else {
+			return SettingLookupResult();
+		}
+		return SettingLookupResult(SettingScope::GLOBAL);
+	}
+	optional_ptr<ClientContext> TryGetClientContext() override {
+		return nullptr;
+	}
+	optional_ptr<DatabaseInstance> TryGetDatabase() override {
+		return nullptr;
+	}
+	HTTPUtil &GetHTTPUtil() override {
+		return HTTPUtil::Get(db);
+	}
+	Logger &GetLogger() const override {
+		return Logger::Get(db);
+	}
+
+private:
+	DatabaseInstance &db;
+	int timeout_seconds;
+};
+
 oidc::HttpResult Send(DatabaseInstance &db, const string &method, const string &url,
                       const std::map<std::string, std::string> &headers, const string &body, const string &content_type,
                       int timeout_seconds) {
@@ -60,22 +107,16 @@ oidc::HttpResult Send(DatabaseInstance &db, const string &method, const string &
 	}
 	try {
 		auto &util = HTTPUtil::Get(db);
-		// no opener: neither an `http` secret (a bearer token, extra headers) nor extra_http_headers is mixed in -
-		// what tresor sends is exactly what it means to send, to the IdP above all
-		auto params = util.InitializeParameters(nullptr, nullptr);
+		// what tresor sends is exactly what it means to send, to the IdP above all (TresorHttpOpener)
+		TresorHttpOpener opener(db, timeout_seconds);
+		auto params = util.InitializeParameters(&opener, nullptr);
 		params->timeout = timeout_seconds > 0 ? uint64_t(timeout_seconds) : HTTPParams::DEFAULT_TIMEOUT_SECONDS;
-		params->retries = 0;             // tresor retries what it may (a 401 renews once), nothing else
+		params->retries = 0;
 		params->follow_location = false; // a followed 307 would re-send a secret to where it points
-		params->logger = nullptr;        // DuckDB's HTTP log writes the request's headers: an Authorization
+		params->logger = nullptr;
 		params->extra_headers.clear();
-		auto &proxy = db.config.options.http_proxy;
-		if (!proxy.empty()) {
-			auto proxy_value = proxy;
-			HTTPUtil::ParseHTTPProxyHost(proxy_value, params->http_proxy, params->http_proxy_port);
-			params->http_proxy_username = Settings::Get<HTTPProxyUsernameSetting>(db);
-			params->http_proxy_password = Settings::Get<HTTPProxyPasswordSetting>(db);
-		}
 		HTTPHeaders request_headers;
+		request_headers.Insert("User-Agent", "tresor/" + TresorExtension().Version() + " (duckdb)");
 		for (auto &header : headers) {
 			request_headers.Insert(header.first, header.second);
 		}
@@ -133,17 +174,13 @@ void RegisterHttpClient(DatabaseInstance &db) {
 	                          LogicalType::VARCHAR, Value(default_client), CheckClient);
 }
 
-oidc::Transport DuckDBTransport(const shared_ptr<DatabaseInstance> &db) {
-	weak_ptr<DatabaseInstance> weak = db;
-	return [weak](const std::string &method, const std::string &url, const std::map<std::string, std::string> &headers,
-	              const std::string &body, const std::string &content_type, int timeout_seconds) {
-		auto held = weak.lock();
-		if (!held) {
-			oidc::HttpResult gone;
-			gone.error = "the database is closed";
-			return gone;
-		}
-		return Send(*held, method, url, headers, body, content_type, timeout_seconds);
+oidc::Transport DuckDBTransport(DatabaseInstance &db) {
+	// by reference, never owning: a session (and its actor's workers) lives in an attached catalog, and the instance
+	// destroys its catalogs - joining those workers - before anything a request uses (its config, HTTPUtil). Owning
+	// it here could make a worker the last owner, destroying the instance on the thread its destructor joins.
+	return [&db](const std::string &method, const std::string &url, const std::map<std::string, std::string> &headers,
+	             const std::string &body, const std::string &content_type, int timeout_seconds) {
+		return Send(db, method, url, headers, body, content_type, timeout_seconds);
 	};
 }
 
@@ -167,7 +204,7 @@ oidc::Transport TransportFor(ClientContext &context) {
 		throw InvalidInputException("tresor_http_client = 'duckdb' needs httpfs: INSTALL httpfs; LOAD httpfs");
 	}
 #endif
-	return DuckDBTransport(context.db);
+	return DuckDBTransport(*context.db);
 }
 
 } // namespace tresor

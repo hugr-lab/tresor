@@ -1,3 +1,4 @@
+#include "tresor_events.hpp"
 #include "tresor_extension.hpp"
 #include "tresor_login.hpp"
 
@@ -79,7 +80,18 @@ void WebLoginScan(ClientContext &context, TableFunctionInput &input, DataChunk &
 		throw PermissionException("tresor_web_login: not under a duckdb-acl session");
 	}
 	auto &data = input.bind_data->Cast<WebLoginBindData>();
-	auto key = tresor::HandOverLogin(context, data.request, data.refresh_token);
+	// the audit (specs/011): a login handed over - never the token
+	tresor::Audited audited(tresor::TresorAudit::Get(*context.db), "login", &context);
+	audited.event.host = data.request.host;
+	audited.Called();
+	tresor::LoginKey key;
+	try {
+		key = tresor::HandOverLogin(context, data.request, data.refresh_token);
+	} catch (std::exception &ex) {
+		audited.Failed(ex);
+		throw;
+	}
+	audited.Detail("web_login").Ok();
 	output.data[0].Append(Value(key.service));
 	output.data[1].Append(Value(key.issuer));
 	output.data[2].Append(Value(key.client_id));

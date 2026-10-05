@@ -170,6 +170,12 @@ func (c *Config) validate() error {
 			return fmt.Errorf("cors_origins[%d] %q: an origin is https://host[:port] (http only on loopback), "+
 				"no path and no wildcard", i, origin)
 		}
+		// compared exactly with what a browser sends, which is lower case and without a default port
+		if origin != strings.ToLower(origin) || (ou.Scheme == "https" && ou.Port() == "443") ||
+			(ou.Scheme == "http" && ou.Port() == "80") {
+			return fmt.Errorf("cors_origins[%d] %q: write it as a browser sends it - lower case, no default port",
+				i, origin)
+		}
 	}
 	if len(c.Issuers) == 0 {
 		return errors.New("at least one issuer is required")

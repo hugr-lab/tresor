@@ -48,6 +48,8 @@ func TestRefused(t *testing.T) {
 		"a wildcard origin":       good + "cors_origins: [\"*\"]\n",
 		"an origin with a path":   good + "cors_origins: [https://app.example/x]\n",
 		"an http origin":          good + "cors_origins: [http://app.example]\n",
+		"an upper-case origin":    good + "cors_origins: [https://App.example]\n",
+		"a default port":          good + "cors_origins: [\"https://app.example:443\"]\n",
 	}
 	for name, doc := range cases {
 		if _, err := Parse([]byte(doc)); err == nil {

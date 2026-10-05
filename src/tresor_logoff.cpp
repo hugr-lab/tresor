@@ -210,7 +210,6 @@ void LogoffScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 	auto &state = input.global_state->Cast<LogoffState>();
 	if (!state.done) {
 		state.done = true; // the logoff runs once per statement, whatever happens below
-		tresor::oidc::TransportScope http(tresor::TransportFor(context)); // a revocation, on the setting's client
 		// not for a statement run for someone else: an acl session's user must not end the node's people's logins
 		string why;
 		auto acl_state = acl::AclConnection::Reach(context, why);
@@ -218,6 +217,20 @@ void LogoffScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 		if (!acl_state || acl_state->Current(view)) {
 			throw PermissionException("tresor_logoff: not under a duckdb-acl session");
 		}
+		// a revocation, on the setting's client; a client that cannot be had costs the revocation, never the removal
+		tresor::oidc::Transport transport;
+		try {
+			transport = tresor::TransportFor(context);
+		} catch (std::exception &ex) {
+			auto why = string(ex.what());
+			transport = [why](const std::string &, const std::string &, const std::map<std::string, std::string> &,
+			                  const std::string &, const std::string &, int) {
+				tresor::oidc::HttpResult unusable;
+				unusable.error = why;
+				return unusable;
+			};
+		}
+		tresor::oidc::TransportScope http(transport);
 		auto &data = input.bind_data->Cast<LogoffBindData>();
 		auto attached = Attached(context);
 		vector<tresor::LoginKey> keys;

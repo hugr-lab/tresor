@@ -106,7 +106,14 @@ string TresorSession::AccessToken(bool force) {
 				renewed.refresh_token = tokens.refresh_token; // RFC 6749 §6: a refresh may keep the old one
 			}
 			if (store && renewed.Ok() && renewed.refresh_token != tokens.refresh_token) {
-				store->Store(Key(), remember_subject, renewed.refresh_token, remember_mode);
+				// the rotated token replaces this person's entry, or a missing one - never another's stored since
+				// (a login handed over by a page for someone else, specs/020)
+				string subject;
+				string current;
+				if (!store->Load(Key(), remember_mode, subject, current) || subject == remember_subject) {
+					store->Store(Key(), remember_subject, renewed.refresh_token, remember_mode);
+				}
+				std::fill(current.begin(), current.end(), '\0');
 			}
 			break;
 		}

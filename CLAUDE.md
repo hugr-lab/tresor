@@ -28,7 +28,8 @@ ATTACH prefix works).
 
 - **Dependencies**: OpenSSL from vcpkg (`vcpkg.json`, static, as in duckdb-acl), for the OIDC core
   (duckdb-ext-common `oidc/`, compiled in as `duckdb::tresor::oidc` with `DUCKDB_EXT_COMMON_OIDC_TLS=1`),
-  which is tresor's whole HTTP transport: the IdP's flows and the service's API (specs/002).
+  which is tresor's HTTP transport (the IdP's flows and the service's API, specs/002) unless
+  `tresor_http_client = 'duckdb'` puts DuckDB's HTTPUtil under it (specs/020; the only one in wasm).
 - **Platforms**: Linux, macOS, Windows. wasm (specs/020) compiles (`make wasm_eh`, no `GEN=ninja`) and runs on
   DuckDB's HTTP client with the page's login (`tresor_web_login`); not in CI until duckdb-wasm is on 2.0.
 

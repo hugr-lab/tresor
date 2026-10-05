@@ -399,6 +399,13 @@ bool RememberedLogin(ClientContext &context, const AttachRequest &request, const
 		started_from = tokens.refresh_token; // what the store holds now, for Remember to compare against
 		return true;
 	}
+#ifdef __EMSCRIPTEN__
+	// duckdb-wasm's client drops a POST's error body: a dead token's invalid_grant arrives without its code. In a
+	// browser every failure is the same to the page anyway - forget the token, and ask for a new login (specs/020)
+	if (renewed.error_code.empty()) {
+		renewed.error_code = "invalid_grant";
+	}
+#endif
 	if (renewed.error_code == "invalid_grant") {
 		store->Remove(key, mode,
 		              refresh); // dead: forgotten (unless another attachment stored a newer one), a login runs
@@ -637,7 +644,11 @@ LoginKey HandOverLogin(ClientContext &context, const AttachRequest &request, con
 	LoginKey key {StripSlashes(issuer.issuer), issuer.client_id, request.host};
 	lock_guard<mutex> chain(store->KeyLock(key));
 	// whose it is is learnt at the ATTACH's whoami, which stores it again under that subject
-	store->Store(key, string(), refresh_token, KeychainMode::MEMORY);
+	store->Store(key, HANDED_OVER_SUBJECT, refresh_token, KeychainMode::MEMORY);
+	if (store->Mode() != KeychainMode::MEMORY) {
+		// tresor_keychain changed while discovery ran: nothing was kept, and the call must not say otherwise
+		throw InvalidInputException("tresor_web_login: tresor_keychain changed meanwhile - nothing was kept");
+	}
 	return key;
 }
 

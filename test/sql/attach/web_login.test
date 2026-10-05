@@ -88,14 +88,10 @@ SELECT count(*) > 0 FROM corp.secrets();
 ----
 true
 
-# a page's tab ends: its login goes with it
-statement ok
-CALL tresor_logoff('corp');
-
 statement ok
 DETACH corp;
 
-# the second web login of the same person: the entry is replaced, the ATTACH takes it again
+# a second hand-over replaces the entry the ATTACH stored under the person's subject; the ATTACH takes it again
 statement ok
 SET VARIABLE rt = (SELECT regexp_extract(content, '"refresh_token": "([^"]*)"', 1) FROM read_text('http://127.0.0.1:{TRESOR_TEST_PORT}/_page_login'));
 
@@ -109,10 +105,31 @@ EXECUTE hand_over('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('rt'));
 statement ok
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
 
-query I
-SELECT login FROM corp.whoami();
+query II
+SELECT login, idp('authorize')::INT - authorize FROM corp.whoami(), seen;
 ----
-remembered
+remembered	0
+
+# a page's tab ends: its login goes with it
+query II
+SELECT removed, revoked FROM tresor_logoff('corp');
+----
+true	true
+
+statement ok
+DETACH corp;
+
+# a token the IdP does not know: the ATTACH forgets it and logs in anew (natively, the browser; in wasm, the page)
+statement ok
+FROM tresor_web_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', 'rt-not-a-token-at-all', insecure_http := true);
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+
+query II
+SELECT login, idp('authorize')::INT - authorize FROM corp.whoami(), seen;
+----
+browser	1
 
 statement ok
 DETACH corp;

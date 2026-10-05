@@ -22,6 +22,15 @@ ATTACH 'tresor:127.0.0.1:9/none' AS corp (INSECURE_HTTP true);
 ----
 tresor_http_client = 'duckdb' needs httpfs
 
+# a logoff on a client that cannot be had still forgets: only a revocation would be lost
+statement ok
+SET tresor_keychain = 'memory';
+
+query II
+SELECT removed, revoked FROM tresor_logoff(service := 'svc.example', issuer := 'https://idp.example', client_id := 'c');
+----
+false	false
+
 statement ok
 SET tresor_http_client = 'builtin';
 

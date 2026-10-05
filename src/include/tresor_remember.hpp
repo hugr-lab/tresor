@@ -25,6 +25,10 @@ namespace tresor {
 enum class KeychainMode : uint8_t { AUTO, OFF, MEMORY };
 
 //! Whose login: the identity provider, its public client, and the service it was made for (host[:port][/base]).
+//! The subject a login handed over by a web page is stored under until the ATTACH's whoami names the person
+//! (specs/020): no real subject (`subject:<issuer>|<sub>`) is ever this, so no attached session adopts it.
+constexpr const char *HANDED_OVER_SUBJECT = "tresor_web_login";
+
 struct LoginKey {
 	string issuer;
 	string client_id;

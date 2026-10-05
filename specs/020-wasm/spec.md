@@ -79,7 +79,11 @@ OIDC library (`oidc-client-ts`).
    `FROM tresor_web_login($1, $2 [, issuer := …])` with `'tresor:host'` and the refresh token.
    - tresor reads the discovery and picks the issuer as the ATTACH would (`issuer`, `insecure_http` as
      ATTACH's options), and stores the refresh token as a **remembered login** (specs/012) under (issuer,
-     client_id, service), in the **`memory`** keychain only. It answers that key.
+     client_id, service), in the **`memory`** keychain only. It answers that key, and audits a `login`
+     (detail `web_login`), never the token.
+   - Until the ATTACH's whoami names the person, the entry's subject is `tresor_web_login`, which no
+     real subject is: a session already attached under that key never adopts it, and its own rotated
+     token replaces only its own person's entry (or a missing one) - never one handed over since.
    - Only the refresh token is handed over: the ATTACH renews it once, which also proves it.
    - It is never a DuckDB secret: `duckdb_secrets()` does not list it, and nothing is written anywhere.
    - Refused: with `tresor_keychain` other than `memory` (the wasm default is `memory`), an empty token, and
@@ -90,7 +94,8 @@ OIDC library (`oidc-client-ts`).
    the person's subject.
    - When the refresh token itself has expired (Entra SPA: 24 h), the wasm build fails with "a new login
      to … is needed - … hand it over with tresor_web_login", and the helper repeats steps 3-4 (silent
-     while the IdP session lives).
+     while the IdP session lives). In wasm any failed renewal at ATTACH counts as a dead token (forgotten,
+     a new login asked): duckdb-wasm's client drops the body of an IdP's `400 invalid_grant`.
 
 ### tresor in wasm
 
@@ -101,11 +106,22 @@ OIDC library (`oidc-client-ts`).
     over the browser's `XMLHttpRequest` and the TLS is the browser's). The default may come from
     `TRESOR_HTTP_CLIENT`. ATTACH fixes it for the attachment, renewals included; `tresor_logoff` and
     `tresor_web_login` use the current one.
-  - DuckDB's transport (`src/tresor_http.cpp`): parameters with **no opener**, so no `http` secret
-    (a bearer token, extra headers) and no `extra_http_headers` are mixed into a request to the IdP;
-    **no redirect** followed, **no retry** (tresor's own rules apply), **no logger** (DuckDB's HTTP log
-    writes the headers, `Authorization` included); `http_proxy` taken over; a failure is an error with
-    status 0, which the OIDC core redacts.
+  - DuckDB's transport (`src/tresor_http.cpp`) builds its parameters through an **allow-list opener**,
+    which hands DuckDB's client neither the instance nor a connection. So:
+    - no `http` secret (a bearer token, extra headers) and no `extra_http_headers` is mixed into a request
+      to the IdP or the service, and no logger (DuckDB's HTTP log writes the headers, `Authorization`
+      included);
+    - certificates are **always verified** (`enable_server_cert_verification`, and curl's, answered
+      true, whatever the instance says), against `ca_cert_file` when set;
+    - **no redirect** followed, **no retry** (tresor's own rules apply);
+    - DuckDB's `http_proxy` is **not** used, as by the built-in client;
+    - it sends `User-Agent: tresor/<version> (duckdb)`;
+    - a failure is an error with status 0, which the OIDC core redacts.
+
+    The settings are given before the parameters are built: httpfs pins the transport settings it saw
+    then, and refuses a request whose settings changed since.
+  - The transport refers to the instance without owning it: sessions (and the actor's workers) live in
+    an attached catalog, which the instance destroys before anything a request uses.
   - Natively, DuckDB's own client is GET-only: `duckdb` needs httpfs, loaded under the instance's
     autoload settings, or refused at ATTACH ("needs httpfs").
   - `HTTPUtil` has **no PATCH** (`annotate_secret`, `annotate_variable`). Natively it goes through the
@@ -162,9 +178,18 @@ Read from duckdb-wasm `lib/src/http_wasm.cc`, to check again on its 2.0 port and
 - **DuckDB's client, natively, in CI**: the whole attach suite runs twice, on the built-in client and with
   `TRESOR_HTTP_CLIENT=duckdb` (`scripts/ci/test_attach.sh` loads httpfs in each test's database).
 - `test/sql/http_client.test`: the setting's values, and `duckdb` refused without httpfs.
+- `test/sql/http_client.test`: also a `tresor_logoff` on a `duckdb` client that cannot be had (no
+  httpfs) - it still forgets.
 - `test/sql/attach/web_login.test`: the refusals (keychain not memory, NULL, empty, a scheme, an acl
   session); the hand-over, then an ATTACH with no browser and exactly one refresh, `whoami().login =
-  'remembered'`; a prepared statement as the helper calls it.
+  'remembered'`; a second hand-over replacing the entry the ATTACH stored, by a prepared statement as
+  the helper calls it; a token the IdP does not know (forgotten, a new login).
+- `test/sql/attach/duckdb_client.test` (both CI runs): on `duckdb`, an `http` secret with a bearer token
+  and extra headers for the service's host reaches neither the IdP nor the service (the fake counts
+  them), a dead `http_proxy` changes nothing, and the discovery is asked by `tresor/…`; on `builtin`,
+  by another agent.
+- Not tested yet: https on DuckDB's client (the fake and the Keycloak run are plain http on loopback),
+  and a `307` not followed (curl's and httplib's `follow_location` off, read from httpfs).
 - The reference server's `cors_origins`: config refusals (a wildcard, a path, http off loopback), and the
   answers (preflight, an allowed and another origin, none configured).
 - **Runtime, later:**
