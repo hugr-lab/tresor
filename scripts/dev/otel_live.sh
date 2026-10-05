@@ -141,7 +141,7 @@ SQL
 echo "otel_live: trace $trace_id, service $service"
 # the acl_stub linked into the test CLI must not mark acl's hooks: the real duckdb-acl does (ACLC 2)
 # a failed statement does not end the bench: what reached the service, Tempo and Loki is the diagnosis
-(ACL_STUB_NO_MARK=1 "$duckdb" -unsigned <"$work/live.sql" 2>&1 || true) | sed -E 's/eyJ[A-Za-z0-9._-]*/<token>/g' |
+(ACL_STUB_NO_MARK=1 "$duckdb" -no-agent -unsigned <"$work/live.sql" 2>&1 || true) | sed -E 's/eyJ[A-Za-z0-9._-]*/<token>/g' |
 	sed 's/^/  duckdb: /'
 echo "otel_live: the reference server's line for the traced request:"
 grep -F "$trace_id" "$work/server.log" | sed 's/^/  server: /' || echo "  server: (none)"

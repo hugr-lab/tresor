@@ -24,7 +24,7 @@ cp "$ext_abs" "$tmp/tresor.duckdb_extension"
 cd "$tmp"
 
 # 1. explicit LOAD of the copied artifact
-out="$("$duckdb_abs" -unsigned -csv -noheader -c "
+out="$("$duckdb_abs" -no-agent -unsigned -csv -noheader -c "
 LOAD '$tmp/tresor.duckdb_extension';
 SELECT 'version=' || coalesce(tresor_version(), '<null>');
 " 2>&1)" || { echo "smoke_load: the artifact did not load:" >&2; echo "$out" >&2; exit 1; }
@@ -32,7 +32,7 @@ grep -q '^version=' <<<"$out" || { echo "smoke_load: no version answer:" >&2; ec
 
 # 2. the ATTACH alone loads the installed extension (the discovery of a name that cannot resolve
 #    fails with tresor's own message - the proof that tresor's code ran)
-att="$("$duckdb_abs" -unsigned -csv -noheader -c "
+att="$("$duckdb_abs" -no-agent -unsigned -csv -noheader -c "
 SET extension_directories = ['$tmp/extensions'];
 SET autoload_known_extensions = false;
 INSTALL tresor FROM '$repo_abs';
@@ -47,7 +47,7 @@ grep -q "tresor: discovery of secrets.example.invalid failed" <<<"$att" || {
 #    path as a remote database file and demands httpfs before it looks at the type. A build without
 #    httpfs pins that here; a TRESOR_TEST_HTTPFS build (specs/006) links httpfs into the CLI, and then
 #    tresor's own refusal is what is checked.
-sch="$("$duckdb_abs" -unsigned -csv -noheader -c "
+sch="$("$duckdb_abs" -no-agent -unsigned -csv -noheader -c "
 SET extension_directories = ['$tmp/extensions'];
 SET autoload_known_extensions = false;
 INSTALL tresor FROM '$repo_abs';
