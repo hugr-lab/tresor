@@ -195,7 +195,7 @@ if [ -n "${TRESOR_ACL_EXTENSION:-}" ]; then
 		"$root/test/acl/actor.sql" >"$work/acl.sql"
 	logged="$(wc -l <"$work/server.log")" # the reference tests made and revoked grants too: only the new lines count
 	# the stub linked into the test CLI must not mark acl's hooks: the real duckdb-acl is what must (ACLC 2)
-	ACL_STUB_NO_MARK=1 "$cli" -unsigned <"$work/acl.sql" >"$work/acl.log" 2>&1 || true
+	ACL_STUB_NO_MARK=1 "$cli" -no-agent -unsigned <"$work/acl.sql" >"$work/acl.log" 2>&1 || true
 	[ -n "${TRESOR_ACL_DEBUG:-}" ] && sed -E -e 's/eyJ[A-Za-z0-9._-]*/<token>/g' -e 's/[0-9A-Fa-f]{32}/<handle>/g' \
 		"$work/acl.log" >"$TRESOR_ACL_DEBUG"
 	tail -n +"$((logged + 1))" "$work/server.log" >"$work/acl_server.log"
@@ -254,7 +254,7 @@ if [ "${TRESOR_KC_KEYCHAIN:-0}" = "1" ]; then
 	attach="ATTACH 'tresor:127.0.0.1:$server_port' AS k (INSECURE_HTTP true, LOGIN 'browser', LOGIN_TIMEOUT 15)"
 	person() { # $1: the browser, $2: what to run after the ATTACH; the OS store, whatever the suite's default
 		printf "LOAD '%s';\n%s;\n%s\n" "$ext" "$attach" "$2" |
-			TRESOR_KEYCHAIN=auto BROWSER="$1" "$cli" -unsigned -list -noheader 2>&1 || true
+			TRESOR_KEYCHAIN=auto BROWSER="$1" "$cli" -no-agent -unsigned -list -noheader 2>&1 || true
 	}
 	kc_ok=1
 	# 1. alice logs in through the browser: remembered
@@ -296,7 +296,7 @@ if [ -n "$keynode_uuid" ] && curl -sf -o /dev/null -X PUT -H "Authorization: Bea
 	cli="${TRESOR_CLI:-$(dirname "$unittest")/../duckdb}"
 	printf "LOAD '%s';\nCREATE SECRET kn (TYPE tresor, SCOPE 'tresor:127.0.0.1:%s', FLOW 'client_credentials', CLIENT_ID 'keynode', ISSUER '%s', PRIVATE_KEY_FILE '%s');\nATTACH 'tresor:127.0.0.1:%s' AS kn (INSECURE_HTTP true, SECRET kn);\nSELECT 'key:' || login || '|' || subject FROM kn.whoami();\n" \
 		"$(dirname "$unittest")/../extension/tresor/tresor.duckdb_extension" "$server_port" "$issuer" \
-		"$work/keynode.pem" "$server_port" | "$cli" -unsigned -list -noheader >"$work/key.log" 2>&1 || true
+		"$work/keynode.pem" "$server_port" | "$cli" -no-agent -unsigned -list -noheader >"$work/key.log" 2>&1 || true
 	grep -Eq '^key:private_key_jwt\|' "$work/key.log" && key_ok=1
 fi
 if [ "$key_ok" = 1 ]; then

@@ -68,7 +68,7 @@ failed=0
 step() { # $1: what, $2: the SQL after LOAD, then the lines its output must hold (grep -xE patterns)
 	echo "entra_live: $1"
 	local out
-	out="$(printf "LOAD '%s';\n%s\n" "$ext" "$2" | "$duckdb" -unsigned -list -noheader 2>&1 || true)"
+	out="$(printf "LOAD '%s';\n%s\n" "$ext" "$2" | "$duckdb" -no-agent -unsigned -list -noheader 2>&1 || true)"
 	# never a token, and never the node's secret (a parser error would quote the SQL)
 	out="$(printf '%s\n' "$out" | sed -E 's/eyJ[A-Za-z0-9._-]*/<token>/g')"
 	if [ -n "${ENTRA_NODE_SECRET:-}" ]; then
