@@ -31,9 +31,10 @@ the same commit. tresor's own code needs no change: the parser API that moved (`
 
 - `test/sql/*`, `test_attach.sh` (the fake), `test_keycloak.sh` (conformance, the reference server's
   tests, private_key_jwt) and `smoke_load.sh` pass at eb0d9df.
-- `test_keycloak.sh` with a real duckdb-acl (`ACL_COMMIT` on duckdb-acl #179, duckdb eb0d9df) passes:
+- `test_keycloak.sh` with a real duckdb-acl (`ACL_COMMIT` 176a5a7, duckdb-acl main with #179, duckdb
+  eb0d9df) passes:
   sessions, grants, an administrator through the node, and acl's never set for `act_for_sessions`.
 
 ## Follow-ups
 
-- `ACL_COMMIT` moves to #179's commit on duckdb-acl main once it merges.
+- `ACL_COMMIT` is 176a5a7, duckdb-acl main with #179 (spec 100).
