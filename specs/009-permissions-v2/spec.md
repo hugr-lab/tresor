@@ -158,3 +158,15 @@ more than the actor's `use`. It found:
 - spec 010: the `token_exchange` provider, a token for the effective caller: a user directly; the
   node itself; the grant's user under a grant, with a refresh token.
 - duckdb-acl: the `ACL GRANT SECRET` / `CREATE SECRET` syntax and the catalog choice above.
+
+## Addendum: an administrator sees unredacted parameters in tresor-server's console (2026-10-05)
+
+tresor-server's management console (its spec 010) shows an administrator, on request, the values of a secret's
+parameters that are **not** in its `redact_keys`. That is outside this protocol: tresor-server's own admin API
+(`/admin/v1`), not `/v1`. It does not give an administrator `use`, and summary point 2 stands for the protocol:
+- a parameter in `redact_keys` is never shown, nor a reference's resolved value;
+- a value is shown only when an administrator asks for it, and each request is audited (`reveal`);
+- an administrator never fetches a secret for DuckDB without a role holding `use`.
+
+Unredacted parameters are what DuckDB itself shows in `duckdb_secrets()`: hosts, regions, endpoints. An
+administrator writes them in the first place.
