@@ -29,7 +29,10 @@ LOAD '@ACL_EXTENSION@';
 ATTACH ':memory:' AS store;
 SELECT acl_use_db('store', 'acl', true) AS ok;
 SET GLOBAL acl_allow_anonymous_admin = true;
-SELECT acl_define_issuer('@ISSUER@', '@JWKS@', 'acl-node', 'RS256', 'realm_access.roles', '{}') AS ok;
+-- the issuer and its implicit client (acl spec 095): keys by the issuer's discovery - from Keycloak on loopback
+-- http, which acl's key locations (spec 071) refuse unless allowed; tokens map to the roles of their names
+SET GLOBAL acl_jwks_locations = 'https://,http://127.0.0.1:';
+ACL ADMIN CREATE ISSUER '@ISSUER@' AUDIENCES ('acl-node') ROLE CLAIM 'realm_access.roles';
 -- acl is loaded: the attached catalog acts for its sessions from now on, no re-attach
 SELECT 'check:acting ' || changed FROM node.act_for_sessions();
 

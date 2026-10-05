@@ -71,6 +71,8 @@ must not contain it, or no test could prove that `ATTACH 'tresor:…'` loads the
 (`LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension'`), or
 `INSTALL tresor FROM '__BUILD_DIRECTORY__/repository'` into `SET extension_directories = [...]`
 (`extension_directory` is deprecated on 2.0). In gate tests set `autoload_known_extensions = false`.
+A script that reads the duckdb CLI's output passes `-no-agent`: under an AI agent (`CLAUDECODE`) the 2.0 CLI
+changes its output format.
 With `TRESOR_TEST_HTTPFS=1` (as CI builds) the test build also links **httpfs** (`extension_config.cmake`,
 at the commit duckdb's 2.0 tree pins in `duckdb/.github/config/extensions/httpfs.cmake`; move both with
 the duckdb pin): the s3/gcs/r2/aws types and the real `REFRESH auto` path (specs/006). Opt-in, so the

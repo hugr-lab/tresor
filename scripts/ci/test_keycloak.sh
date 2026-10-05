@@ -187,11 +187,10 @@ if [ -n "${TRESOR_ACL_EXTENSION:-}" ]; then
 	admin_token="$(curl -sf -d grant_type=password -d client_id=acl-door -d username=bob -d password=bob-pass \
 		-d scope=openid "$issuer/protocol/openid-connect/token" |
 		python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
-	jwks="$(curl -sf "$issuer/protocol/openid-connect/certs")"
 	sed -e "s|@ACL_EXTENSION@|$TRESOR_ACL_EXTENSION|" \
 		-e "s|@TRESOR_EXTENSION@|$(dirname "$unittest")/../extension/tresor/tresor.duckdb_extension|" \
 		-e "s|@HOST@|127.0.0.1:$server_port|g" -e "s|@ISSUER@|$issuer|g" -e "s|@WORK@|$work|g" \
-		-e "s|@TOKEN@|$door_token|" -e "s|@ADMIN_TOKEN@|$admin_token|" -e "s|@JWKS@|$jwks|" \
+		-e "s|@TOKEN@|$door_token|" -e "s|@ADMIN_TOKEN@|$admin_token|" \
 		"$root/test/acl/actor.sql" >"$work/acl.sql"
 	logged="$(wc -l <"$work/server.log")" # the reference tests made and revoked grants too: only the new lines count
 	# the stub linked into the test CLI must not mark acl's hooks: the real duckdb-acl is what must (ACLC 2)
