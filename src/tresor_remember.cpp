@@ -74,7 +74,12 @@ void RememberedLogins::Register(DatabaseInstance &db) {
 	// the default may come from the environment: TRESOR_KEYCHAIN=off (a CI runner, a shared machine) or =memory
 	// (test suites - they never touch the person's own store)
 	auto from_env = std::getenv("TRESOR_KEYCHAIN");
+#ifdef __EMSCRIPTEN__
+	string default_mode = "memory"; // a browser tab has no OS store: a login lives as long as the tab (specs/020)
+	Get(db)->SetMode(KeychainMode::MEMORY);
+#else
 	string default_mode = "auto";
+#endif
 	if (from_env && *from_env) {
 		KeychainMode mode;
 		if (!TryParseMode(from_env, mode)) {

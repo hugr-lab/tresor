@@ -95,7 +95,41 @@ func (s *Server) Handler() http.Handler {
 	if u, err := url.Parse(s.cfg.PublicURL); err == nil && strings.TrimRight(u.Path, "/") != "" {
 		h = http.StripPrefix(strings.TrimRight(u.Path, "/"), mux)
 	}
-	return s.logged(h)
+	return s.logged(s.cors(h))
+}
+
+// cors answers the browsers of the configured origins (tresor specs/020): the page's DuckDB-wasm calls the API with
+// a bearer token - no cookies, so no Allow-Credentials. A preflight is answered here, before the routes; any other
+// origin gets no CORS header, and the browser refuses the answer.
+func (s *Server) cors(next http.Handler) http.Handler {
+	if len(s.cfg.CORSOrigins) == 0 {
+		return next
+	}
+	allowed := map[string]bool{}
+	for _, origin := range s.cfg.CORSOrigins {
+		allowed[origin] = true
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("Vary", "Origin")
+		origin := r.Header.Get("Origin")
+		if origin == "" || !allowed[origin] {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Expose-Headers", "ETag")
+		if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+			w.Header().Add("Vary", "Access-Control-Request-Method")
+			w.Header().Add("Vary", "Access-Control-Request-Headers")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, PATCH, DELETE, POST")
+			w.Header().Set("Access-Control-Allow-Headers",
+				"Authorization, Content-Type, Accept, Delegation, If-Match, If-None-Match, traceparent")
+			w.Header().Set("Access-Control-Max-Age", "600")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // --- plumbing --------------------------------------------------------------------------------------

@@ -46,6 +46,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 LOCK = threading.Lock()
 TOKENS = {}    # access token -> {"identity": ..., "uses": n, "renewed": bool}
 REFRESH = {}   # refresh token -> identity
+PAGE_LOGIN_SHAPE = {"refresh_token": "rt-" + "x" * 16}  # /_page_login's answer, for its size (specs/020)
 CODES = {}     # authorization code -> (challenge, redirect_uri, identity)
 DEVICES = {}   # device code -> pending polls left before approval
 
@@ -360,10 +361,13 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(chunk)
 
     def do_HEAD(self):
-        if urllib.parse.urlparse(self.path).path in ("/_stats", "/_forget"):
+        if urllib.parse.urlparse(self.path).path in ("/_stats", "/_forget", "/_page_login"):
             # httpfs asks HEAD first: the size of what GET will answer (the stats are read under the lock there)
             with LOCK:
-                size = len(json.dumps(dict(IDP_STATS) if self.path == "/_stats" else {"forgotten": True}).encode())
+                if self.path == "/_page_login":
+                    size = len(json.dumps(PAGE_LOGIN_SHAPE).encode())
+                else:
+                    size = len(json.dumps(dict(IDP_STATS) if self.path == "/_stats" else {"forgotten": True}).encode())
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(size))
@@ -378,6 +382,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
+        if url.path == "/_page_login":  # specs/020: the login a web page made with the IdP - its refresh token
+            with LOCK:
+                refresh = issue(PERSON, True)["refresh_token"]
+            self.send(200, {"refresh_token": refresh})
+            return
         if url.path == "/_stats":  # specs/012: what the IdP saw, for the tests
             with LOCK:
                 self.send(200, dict(IDP_STATS))

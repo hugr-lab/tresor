@@ -20,6 +20,9 @@ type Config struct {
 	Store     Store    `yaml:"store"`
 	Issuers   []Issuer `yaml:"issuers"`
 	Policy    Policy   `yaml:"policy"`
+	// CORSOrigins are the web pages' origins allowed to call the API from a browser (tresor specs/020: DuckDB-wasm in
+	// a web application). Empty: no CORS answers, browsers refuse every cross-origin call.
+	CORSOrigins []string `yaml:"cors_origins"`
 }
 
 // TLS names the certificate the server serves with; empty means plain http (loopback only).
@@ -158,6 +161,15 @@ func (c *Config) validate() error {
 	}
 	if c.Store.Path == "" && c.Store.KeyEnv != "" {
 		return errors.New("store.key_env without store.path: the store would silently be memory only")
+	}
+	for i, origin := range c.CORSOrigins {
+		// an origin exactly as a browser sends it: scheme://host[:port], https - or http on loopback (a dev server)
+		ou, err := url.Parse(origin)
+		if err != nil || ou.Host == "" || ou.Path != "" || ou.RawQuery != "" || ou.Fragment != "" || ou.User != nil ||
+			(ou.Scheme != "https" && !(ou.Scheme == "http" && IsLoopback(ou.Hostname()))) {
+			return fmt.Errorf("cors_origins[%d] %q: an origin is https://host[:port] (http only on loopback), "+
+				"no path and no wildcard", i, origin)
+		}
 	}
 	if len(c.Issuers) == 0 {
 		return errors.New("at least one issuer is required")

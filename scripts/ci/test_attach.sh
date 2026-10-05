@@ -42,14 +42,21 @@ echo "test_attach: fake service on 127.0.0.1:$TRESOR_TEST_PORT"
 cd "$root"
 # the runner skips a test whose error mentions "HTTP" or "Unable to connect" (a network flake guard);
 # here the network is the fake, and those errors are what the tests assert - none may turn into a skip
-"$unittest" --skip-error-messages '' "$pattern"
+# TRESOR_HTTP_CLIENT=duckdb (specs/020): the same tests on DuckDB's HTTP client - httpfs's natively, loaded in each
+# test's database up front (the tests turn autoloading off)
+client_args=()
+if [ "${TRESOR_HTTP_CLIENT:-}" = "duckdb" ]; then
+	client_args=(--on-init "LOAD httpfs")
+	echo "test_attach: on DuckDB's HTTP client (httpfs)"
+fi
+"$unittest" --skip-error-messages '' ${client_args[@]+"${client_args[@]}"} "$pattern"
 
 # LOGIN 'auto' where no browser can be opened takes the device flow: only Linux can be without one
 # (macOS and Windows always have an opener), so only there, in a process without BROWSER or a display
 if [ "$(uname)" = "Linux" ] && [ "$pattern" = "test/sql/attach/*" ]; then
 	# its own log: the main run's summary stays the last one for scripts/ci/assert_ran.sh
 	env -u BROWSER -u DISPLAY -u WAYLAND_DISPLAY TRESOR_TEST_AUTO_DEVICE=1 \
-		"$unittest" --skip-error-messages '' "test/sql/attach_auto/*" >"$work/auto.log" 2>&1 || true
+		"$unittest" --skip-error-messages '' ${client_args[@]+"${client_args[@]}"} "test/sql/attach_auto/*" >"$work/auto.log" 2>&1 || true
 	if grep -q "All tests passed ([0-9]* assertions in 1 test case)" "$work/auto.log"; then
 		echo "test_attach: LOGIN 'auto' without a browser took the device flow"
 	else

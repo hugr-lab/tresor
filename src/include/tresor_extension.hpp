@@ -17,5 +17,7 @@ void RegisterTresorSecret(ExtensionLoader &loader);
 void RegisterTresorSecretParam(ExtensionLoader &loader);
 //! tresor_logoff(...): forget a person's remembered login (tresor_logoff.cpp, specs/012).
 void RegisterTresorLogoff(ExtensionLoader &loader);
+//! tresor_web_login (specs/020): a login a web page made, handed over
+void RegisterTresorWebLogin(ExtensionLoader &loader);
 
 } // namespace duckdb

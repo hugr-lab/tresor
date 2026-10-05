@@ -144,6 +144,7 @@ string TresorSession::AccessToken(bool force) {
 
 ServiceResponse TresorSession::Call(const string &method, const string &path, const string &body,
                                     const std::map<std::string, std::string> &extra_headers, int timeout_seconds) {
+	oidc::TransportScope http(transport);
 	string used;
 	for (int attempt = 0; attempt < 2; attempt++) {
 		string token;
@@ -189,6 +190,7 @@ ServiceResponse TresorSession::Call(const string &method, const string &path, co
 
 oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bool on_behalf_of, const string &scope,
                                                  const string &audience) {
+	oidc::TransportScope http(transport);
 	ServiceCredential proof; // paths and ids: copied under the lock - the files are read and the IdP called outside it
 	{
 		lock_guard<mutex> guard(lock);
@@ -239,6 +241,7 @@ oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bo
 }
 
 vector<string> TresorSession::OwnAudiences(bool &is_jwt) {
+	oidc::TransportScope http(transport);
 	lock_guard<mutex> guard(lock);
 	auto token = AccessToken(false);
 	auto audiences = JwtAudiences(token, is_jwt);

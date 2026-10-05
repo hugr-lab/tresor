@@ -22,14 +22,15 @@ ATTACH prefix works).
   | --- | --- | --- |
   | duckdb | submodule `duckdb/` | branch `v2.0-cyanoptera`, commit = duckdb-acl's |
   | extension-ci-tools | submodule `extension-ci-tools/` | `main`, commit = duckdb-acl's |
-  | duckdb-ext-common | submodule `duckdb-ext-common/` | tag `v0.9.0` (keychain/ specs/012, service identities specs/013); duckdb-acl on `v0.7.1` - the same contract stamps |
+  | duckdb-ext-common | submodule `duckdb-ext-common/` | tag `v0.10.0` (keychain/ specs/012, service identities specs/013, the OIDC core's pluggable transport specs/020); duckdb-acl on `v0.7.1` - the same contract stamps |
   | distribution | `.github/workflows/distribution.yml` | `@main`, `duckdb_version: v2.0-cyanoptera` |
   | duckdb-acl (tests only) | `ACL_COMMIT` in `scripts/ci/acl_checkout.sh` | a duckdb-acl commit whose duckdb is ours |
 
 - **Dependencies**: OpenSSL from vcpkg (`vcpkg.json`, static, as in duckdb-acl), for the OIDC core
   (duckdb-ext-common `oidc/`, compiled in as `duckdb::tresor::oidc` with `DUCKDB_EXT_COMMON_OIDC_TLS=1`),
   which is tresor's whole HTTP transport: the IdP's flows and the service's API (specs/002).
-- **Platforms**: Linux, macOS, Windows; **no wasm** (loopback login, device polling, HTTPS client).
+- **Platforms**: Linux, macOS, Windows. wasm (specs/020) compiles (`make wasm_eh`, no `GEN=ninja`) and runs on
+  DuckDB's HTTP client with the page's login (`tresor_web_login`); not in CI until duckdb-wasm is on 2.0.
 
 ## Project structure
 
@@ -57,6 +58,7 @@ make vcpkg-setup                            # once (or VCPKG_TOOLCHAIN_PATH=<an 
 TRESOR_TEST_HTTPFS=1 GEN=ninja make         # release: duckdb (2.0) + tresor (+ httpfs for the tests)
 build/release/test/unittest 'test/sql/*'    # sqllogictests (test/sql/attach/* skip without TRESOR_TEST_PORT)
 scripts/ci/test_attach.sh                   # attach/login tests against test/fake/fake_service.py
+TRESOR_HTTP_CLIENT=duckdb scripts/ci/test_attach.sh   # the same on DuckDB's HTTP client (httpfs), as wasm has
 scripts/ci/test_keycloak.sh                 # server/ + Keycloak (docker): test/sql/conformance, test/sql/reference_server
 (cd server && GOWORK=off go test ./...)     # the reference server (GOWORK=off: a parent go.work may exist locally)
 scripts/ci/smoke_load.sh                    # out of tree: explicit LOAD, and ATTACH 'tresor:...' loading it alone

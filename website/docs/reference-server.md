@@ -66,7 +66,13 @@ policy:
     - {principal: client:acl-node, verbs: [use]}      # its own grants, for its users' statements
     - {principal: client:ops-node, issuer: https://login.corp.example/realms/main,
        verbs: [use, create, update, delete, annotate, grant]}   # admins may manage through it
+# cors_origins: [https://app.corp.example]   # web pages whose DuckDB-wasm calls the API (tresor specs/020)
 ```
+
+**Browsers.** `cors_origins` lists the origins of the web applications that run tresor in DuckDB-wasm
+(`https://host[:port]`, or `http` on loopback for a dev server; no wildcard). The server answers their
+preflights and marks their responses; any other origin gets no CORS header, so browsers refuse it.
+No credentials mode is involved: the page sends a bearer token, never a cookie.
 
 ## Who may do what
 

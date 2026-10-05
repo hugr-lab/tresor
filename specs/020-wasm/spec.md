@@ -1,6 +1,7 @@
 # Spec 020: tresor in a web application - DuckDB-wasm, the page's login, `attachTresor`
 
-- **Status**: draft (implemented outside the release pipeline until duckdb-wasm moves to DuckDB v2.0)
+- **Status**: tresor's side implemented and tested natively; the helper and a browser run wait for duckdb-wasm on
+  DuckDB v2.0
 - **Date**: 2026-10-05
 - **Author**: hugr lab
 
@@ -70,31 +71,53 @@ OIDC library (`oidc-client-ts`).
 3. **Log in** with `oidc-client-ts`:
    - authorization code with PKCE, redirect back to the page;
    - the IdP's session makes it silent;
-   - the client is the discovery's (a SPA client), or a `clientId` option;
+   - the client is the discovery's people's client, which must allow the page (a SPA / public client): the
+     remembered login is keyed by it, and tresor renews as it;
    - the redirect is the page's own, or a `redirectUri` option.
-4. **Hand the tokens to tresor**: `CALL tresor_web_login('tresor:host', access_token, refresh_token,
-   expires_at)`.
-   - This is a function compiled into the wasm build only.
-   - It puts the refresh token into the `memory` keychain, under the key of specs/012 (issuer,
-     client_id, service), as a remembered login. The access token is kept as that login's current one.
+4. **Hand the login to tresor**: a prepared statement, the token a parameter, so it is never part of a
+   statement's text (nor of DuckDB's query log):
+   `FROM tresor_web_login($1, $2 [, issuer := …])` with `'tresor:host'` and the refresh token.
+   - tresor reads the discovery and picks the issuer as the ATTACH would (`issuer`, `insecure_http` as
+     ATTACH's options), and stores the refresh token as a **remembered login** (specs/012) under (issuer,
+     client_id, service), in the **`memory`** keychain only. It answers that key.
+   - Only the refresh token is handed over: the ATTACH renews it once, which also proves it.
    - It is never a DuckDB secret: `duckdb_secrets()` does not list it, and nothing is written anywhere.
+   - Refused: with `tresor_keychain` other than `memory` (the wasm default is `memory`), an empty token, and
+     under a duckdb-acl session (no session's user plants a login for the node's people).
+   - Compiled natively too: the tests use it, and so may a host that embeds DuckDB and logs in itself.
 5. **`ATTACH '<path>' AS <as>`**. tresor finds the remembered login and renews it with the refresh token
-   at the IdP's token endpoint, as a remembered login does natively.
-   - When the refresh token itself has expired (Entra SPA: 24 h), tresor fails with "a new login is
-     needed", and the helper repeats step 3 (silent while the IdP session lives).
+   at the IdP's token endpoint, as a remembered login does natively; whoami then stores it again under
+   the person's subject.
+   - When the refresh token itself has expired (Entra SPA: 24 h), the wasm build fails with "a new login
+     to … is needed - … hand it over with tresor_web_login", and the helper repeats steps 3-4 (silent
+     while the IdP session lives).
 
 ### tresor in wasm
 
-- **HTTP through DuckDB**: `HTTPUtil`/`HTTPTransportManager`, which in wasm is httpfs over the browser's
-  `fetch`. duckdb-ext-common's `oidc::HttpSend` gets a pluggable transport (its own spec), and the wasm
-  build uses DuckDB's. There are no sockets and no OpenSSL, and the TLS is the browser's. httpfs is a
-  dependency of the wasm build only; the native build keeps its own client.
+- **HTTP through DuckDB.** duckdb-ext-common v0.10.0 (its spec 013) lets a consumer carry the OIDC core's
+  requests; tresor's every request - discovery, the IdP's, the service's - goes through one transport.
+  - `tresor_http_client`: `builtin` (the OIDC core's own client and tresor's OpenSSL; the native
+    default) or `duckdb` (DuckDB's `HTTPUtil`; the only one in wasm, where duckdb-wasm implements it
+    over the browser's `XMLHttpRequest` and the TLS is the browser's). The default may come from
+    `TRESOR_HTTP_CLIENT`. ATTACH fixes it for the attachment, renewals included; `tresor_logoff` and
+    `tresor_web_login` use the current one.
+  - DuckDB's transport (`src/tresor_http.cpp`): parameters with **no opener**, so no `http` secret
+    (a bearer token, extra headers) and no `extra_http_headers` are mixed into a request to the IdP;
+    **no redirect** followed, **no retry** (tresor's own rules apply), **no logger** (DuckDB's HTTP log
+    writes the headers, `Authorization` included); `http_proxy` taken over; a failure is an error with
+    status 0, which the OIDC core redacts.
+  - Natively, DuckDB's own client is GET-only: `duckdb` needs httpfs, loaded under the instance's
+    autoload settings, or refused at ATTACH ("needs httpfs").
+  - `HTTPUtil` has **no PATCH** (`annotate_secret`, `annotate_variable`). Natively it goes through the
+    built-in client (the transport calling back into the OIDC core reaches it); in wasm annotating is
+    unavailable until DuckDB's `HTTPUtil` gains PATCH.
 - **What the wasm build leaves out:**
-  - the people's login flows (browser, device): the page logs in;
-  - `private_key_jwt`, federated and managed identity: they make no sense in a browser;
-  - the acl actor and `act_for_sessions`;
-  - the OS keychain: `tresor_keychain` is `memory`;
-  - the audit's background thread: delivery is synchronous.
+  - the people's login flows (browser, device): refused with "a new login is needed", the page logs in;
+  - `private_key_jwt`: the OIDC core signs with OpenSSL, which the wasm build does not link;
+  - the acl actor and `act_for_sessions`: refused before any thread starts, as there is no acl;
+  - the OS keychain: `tresor_keychain` defaults to `memory`;
+  - the audit's delivery thread: it starts only with a sink (acl-otel), which a page never has; the
+    audit goes to DuckDB's log.
 - **What it keeps:**
   - the protocol client (whoami, secrets, writes, grants, variables, dynamic material);
   - the remembered-login renewal;
@@ -115,8 +138,8 @@ OIDC library (`oidc-client-ts`).
 
 ## Enforcement & security
 
-- **Tokens.** They pass from the page to tresor through one SQL call in the same worker, and reach no
-  log, no secret and no storage. The refresh token lives in the worker's memory, as an SPA library keeps
+- **Tokens.** The refresh token passes from the page to tresor as a prepared statement's parameter in the
+  same worker: never in a statement's text, so no query log holds it; it reaches no secret and no storage. The refresh token lives in the worker's memory, as an SPA library keeps
   it, and it is gone with the tab.
 - **The extension's integrity.** It is verified against the repository's keys by the helper now, and by
   DuckDB itself once external repositories work in duckdb-wasm.
@@ -124,11 +147,27 @@ OIDC library (`oidc-client-ts`).
   only receives bearer tokens. This is the rule as in the CLI.
 - **The wasm build has no acl**, so a page cannot act for other users' sessions.
 
+### duckdb-wasm's HTTP client, as it is on 1.x
+
+Read from duckdb-wasm `lib/src/http_wasm.cc`, to check again on its 2.0 port and raise upstream if still so:
+- `XMLHttpRequest` follows redirects and cannot be told not to: the "no redirect" rule holds natively only.
+- A POST's body is kept for a 2xx answer only: an IdP's `400 invalid_grant` arrives without its body, so a
+  dead refresh token reads as a failed renewal rather than as `invalid_grant` (either way a new login).
+- A successful PUT answers the `ETag` in place of the body; tresor reads only the status of a PUT.
+
 ## Testing
 
-- **The wasm build compiles today** (`make wasm_eh` at duckdb eb0d9df: `tresor.duckdb_extension.wasm`,
-  1.1 MB). It stays out of the CI pipeline until duckdb-wasm is on v2.0.
-- **Runtime:**
+- **The wasm build compiles** (`make wasm_eh`, no `GEN=ninja`, emsdk 3.1.71: `tresor.duckdb_extension.wasm`,
+  0.9 MB). It stays out of the CI pipeline until duckdb-wasm is on v2.0.
+- **DuckDB's client, natively, in CI**: the whole attach suite runs twice, on the built-in client and with
+  `TRESOR_HTTP_CLIENT=duckdb` (`scripts/ci/test_attach.sh` loads httpfs in each test's database).
+- `test/sql/http_client.test`: the setting's values, and `duckdb` refused without httpfs.
+- `test/sql/attach/web_login.test`: the refusals (keychain not memory, NULL, empty, a scheme, an acl
+  session); the hand-over, then an ATTACH with no browser and exactly one refresh, `whoami().login =
+  'remembered'`; a prepared statement as the helper calls it.
+- The reference server's `cors_origins`: config refusals (a wildcard, a path, http off loopback), and the
+  answers (preflight, an allowed and another origin, none configured).
+- **Runtime, later:**
   - a DuckDB-wasm we build at our pin;
   - an example app (`examples/web/`: Vite, `@duckdb/duckdb-wasm`, the helper);
   - a Playwright test against Keycloak and the reference server with CORS: log in, ATTACH, then
@@ -147,6 +186,8 @@ OIDC library (`oidc-client-ts`).
 ## Follow-ups
 
 - **duckdb-wasm#2262**: external repositories in duckdb-wasm, which retires the helper's own loading.
-- **duckdb-ext-common**: a pluggable HTTP transport for `oidc/` (its spec).
+- **duckdb-ext-common**: a pluggable HTTP transport for `oidc/` (its spec 013) - done, v0.10.0.
+- **DuckDB**: a PATCH request type in `HTTPUtil` (annotating from wasm).
+- **duckdb-wasm**: redirects not followed on request, and a POST's error body kept (above).
 - **A docs page**, "tresor in a web application": the contract above, plus IdP setup (Keycloak, Entra
   SPA).

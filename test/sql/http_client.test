@@ -1,0 +1,32 @@
+# name: test/sql/http_client.test
+# description: tresor_http_client - builtin or duckdb; duckdb needs a complete HTTP client of DuckDB's (specs/020)
+# group: [sql]
+
+statement ok
+SET autoload_known_extensions = false;
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement error
+SET tresor_http_client = 'curl';
+----
+tresor_http_client is builtin or duckdb - not 'curl'
+
+statement ok
+SET tresor_http_client = 'DuckDB';
+
+# natively DuckDB's own client is GET-only: without httpfs loaded (and no autoload), refused before any request
+statement error
+ATTACH 'tresor:127.0.0.1:9/none' AS corp (INSECURE_HTTP true);
+----
+tresor_http_client = 'duckdb' needs httpfs
+
+statement ok
+SET tresor_http_client = 'builtin';
+
+# the built-in client is back: the error is the network's, not the setting's
+statement error
+ATTACH 'tresor:127.0.0.1:9/none' AS corp (INSECURE_HTTP true);
+----
+discovery of 127.0.0.1:9/none failed

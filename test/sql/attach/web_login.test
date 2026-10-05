@@ -1,0 +1,118 @@
+# name: test/sql/attach/web_login.test
+# description: tresor_web_login - a login a web page made, handed over; the ATTACH after it renews it (specs/020)
+# group: [attach]
+
+require-env TRESOR_TEST_PORT
+
+require httpfs
+
+require acl_stub
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+CREATE MACRO idp(what) AS (SELECT regexp_extract(content, '"' || what || '": ([^,}]*)', 1) FROM read_text('http://127.0.0.1:{TRESOR_TEST_PORT}/_stats'));
+
+# the page's login with the IdP: its refresh token, in a variable - never in a statement's text
+statement ok
+SET VARIABLE rt = (SELECT regexp_extract(content, '"refresh_token": "([^"]*)"', 1) FROM read_text('http://127.0.0.1:{TRESOR_TEST_PORT}/_page_login'));
+
+# --- refusals, before anything is kept -------------------------------------------------------------------------
+
+# a page's login lives in this instance's memory: never in the OS store
+statement ok
+SET tresor_keychain = 'off';
+
+statement error
+CALL tresor_web_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('rt'), insecure_http := true);
+----
+memory only
+
+statement ok
+SET tresor_keychain = 'memory';
+
+statement error
+CALL tresor_web_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', NULL);
+----
+must not be NULL
+
+statement error
+CALL tresor_web_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', '', insecure_http := true);
+----
+no refresh token
+
+# ATTACH's rules: a service named without a scheme (https implied; INSECURE_HTTP for a loopback http one)
+statement error
+CALL tresor_web_login('https://127.0.0.1:{TRESOR_TEST_PORT}', getvariable('rt'));
+----
+without a scheme
+
+# not for a statement run for someone else (specs/008)
+statement ok
+SET acl_stub_session = 'alice';
+
+statement error
+CALL tresor_web_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('rt'), insecure_http := true);
+----
+not under a duckdb-acl session
+
+statement ok
+RESET acl_stub_session;
+
+# --- the hand-over, then the ATTACH: no browser, one refresh ----------------------------------------------------
+
+statement ok
+CREATE TABLE seen AS SELECT idp('authorize')::INT AS authorize, idp('refresh')::INT AS refresh;
+
+query III
+SELECT service = '127.0.0.1:{TRESOR_TEST_PORT}', issuer LIKE 'http://127.0.0.1:%/idp', client_id FROM tresor_web_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('rt'), insecure_http := true);
+----
+true	true	duckdb
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+
+query II
+SELECT login, subject LIKE '%alice' FROM corp.whoami();
+----
+remembered	true
+
+query II
+SELECT idp('authorize')::INT - authorize, idp('refresh')::INT - refresh FROM seen;
+----
+0	1
+
+query I
+SELECT count(*) > 0 FROM corp.secrets();
+----
+true
+
+# a page's tab ends: its login goes with it
+statement ok
+CALL tresor_logoff('corp');
+
+statement ok
+DETACH corp;
+
+# the second web login of the same person: the entry is replaced, the ATTACH takes it again
+statement ok
+SET VARIABLE rt = (SELECT regexp_extract(content, '"refresh_token": "([^"]*)"', 1) FROM read_text('http://127.0.0.1:{TRESOR_TEST_PORT}/_page_login'));
+
+# as the page's helper calls it: a prepared statement, the token a parameter
+statement ok
+PREPARE hand_over AS FROM tresor_web_login($1, $2, insecure_http := true);
+
+statement ok
+EXECUTE hand_over('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('rt'));
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+
+query I
+SELECT login FROM corp.whoami();
+----
+remembered
+
+statement ok
+DETACH corp;

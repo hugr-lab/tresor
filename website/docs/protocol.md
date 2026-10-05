@@ -44,6 +44,15 @@ fixes only what a client sees.
 - Bodies: a client sends only the fields listed here. A service may refuse unknown fields with
   `422 invalid_secret`.
 - Every error is a problem document, including an unknown route or method (`404 not_found`).
+- **Browsers.** A client may run in a web page (tresor in DuckDB-wasm), so its requests are
+  cross-origin. A service meant for such pages **SHOULD** answer CORS for the origins it trusts, on
+  every route its discovery included:
+  - a preflight (`OPTIONS`) allowing the methods above and the request headers `Authorization`,
+    `Content-Type`, `Accept`, `Delegation`, `If-Match`, `If-None-Match` and `traceparent`;
+  - `Access-Control-Allow-Origin` with the page's origin (never `*` with credentials; a client sends
+    no cookies) and `Access-Control-Expose-Headers: ETag`.
+
+  A service that answers no CORS still serves every other client.
 
 ## Discovery
 

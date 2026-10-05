@@ -2,6 +2,7 @@
 #include "tresor_events.hpp"
 #include "tresor_extension.hpp"
 #include "tresor_login.hpp"
+#include "tresor_http.hpp"
 #include "tresor_remember.hpp"
 
 #include "acl_connection.hpp"
@@ -209,6 +210,7 @@ void LogoffScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 	auto &state = input.global_state->Cast<LogoffState>();
 	if (!state.done) {
 		state.done = true; // the logoff runs once per statement, whatever happens below
+		tresor::oidc::TransportScope http(tresor::TransportFor(context)); // a revocation, on the setting's client
 		// not for a statement run for someone else: an acl session's user must not end the node's people's logins
 		string why;
 		auto acl_state = acl::AclConnection::Reach(context, why);

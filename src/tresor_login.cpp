@@ -1,5 +1,6 @@
 #include "tresor_login.hpp"
 #include "tresor_actor.hpp"
+#include "tresor_http.hpp"
 #include "tresor_remember.hpp"
 
 #include <algorithm>
@@ -285,6 +286,12 @@ string SecretString(const KeyValueSecret &secret, const char *key) {
 
 oidc::TokenSet PersonLogin(ClientContext &context, const AttachRequest &request, const ServiceInfo &info,
                            const Discovered::Issuer &issuer, LoginFlow &flow) {
+#ifdef __EMSCRIPTEN__
+	// a worker opens no window and listens on no port: in a browser the page logs in (specs/020)
+	throw InvalidInputException("tresor: a new login to %s is needed - in a browser the page logs in with the identity "
+	                            "provider and hands it over with tresor_web_login",
+	                            request.host);
+#endif
 	auto browser_possible = !info.endpoints.authorization_endpoint.empty() && issuer.OffersHuman("authorization_code");
 	auto device_possible = !info.endpoints.device_authorization_endpoint.empty() && issuer.OffersHuman("device_code");
 	switch (request.mode) {
@@ -608,7 +615,36 @@ int64_t ParseGrantWait(int64_t seconds) {
 	return seconds;
 }
 
+LoginKey HandOverLogin(ClientContext &context, const AttachRequest &request, const string &refresh_token) {
+	auto store = RememberedLogins::Get(*context.db);
+	if (store->Mode() != KeychainMode::MEMORY) {
+		// a page's login lives as long as its tab: never in the OS store, never past this instance
+		throw InvalidInputException("tresor_web_login keeps a login in this instance's memory only: SET "
+		                            "tresor_keychain = 'memory'");
+	}
+	if (refresh_token.empty()) {
+		throw InvalidInputException("tresor_web_login: no refresh token - a login without one ends with its access "
+		                            "token; ask the identity provider for offline_access");
+	}
+	oidc::TransportScope http(TransportFor(context));
+	string discovery;
+	auto discovered = Discover(request, discovery);
+	auto &issuer = ChooseIssuer(request, discovered, request.issuer);
+	CheckTransport(request, "issuer", issuer.issuer);
+	if (issuer.client_id.empty()) {
+		throw IOException("tresor: %s names no client_id for people to log in with", request.host);
+	}
+	LoginKey key {StripSlashes(issuer.issuer), issuer.client_id, request.host};
+	lock_guard<mutex> chain(store->KeyLock(key));
+	// whose it is is learnt at the ATTACH's whoami, which stores it again under that subject
+	store->Store(key, string(), refresh_token, KeychainMode::MEMORY);
+	return key;
+}
+
 shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &request) {
+	// every request of the login - discovery, the IdP's flows, the first whoami - on the client the setting names
+	auto transport = TransportFor(context);
+	oidc::TransportScope http(transport);
 	ServiceInfo info;
 	info.host = request.host;
 	info.insecure_http = request.insecure_http;
@@ -777,6 +813,7 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 	}
 
 	auto session = make_shared_ptr<TresorSession>(std::move(info), flow, std::move(tokens), std::move(credential));
+	session->SetTransport(transport); // and every one after, renewals included
 	// the login is proven only when the service accepts it: fail closed at ATTACH, not at first use
 	auto whoami = session->Call("GET", "/v1/whoami");
 	if (whoami.status != 200) {
