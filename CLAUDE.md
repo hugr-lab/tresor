@@ -41,6 +41,7 @@ duckdb-ext-common/          # submodule: shared contracts + hook bases; tresor O
                             #   first consumer) and contracts/tresor_*.hpp there (charter R6)
 server/                     # the reference duckdb-secrets/1 server (Go module) + the Keycloak test realm
 website/                    # docs (docusaurus); docs/protocol.md is the specification
+web/                        # @hugr-lab/tresor-web: attachTresor for a page's DuckDB-wasm (specs/020)
 test/sql/                   # sqllogictests; attach/ needs the fake service
 test/fake/                  # fake duckdb-secrets service + IdP (Python stdlib) and the fake browser
 test/extension/acl_stub/    # test-only extension: duckdb-acl's side of acl_connection.hpp (specs/008)
@@ -65,6 +66,7 @@ scripts/ci/test_keycloak.sh                 # server/ + Keycloak (docker): test/
 scripts/ci/smoke_load.sh                    # out of tree: explicit LOAD, and ATTACH 'tresor:...' loading it alone
 find src \( -name '*.cpp' -o -name '*.hpp' \) | xargs clang-format -i      # pin: clang_format==11.0.1
 cd website && npm ci && npx docusaurus build                               # docs (onBrokenLinks: throw)
+cd web && npm ci && npm test                                               # the web helper (needs the duckdb submodule)
 ```
 
 **Test-runner rules.** tresor is never statically linked (duckdb links only what

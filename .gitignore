@@ -29,3 +29,7 @@ website/versioned_docs/
 website/versioned_sidebars/
 website/versions.json
 _acl/
+
+# the web page's helper (web/): installed and built locally
+web/node_modules/
+web/build/
