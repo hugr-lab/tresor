@@ -139,6 +139,13 @@ jobs:
           scripts/ci/test_attach.sh 2>&1 | tee attach.log
           scripts/ci/assert_ran.sh attach.log 10 600 'require-env TRESOR_TEST_PORT|require httpfs|require acl_stub'
 
+      # the same tests on DuckDB's HTTP client, as a wasm build has only that one (specs/020)
+      - name: Attach suites on DuckDB's HTTP client
+        run: |
+          set -o pipefail
+          TRESOR_HTTP_CLIENT=duckdb scripts/ci/test_attach.sh 2>&1 | tee attach-duckdb.log
+          scripts/ci/assert_ran.sh attach-duckdb.log 10 600 'require-env TRESOR_TEST_PORT|require httpfs|require acl_stub'
+
       # the reference server next to a real Keycloak (specs/003): the conformance suite, a real
       # browser login (PKCE, Keycloak's redirect checks) and a real client-credentials grant
       - uses: actions/setup-go@v6

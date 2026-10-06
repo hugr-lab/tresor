@@ -45,6 +45,11 @@ func TestRefused(t *testing.T) {
 		"an actor's unknown verb": strings.Replace(good, "verbs: [use]", "verbs: [use, fly]", 1),
 		"the old create policy":   good + "  create:\n    - {principal: role:analysts, names: [\"*\"]}\n",
 		"no issuers":              "listen: 127.0.0.1:1\npublic_url: http://127.0.0.1:1\n",
+		"a wildcard origin":       good + "cors_origins: [\"*\"]\n",
+		"an origin with a path":   good + "cors_origins: [https://app.example/x]\n",
+		"an http origin":          good + "cors_origins: [http://app.example]\n",
+		"an upper-case origin":    good + "cors_origins: [https://App.example]\n",
+		"a default port":          good + "cors_origins: [\"https://app.example:443\"]\n",
 	}
 	for name, doc := range cases {
 		if _, err := Parse([]byte(doc)); err == nil {
@@ -77,5 +82,12 @@ func TestExchangeClient(t *testing.T) {
 	}
 	if _, err := Parse([]byte(strings.Replace(with, "client_secret_env: TRESOR_TEST_EX", "client_secret: x", 1))); err == nil {
 		t.Fatal("a client secret in the file")
+	}
+}
+
+func TestCORSOrigins(t *testing.T) {
+	cfg, err := Parse([]byte(good + "cors_origins: [https://app.example, \"http://localhost:5173\"]\n"))
+	if err != nil || len(cfg.CORSOrigins) != 2 {
+		t.Fatalf("an https origin and a loopback dev server's: %v", err)
 	}
 }

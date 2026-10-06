@@ -87,6 +87,12 @@ public:
 	//! The token itself never leaves the session.
 	vector<string> OwnAudiences(bool &is_jwt);
 
+	//! The HTTP client of this session's requests and renewals (specs/020): empty for the built-in one. Set once,
+	//! before the session is shared.
+	void SetTransport(oidc::Transport transport_p) {
+		transport = std::move(transport_p);
+	}
+
 	//! DETACH: drop the tokens. Calls after this fail.
 	void Close();
 
@@ -112,6 +118,7 @@ private:
 	ServiceInfo info;
 	LoginFlow flow;
 	string subject;
+	oidc::Transport transport;
 	mutex lock;
 	oidc::TokenSet tokens;
 	int64_t issued_at = 0;        // when `tokens` arrived: the renewal margin is at most half their life

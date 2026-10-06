@@ -2,6 +2,7 @@
 #include "tresor_events.hpp"
 #include "tresor_extension.hpp"
 #include "tresor_login.hpp"
+#include "tresor_http.hpp"
 #include "tresor_remember.hpp"
 
 #include "acl_connection.hpp"
@@ -216,6 +217,20 @@ void LogoffScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 		if (!acl_state || acl_state->Current(view)) {
 			throw PermissionException("tresor_logoff: not under a duckdb-acl session");
 		}
+		// a revocation, on the setting's client; a client that cannot be had costs the revocation, never the removal
+		tresor::oidc::Transport transport;
+		try {
+			transport = tresor::TransportFor(context);
+		} catch (std::exception &ex) {
+			auto why = string(ex.what());
+			transport = [why](const std::string &, const std::string &, const std::map<std::string, std::string> &,
+			                  const std::string &, const std::string &, int) {
+				tresor::oidc::HttpResult unusable;
+				unusable.error = why;
+				return unusable;
+			};
+		}
+		tresor::oidc::TransportScope http(transport);
 		auto &data = input.bind_data->Cast<LogoffBindData>();
 		auto attached = Attached(context);
 		vector<tresor::LoginKey> keys;

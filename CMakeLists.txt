@@ -39,8 +39,10 @@ set(EXTENSION_SOURCES
     src/tresor_session.cpp
     src/tresor_whoami.cpp
     src/tresor_remember.cpp
+    src/tresor_http.cpp
     src/tresor_credentials.cpp
     src/tresor_logoff.cpp
+    src/tresor_web_login.cpp
     src/tresor_act.cpp
     src/tresor_variables.cpp
     ${DUCKDB_EXT_COMMON_OIDC_SOURCES}

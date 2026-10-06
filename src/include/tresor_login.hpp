@@ -52,6 +52,11 @@ bool IsLoopbackHost(const string &host);
 //! nothing is left behind.
 shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &request);
 
+//! tresor_web_login (specs/020): a person's login the page made, handed over. Discovery and the issuer as the ATTACH
+//! of `request` would choose them; the refresh token is remembered (in memory only) under the key that ATTACH looks
+//! up, so the ATTACH renews it and nothing else. Returns that key.
+LoginKey HandOverLogin(ClientContext &context, const AttachRequest &request, const string &refresh_token);
+
 //! The browser for the login URL (tresor_browser.cpp).
 bool CanOpenBrowser();
 bool OpenBrowser(const std::string &url);

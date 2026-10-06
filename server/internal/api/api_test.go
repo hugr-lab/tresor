@@ -486,3 +486,69 @@ func TestTraceIDs(t *testing.T) {
 		}
 	}
 }
+
+// tresor specs/020: a web page's DuckDB-wasm calls the API from a browser - CORS for the configured origins only.
+func TestCORS(t *testing.T) {
+	f := newFixture(t, "")
+	f.srv.cfg.CORSOrigins = []string{"https://app.example"}
+	f.server.Config.Handler = f.srv.Handler()
+	send := func(method, path, origin string, headers map[string]string) *http.Response {
+		req, _ := http.NewRequest(method, f.base+path, nil)
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+	preflight := send("OPTIONS", "/v1/secrets/x", "https://app.example", map[string]string{
+		"Access-Control-Request-Method": "PUT", "Access-Control-Request-Headers": "authorization, if-none-match"})
+	if preflight.StatusCode != http.StatusNoContent ||
+		preflight.Header.Get("Access-Control-Allow-Origin") != "https://app.example" ||
+		!strings.Contains(preflight.Header.Get("Access-Control-Allow-Headers"), "If-None-Match") ||
+		!strings.Contains(preflight.Header.Get("Access-Control-Allow-Methods"), "PATCH") ||
+		preflight.Header.Get("Access-Control-Allow-Credentials") != "" {
+		t.Fatalf("the preflight of an allowed origin: %d %v", preflight.StatusCode, preflight.Header)
+	}
+	discovery := send("GET", "/.well-known/duckdb-secrets", "https://app.example", nil)
+	if discovery.StatusCode != 200 || discovery.Header.Get("Access-Control-Allow-Origin") != "https://app.example" ||
+		discovery.Header.Get("Access-Control-Expose-Headers") != "ETag" {
+		t.Fatalf("the discovery for an allowed origin: %d %v", discovery.StatusCode, discovery.Header)
+	}
+	refused := send("GET", "/v1/whoami", "https://elsewhere.example", map[string]string{"Authorization": "Bearer " + f.alice})
+	if refused.Header.Get("Access-Control-Allow-Origin") != "" || !strings.Contains(refused.Header.Get("Vary"), "Origin") {
+		t.Fatalf("another origin gets no CORS header: %v", refused.Header)
+	}
+	otherPreflight := send("OPTIONS", "/v1/whoami", "https://elsewhere.example",
+		map[string]string{"Access-Control-Request-Method": "GET"})
+	if otherPreflight.Header.Get("Access-Control-Allow-Origin") != "" || otherPreflight.StatusCode == http.StatusNoContent {
+		t.Fatalf("another origin's preflight is not answered: %d", otherPreflight.StatusCode)
+	}
+	authed := send("GET", "/v1/whoami", "https://app.example", map[string]string{"Authorization": "Bearer " + f.alice})
+	if authed.StatusCode != 200 || authed.Header.Get("Access-Control-Allow-Origin") != "https://app.example" {
+		t.Fatalf("an allowed origin's call: %d", authed.StatusCode)
+	}
+	// no origin configured: nothing changes
+	g := newFixture(t, "")
+	plain := sendPlain(t, g.base+"/.well-known/duckdb-secrets", "https://app.example")
+	if plain.Header.Get("Access-Control-Allow-Origin") != "" {
+		t.Fatal("without cors_origins no CORS header")
+	}
+}
+
+func sendPlain(t *testing.T, url, origin string) *http.Response {
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("Origin", origin)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp
+}

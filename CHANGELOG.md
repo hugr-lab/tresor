@@ -36,6 +36,9 @@ The first release, with DuckDB 2.0.
   read with `corp.variable(name[, fallback])`, listed with `corp.variables()`, managed with
   `set_variable` and its siblings. A value may be a reference the service resolves. Such a value is
   `sensitive` and is handled as secret material (specs/018).
+- **Toward web applications** (DuckDB-wasm, specs/020): `tresor_http_client` (`builtin`, or `duckdb` -
+  DuckDB's HTTP client, the only one in wasm), `tresor_web_login()` (a login the page made, handed over and
+  remembered in memory), and CORS in the protocol and the reference server (`cors_origins`).
 - **Audit and traces**: every login, lookup, write and grant as a typed event, for DuckDB's log and
   for OpenTelemetry through acl-otel (`tresor_audit_level`, TRSA 1) (specs/011).
 - **The protocol `duckdb-secrets/1`** (draft until this release), a reference server in Go and a

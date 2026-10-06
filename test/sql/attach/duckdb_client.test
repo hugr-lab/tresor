@@ -1,0 +1,72 @@
+# name: test/sql/attach/duckdb_client.test
+# description: tresor_http_client = 'duckdb' - DuckDB's client carries tresor's requests, and only what tresor means to send (specs/020)
+# group: [attach]
+
+require-env TRESOR_TEST_PORT
+
+require httpfs
+
+require acl_stub
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+SET tresor_keychain = 'memory';
+
+statement ok
+CREATE MACRO idp(what) AS (SELECT regexp_extract(content, '"' || what || '": ([^,}]*)', 1) FROM read_text('http://127.0.0.1:{TRESOR_TEST_PORT}/_stats'));
+
+statement ok
+CREATE TABLE seen AS SELECT idp('leaked')::INT AS leaked;
+
+# what DuckDB would add to an http request of this host: an `http` secret's bearer token and headers
+statement ok
+CREATE SECRET leak (TYPE http, BEARER_TOKEN 'leak-token', EXTRA_HTTP_HEADERS MAP {'X-Tresor-Leak': '1'}, SCOPE 'http://127.0.0.1:{TRESOR_TEST_PORT}');
+
+statement ok
+SET tresor_http_client = 'duckdb';
+
+# DuckDB's http_proxy is not tresor's (as for the built-in client): a dead one changes nothing
+statement ok
+SET http_proxy = '127.0.0.1:9';
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true, LOGIN 'browser');
+
+statement ok
+RESET http_proxy;
+
+query II
+SELECT login, subject LIKE '%alice' FROM corp.whoami();
+----
+browser	true
+
+query I
+SELECT count(*) > 0 FROM corp.secrets();
+----
+true
+
+# it was DuckDB's client that asked, and nothing of the secret reached the IdP or the service
+query II
+SELECT idp('discovery_agent'), idp('leaked')::INT - leaked FROM seen;
+----
+"tresor"	0
+
+statement ok
+DETACH corp;
+
+# the built-in client again: another agent asks
+statement ok
+SET tresor_http_client = 'builtin';
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true, LOGIN 'browser');
+
+query I
+SELECT idp('discovery_agent') <> '"tresor"';
+----
+true
+
+statement ok
+DETACH corp;

@@ -106,7 +106,14 @@ string TresorSession::AccessToken(bool force) {
 				renewed.refresh_token = tokens.refresh_token; // RFC 6749 §6: a refresh may keep the old one
 			}
 			if (store && renewed.Ok() && renewed.refresh_token != tokens.refresh_token) {
-				store->Store(Key(), remember_subject, renewed.refresh_token, remember_mode);
+				// the rotated token replaces this person's entry, or a missing one - never another's stored since
+				// (a login handed over by a page for someone else, specs/020)
+				string subject;
+				string current;
+				if (!store->Load(Key(), remember_mode, subject, current) || subject == remember_subject) {
+					store->Store(Key(), remember_subject, renewed.refresh_token, remember_mode);
+				}
+				std::fill(current.begin(), current.end(), '\0');
 			}
 			break;
 		}
@@ -144,6 +151,7 @@ string TresorSession::AccessToken(bool force) {
 
 ServiceResponse TresorSession::Call(const string &method, const string &path, const string &body,
                                     const std::map<std::string, std::string> &extra_headers, int timeout_seconds) {
+	oidc::TransportScope http(transport);
 	string used;
 	for (int attempt = 0; attempt < 2; attempt++) {
 		string token;
@@ -189,6 +197,7 @@ ServiceResponse TresorSession::Call(const string &method, const string &path, co
 
 oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bool on_behalf_of, const string &scope,
                                                  const string &audience) {
+	oidc::TransportScope http(transport);
 	ServiceCredential proof; // paths and ids: copied under the lock - the files are read and the IdP called outside it
 	{
 		lock_guard<mutex> guard(lock);
@@ -239,6 +248,7 @@ oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bo
 }
 
 vector<string> TresorSession::OwnAudiences(bool &is_jwt) {
+	oidc::TransportScope http(transport);
 	lock_guard<mutex> guard(lock);
 	auto token = AccessToken(false);
 	auto audiences = JwtAudiences(token, is_jwt);

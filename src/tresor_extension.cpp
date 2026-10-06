@@ -3,6 +3,7 @@
 #include "tresor_extension.hpp"
 #include "tresor_catalog.hpp"
 #include "tresor_events.hpp"
+#include "tresor_http.hpp"
 #include "tresor_login.hpp"
 #include "tresor_remember.hpp"
 
@@ -102,7 +103,10 @@ void LoadInternal(ExtensionLoader &loader) {
 	tresor::TresorAudit::Register(loader.GetDatabaseInstance());
 	// a person's login remembered in the OS keychain (specs/012)
 	tresor::RememberedLogins::Register(loader.GetDatabaseInstance());
+	// which HTTP client carries tresor's requests (specs/020)
+	tresor::RegisterHttpClient(loader.GetDatabaseInstance());
 	RegisterTresorLogoff(loader);
+	RegisterTresorWebLogin(loader);
 
 	RegisterTresorSecret(loader);
 	RegisterTresorSecretParam(loader);
