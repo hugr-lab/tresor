@@ -75,7 +75,7 @@ jobs:
       - name: DuckDB's signing script (the submodule, shallow)
         working-directory: .
         run: git submodule update --init --depth 1 duckdb
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm

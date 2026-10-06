@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Cheap, and before the npm install so a link error reports in seconds.
       # Docusaurus cannot catch this class itself: an absolute link resolves to a
@@ -34,7 +34,7 @@ jobs:
       - name: No absolute internal doc links
         run: python3 scripts/ci/check_docs_links.py
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
