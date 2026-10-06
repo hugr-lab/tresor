@@ -253,5 +253,5 @@ Read from duckdb-wasm `lib/src/http_wasm.cc`, to check again on its 2.0 port and
 - **duckdb-ext-common**: a pluggable HTTP transport for `oidc/` (its spec 013) - done, v0.10.0.
 - **DuckDB**: a PATCH request type in `HTTPUtil` (annotating from wasm).
 - **duckdb-wasm**: redirects not followed on request, and a POST's error body kept (above).
-- **A docs page**, "tresor in a web application": the contract above, plus IdP setup (Keycloak, Entra
-  SPA).
+- **A docs page**, "tresor in a web application" (`website/docs/web.md`): the contract above, plus IdP
+  setup (Keycloak, Entra SPA) - done.

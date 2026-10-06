@@ -134,13 +134,26 @@ string TresorSession::AccessToken(bool force) {
 		                            info.host);
 	}
 	if (!renewed.Ok()) {
+#ifdef __EMSCRIPTEN__
+		// duckdb-wasm's client drops the body of the IdP's 400: a dead refresh token's invalid_grant comes without
+		// its code. A page's login is a person's, and any failed renewal ends it the same way (specs/020)
+		if (renewed.error_code.empty() && flow == LoginFlow::REMEMBERED) {
+			renewed.error_code = "invalid_grant";
+		}
+#endif
 		if (renewed.error_code == "invalid_grant") {
 			// the refresh chain is dead (revoked, expired, rotated elsewhere): only a new login helps - and a
 			// remembered one is forgotten
 			tokens = oidc::TokenSet();
 			logged_out = true;
+#ifdef __EMSCRIPTEN__
+			throw InvalidInputException("tresor: the login to %s is over (%s) - a new login is needed: DETACH, and "
+			                            "the page logs in and hands it over again (attachTresor)",
+			                            info.host, renewed.error);
+#else
 			throw InvalidInputException("tresor: the login to %s is over (%s) - log in again: DETACH and ATTACH",
 			                            info.host, renewed.error);
+#endif
 		}
 		throw IOException("tresor: renewing the login to %s failed: %s", info.host, renewed.error);
 	}
