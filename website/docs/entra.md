@@ -177,13 +177,16 @@ tokens. For every session it trades the user's token for one meant for the servi
 
 | Setting | Where | Value |
 | --- | --- | --- |
-| The node's own API | Expose an API | Application ID URI `api://acl-node`, a delegated scope (e.g. `sessions`) |
+| The node's own API | Expose an API | Application ID URI (`api://<node client id>`, the default), a delegated scope (e.g. `sessions`) |
 | Token version 2 | the node's Manifest | `"api": {"requestedAccessTokenVersion": 2}`: session tokens for the node are v2 |
 | On-Behalf-Of | API permissions → Add a permission → **APIs my organization uses** → `duckdb-secrets` → **Delegated** | `access_as_user`, with admin consent |
 | The client people reach the node with | its API permissions | the node's `sessions` scope |
 
 - Users' tokens arrive at the node with `aud` = the node's client id. duckdb-acl's issuer is set up
   with that audience (`acl_define_issuer`).
+- acl takes a role from one claim's value, whole: with `ROLE CLAIM 'scp'` the token must carry the one
+  scope (`scp` = `sessions`); a token with several space-separated scopes maps to no role. App roles on
+  the node's API (`ROLE CLAIM 'roles'`) avoid that.
 - They must be v2 tokens: the node's API needs version 2 too. A v1 session token is refused as
   `this acl session's token is from another issuer than <host>'s login`.
 - Only a user's token (delegated, with `scp`) can be exchanged; an application's cannot.
@@ -206,9 +209,12 @@ tokens. For every session it trades the user's token for one meant for the servi
     live (`ENTRA_OBO=1` below).
 - **duckdb-acl reading Entra's discovery.** acl reads the issuer's
   `/.well-known/openid-configuration` through httpfs, which refuses a document whose `HEAD` size
-  differs from what `GET` returns, as Entra's does (`The size reported by HEAD … was 24644 bytes, but
-  the full GET downloaded 1964 bytes`): every session is then refused. Until duckdb-acl reads it
-  otherwise, set `SET GLOBAL force_download = true` on the node.
+  differs from what `GET` returns. Entra answers `HEAD` with another (HTML) page (`The size reported
+  by HEAD … was 24644 bytes, but the full GET downloaded 1964 bytes`): every session is then refused.
+  Until the node runs a duckdb-acl that reads these documents whole (its spec 101), set
+  `SET GLOBAL force_download_threshold = 1048576` on the node: files under 1 MiB are read whole, larger
+  ones (the users' lake files) still by range. `force_download = true` works too, but downloads
+  everything whole.
 
 ## 4. A managed identity
 
@@ -345,8 +351,9 @@ and turns acting on after `LOAD acl`:
 - with its secret too, when given;
 - with `ENTRA_OBO=1`, the node acting for the person's duckdb-acl session (On-Behalf-Of): the
   person signs in to the node's API by the device flow (the script prints the code, never a token),
-  acl opens the session, and under it `whoami()` names the person with the node as the actor, and the
-  lookup finds the secret granted to the node's role. It needs the node set up as
+  acl opens the session, and under it `whoami()` names the person with the node as the actor (and,
+  when the person step ran, the lookup finds the secret granted to the node's role); the grant is
+  revoked when the session closes. It needs the node set up as
   [above](#a-node-acting-for-its-users-duckdb-acl) - its API `api://<node client id>` with the
   `sessions` scope, v2 tokens - and a duckdb-acl build (`TRESOR_ACL_EXTENSION`, or this build's).
 - with `ENTRA_FEDERATED=1`, in GitHub Actions only, the node with the workflow's OIDC token as its

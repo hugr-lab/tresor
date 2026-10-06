@@ -81,7 +81,7 @@ step() { # $1: what, $2: the SQL after LOAD, then the lines its output must hold
 	local out
 	out="$(printf "LOAD '%s';\n%s\n" "$ext" "$2" | "$duckdb" -no-agent -unsigned -list -noheader 2>&1 || true)"
 	# never a token, and never the node's secret (a parser error would quote the SQL)
-	out="$(printf '%s\n' "$out" | sed -E 's/eyJ[A-Za-z0-9._-]*/<token>/g; s/\x1b\[[0-9;]*m//g')"
+	out="$(printf '%s\n' "$out" | sed -E "s/eyJ[A-Za-z0-9._-]*/<token>/g; s/ACL SESSION '[^']*'/ACL SESSION '<handle>'/g; s/\x1b\[[0-9;]*m//g")"
 	if [ -n "${ENTRA_NODE_SECRET:-}" ]; then
 		out="${out//"$ENTRA_NODE_SECRET"/<secret>}"
 	fi
@@ -192,13 +192,16 @@ while time.time() < deadline:
         print("  the session token claims: " + json.dumps(shown), file=sys.stderr)
         print(token)
         sys.exit(0)
-    if answer.get("error") not in ("authorization_pending", "slow_down"):
+    if answer.get("error") == "slow_down":
+        code["interval"] = int(code.get("interval", 5)) + 5  # RFC 8628 3.5
+    elif answer.get("error") != "authorization_pending":
         sys.exit("device flow: " + answer.get("error", "?") + " " + answer.get("error_description", "")[:200])
 sys.exit("device flow: expired")
 PY
 )"
 	under="$work/under_session.sql"
-	obo_checks=("acting=true" "session=[^ ]+ actor=client:$ENTRA_NODE_CLIENT_ID" "closed=true")
+	# a line `session=… actor=…` exists only under a delegation grant: the node's own whoami has no actor
+	obo_checks=("acting=true on_behalf_of" "session=[^ ]+ actor=client:$ENTRA_NODE_CLIENT_ID" "closed=true")
 	[ "$person" = 1 ] && obo_checks+=("session_lake=entra_live")
 	export ENTRA_SESSION_TOKEN="$session_token"
 	step "4. the node acting for the person's duckdb-acl session (On-Behalf-Of)" \
@@ -208,14 +211,15 @@ PY
 		 ATTACH 'tresor:$host' AS e (INSECURE_HTTP true, SECRET n);
 		 LOAD '$acl_ext';
 		 -- acl reads the issuer's discovery through httpfs, which refuses a document whose HEAD size and GET
-		 -- differ - Entra's do (a compressed GET): read whole until duckdb-acl reads it otherwise
-		 SET GLOBAL force_download = true;
+		 -- differ - Entra answers HEAD with another (HTML) page: small files are read whole, until duckdb-acl
+		 -- reads its documents whole itself (its spec 101)
+		 SET GLOBAL force_download_threshold = 1048576;
 		 ATTACH ':memory:' AS store;
 		 SELECT acl_use_db('store', 'acl', true) IS NOT NULL;
 		 SET GLOBAL acl_allow_anonymous_admin = true;
 		 -- the person's token for the node: aud the node's client id, its delegated scope the acl role
 		 ACL ADMIN CREATE ISSUER '$issuer' AUDIENCES ('$ENTRA_NODE_CLIENT_ID') ROLE CLAIM 'scp';
-		 SELECT 'acting=' || changed FROM e.act_for_sessions(exchange := 'on_behalf_of',
+		 SELECT 'acting=' || changed || ' ' || exchange FROM e.act_for_sessions(exchange := 'on_behalf_of',
 		     exchange_scope := '$ENTRA_API_URI/.default');
 		 ACL ADMIN CREATE ROLE sessions;
 		 ACL ADMIN CREATE VIRTUAL CATALOG c;
@@ -224,6 +228,8 @@ PY
 		 ACL ADMIN CREATE VIRTUAL TABLE FUNCTION c.lake RETURNS TABLE (name VARCHAR)
 		     AS SELECT name FROM which_secret('$scope/x', 'http') WHERE storage = 'e';
 		 ACL ADMIN GRANT CATALOG c TO ROLE sessions WITH (select) MAIN;
+		 -- the handle is a bearer credential: it reaches $under (in the run's own 0700 directory, removed at exit,
+		 -- useless once this process ends) as test/acl/actor.sql does, and the output masks it
 		 CREATE TABLE h AS SELECT acl_session_open(getenv('ENTRA_SESSION_TOKEN')) AS handle;
 		 SELECT 'opened=' || (handle IS NOT NULL) FROM h;
 		 -- a refusal's reason is acl's audit's (its ring), never the door's
@@ -238,6 +244,17 @@ PY
 		 SELECT 'closed=' || acl_session_close(handle) FROM h;" \
 		"${obo_checks[@]}" "opened=true"
 	unset ENTRA_SESSION_TOKEN session_token
+	# the grant ends with the session: tresor revokes it asynchronously - give it a moment, then the server says
+	for _ in $(seq 20); do
+		grep -qE 'method=DELETE path=/v1/delegations/… status=(200|204|404)' "$work/server.log" && break
+		sleep 0.5
+	done
+	if grep -qE 'method=DELETE path=/v1/delegations/… status=(200|204|404)' "$work/server.log"; then
+		echo "  revoked: the grant ended with the session"
+	else
+		echo "  FAILED: the grant was not revoked when the session closed" >&2
+		failed=1
+	fi
 fi
 if [ "${ENTRA_FEDERATED:-0}" = "1" ]; then
 	[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || {

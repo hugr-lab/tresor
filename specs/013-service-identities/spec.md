@@ -133,9 +133,13 @@ tenant id, the app registrations and the certificate paths never go into the rep
      tresor exchanges the token (On-Behalf-Of, `<api>/.default`) and obtains the delegation grant; under the
      session `whoami()` is the person via `client:<node>`, the lookup finds the secret granted to the
      node's role, and the grant is revoked when the session closes.
-   - Found on the way: duckdb-acl reads Entra's discovery through httpfs, which refuses it (its `HEAD`
-     size differs from the `GET`); the node runs with `SET GLOBAL force_download = true` until acl reads
-     it otherwise (reported to duckdb-acl).
+   - The checks: `act_for_sessions` answers `on_behalf_of`; a `session=… actor=client:<node>` line exists only
+     under a grant (the node's own whoami has no actor); the server logs the grant's revocation when the
+     session closes.
+   - Found on the way: duckdb-acl reads Entra's discovery through httpfs, which refuses it (Entra answers
+     `HEAD` with another, HTML page, so the sizes differ); the node runs with
+     `SET GLOBAL force_download_threshold = 1048576` until it runs duckdb-acl's spec 101, which reads these
+     documents whole (reported; fixed there).
 5. **Federated** (`FLOW 'federated'`): GitHub Actions' OIDC token as the node's assertion - a run from a
    workflow, next.
 6. **Managed identity:** only where it runs on Azure. That is a later run on an Azure VM.
