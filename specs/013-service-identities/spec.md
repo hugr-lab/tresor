@@ -1,6 +1,7 @@
 # Spec 013: a service logs in without a shared secret — private_key_jwt, federated assertions, Azure managed identity; Auth0's audience; Entra checked live
 
-- **Status**: implemented (Entra checked live on 2026-09-30: a person, a node with a certificate and with a secret)
+- **Status**: implemented (Entra checked live on 2026-09-30: a person, a node with a certificate and with a secret;
+  on 2026-10-06 the node acting for a person's duckdb-acl session, On-Behalf-Of)
 - **Date**: 2026-09-24
 - **Author**: VGSML (with Claude)
 
@@ -123,11 +124,21 @@ tenant id, the app registrations and the certificate paths never go into the rep
    remembered (specs/012).
 2. **A service with a certificate** (private_key_jwt): a login, then `whoami`.
 3. **A service with a secret:** the same, as a baseline.
-4. **The node acting for alice** (On-Behalf-Of with the certificate): not in the script yet.
-   - It needs a user token issued for the node's app, and duckdb-acl beside it.
-   - The core path is tested: token exchange signed with a key (ext-common 012, and
-     `service_identities.test` through acl_stub).
-5. **Managed identity:** only where it runs on Azure. That is a later run on an Azure VM.
+4. **The node acting for a person** (On-Behalf-Of with the certificate; `ENTRA_OBO=1`), checked live on
+   2026-10-06.
+   - The person signs in to the node's API (`api://<node>/sessions`, v2 tokens) by the device flow; the
+     script prints the code and the token's `iss`/`aud`/`ver`/`scp`, never the token, which reaches the
+     DuckDB process only through its environment (`getenv`).
+   - acl (the issuer with the node's client id as audience, `scp` as the role claim) opens the session;
+     tresor exchanges the token (On-Behalf-Of, `<api>/.default`) and obtains the delegation grant; under the
+     session `whoami()` is the person via `client:<node>`, the lookup finds the secret granted to the
+     node's role, and the grant is revoked when the session closes.
+   - Found on the way: duckdb-acl reads Entra's discovery through httpfs, which refuses it (its `HEAD`
+     size differs from the `GET`); the node runs with `SET GLOBAL force_download = true` until acl reads
+     it otherwise (reported to duckdb-acl).
+5. **Federated** (`FLOW 'federated'`): GitHub Actions' OIDC token as the node's assertion - a run from a
+   workflow, next.
+6. **Managed identity:** only where it runs on Azure. That is a later run on an Azure VM.
 
 It prints what each step saw (flows, `aud`, `iss` version), never a token. The Entra setup it
 expects (apps, API permissions, `accessTokenAcceptedVersion`) is documented in

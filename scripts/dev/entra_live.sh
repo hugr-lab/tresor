@@ -18,6 +18,12 @@
 #   ENTRA_USE_ROLE          an app role the person holds, granted use (default analysts)
 #   ENTRA_NODE_ROLE         the node's app role, granted use too (default nodes)
 #   ENTRA_SKIP_PERSON=1     skip the browser login (and the secret: the nodes then only log in)
+#   ENTRA_OBO=1             also the node acting for a person's duckdb-acl session (On-Behalf-Of): the person
+#                           signs in to the node's API by the device flow (the code is printed, never a token),
+#                           acl opens the session, tresor exchanges the token. Needs the node's API exposed
+#                           (api://<node>/sessions, v2 tokens), its delegated access_as_user consented, and the
+#                           people's client allowed `sessions` (website/docs/entra.md, a node acting for its
+#                           users); acl from TRESOR_ACL_EXTENSION or this build
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 for name in ENTRA_TENANT ENTRA_API_CLIENT_ID ENTRA_API_URI ENTRA_PEOPLE_CLIENT_ID ENTRA_NODE_CLIENT_ID \
@@ -53,6 +59,8 @@ issuers:
     service: {claim: idtyp, equals: app, client_claim: azp}
 policy:
   admins: [role:$admin_role]
+  actors:
+    - {principal: "client:$ENTRA_NODE_CLIENT_ID", verbs: [use]}
 YAML
 (cd "$root/server" && GOWORK=off go build -o "$work/ref-server" ./cmd/ref-server)
 "$work/ref-server" -config "$work/server.yaml" >"$work/server.log" 2>&1 &
@@ -70,7 +78,7 @@ step() { # $1: what, $2: the SQL after LOAD, then the lines its output must hold
 	local out
 	out="$(printf "LOAD '%s';\n%s\n" "$ext" "$2" | "$duckdb" -no-agent -unsigned -list -noheader 2>&1 || true)"
 	# never a token, and never the node's secret (a parser error would quote the SQL)
-	out="$(printf '%s\n' "$out" | sed -E 's/eyJ[A-Za-z0-9._-]*/<token>/g')"
+	out="$(printf '%s\n' "$out" | sed -E 's/eyJ[A-Za-z0-9._-]*/<token>/g; s/\x1b\[[0-9;]*m//g')"
 	if [ -n "${ENTRA_NODE_SECRET:-}" ]; then
 		out="${out//"$ENTRA_NODE_SECRET"/<secret>}"
 	fi
@@ -141,6 +149,87 @@ if [ -n "${ENTRA_NODE_SECRET:-}" ]; then
 		    ISSUER '$issuer', OAUTH_SCOPE '$ENTRA_API_URI/.default', CLIENT_SECRET '$ENTRA_NODE_SECRET');
 		 ATTACH 'tresor:$host' AS e (INSECURE_HTTP true, SECRET n); $whoami $(found node)" \
 		"${node_checks[@]}"
+fi
+if [ "${ENTRA_OBO:-0}" = "1" ]; then
+	acl_ext="${TRESOR_ACL_EXTENSION:-$root/build/release/extension/acl/acl.duckdb_extension}"
+	[ -f "$acl_ext" ] || { echo "entra_live: no duckdb-acl at $acl_ext (TRESOR_ACL_EXTENSION)" >&2; exit 1; }
+	echo "entra_live: 4. the person signs in to the node's API (device flow):"
+	# the token stays in this process's memory and reaches the DuckDB process only through its environment
+	session_token="$(python3 - "$ENTRA_TENANT" "$ENTRA_PEOPLE_CLIENT_ID" "api://$ENTRA_NODE_CLIENT_ID/sessions" <<'PY'
+import json, sys, time, urllib.parse, urllib.request, urllib.error
+tenant, client, scope = sys.argv[1:4]
+base = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0"
+def post(url, form):
+    req = urllib.request.Request(url, urllib.parse.urlencode(form).encode())
+    try:
+        return json.load(urllib.request.urlopen(req))
+    except urllib.error.HTTPError as e:
+        return json.load(e)
+code = post(base + "/devicecode", {"client_id": client, "scope": scope})
+if "device_code" not in code:
+    sys.exit("device flow refused: " + code.get("error", "?") + " " + code.get("error_description", "")[:200])
+print("  " + code["message"], file=sys.stderr)
+deadline = time.time() + int(code.get("expires_in", 900))
+while time.time() < deadline:
+    time.sleep(int(code.get("interval", 5)))
+    answer = post(base + "/token", {"grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                                     "client_id": client, "device_code": code["device_code"]})
+    if "access_token" in answer:
+        token = answer["access_token"]
+        # what acl will check, to diagnose a refusal: claims only, never the token
+        import base64
+        part = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+        shown = {k: claims.get(k) for k in ("iss", "aud", "ver", "scp", "azp", "appid")}
+        print("  the session token claims: " + json.dumps(shown), file=sys.stderr)
+        print(token)
+        sys.exit(0)
+    if answer.get("error") not in ("authorization_pending", "slow_down"):
+        sys.exit("device flow: " + answer.get("error", "?") + " " + answer.get("error_description", "")[:200])
+sys.exit("device flow: expired")
+PY
+)"
+	under="$work/under_session.sql"
+	obo_checks=("acting=true" "session=[^ ]+ actor=client:$ENTRA_NODE_CLIENT_ID" "closed=true")
+	[ "$person" = 1 ] && obo_checks+=("session_lake=entra_live")
+	export ENTRA_SESSION_TOKEN="$session_token"
+	step "4. the node acting for the person's duckdb-acl session (On-Behalf-Of)" \
+		"CREATE SECRET n (TYPE tresor, SCOPE 'tresor:$host', FLOW 'client_credentials', CLIENT_ID '$ENTRA_NODE_CLIENT_ID',
+		    ISSUER '$issuer', OAUTH_SCOPE '$ENTRA_API_URI/.default', PRIVATE_KEY_FILE '$ENTRA_NODE_KEY_FILE',
+		    CERTIFICATE_FILE '$ENTRA_NODE_CERT_FILE');
+		 ATTACH 'tresor:$host' AS e (INSECURE_HTTP true, SECRET n);
+		 LOAD '$acl_ext';
+		 -- acl reads the issuer's discovery through httpfs, which refuses a document whose HEAD size and GET
+		 -- differ - Entra's do (a compressed GET): read whole until duckdb-acl reads it otherwise
+		 SET GLOBAL force_download = true;
+		 ATTACH ':memory:' AS store;
+		 SELECT acl_use_db('store', 'acl', true) IS NOT NULL;
+		 SET GLOBAL acl_allow_anonymous_admin = true;
+		 -- the person's token for the node: aud the node's client id, its delegated scope the acl role
+		 ACL ADMIN CREATE ISSUER '$issuer' AUDIENCES ('$ENTRA_NODE_CLIENT_ID') ROLE CLAIM 'scp';
+		 SELECT 'acting=' || changed FROM e.act_for_sessions(exchange := 'on_behalf_of',
+		     exchange_scope := '$ENTRA_API_URI/.default');
+		 ACL ADMIN CREATE ROLE sessions;
+		 ACL ADMIN CREATE VIRTUAL CATALOG c;
+		 ACL ADMIN CREATE VIRTUAL TABLE FUNCTION c.me RETURNS TABLE (subject VARCHAR, actor VARCHAR)
+		     AS SELECT subject, actor FROM e.main.whoami();
+		 ACL ADMIN CREATE VIRTUAL TABLE FUNCTION c.lake RETURNS TABLE (name VARCHAR)
+		     AS SELECT name FROM which_secret('$scope/x', 'http') WHERE storage = 'e';
+		 ACL ADMIN GRANT CATALOG c TO ROLE sessions WITH (select) MAIN;
+		 CREATE TABLE h AS SELECT acl_session_open(getenv('ENTRA_SESSION_TOKEN')) AS handle;
+		 SELECT 'opened=' || (handle IS NOT NULL) FROM h;
+		 -- a refusal's reason is acl's audit's (its ring), never the door's
+		 SELECT acl_audit_flush() IS NOT NULL;
+		 SELECT 'refused=' || coalesce(reason_code, '') || ': ' || coalesce(reason, '') FROM acl_audit_events()
+		     WHERE kind = 'session' AND detail = 'refused';
+.output $under
+		 SELECT acl_session_sql(handle, 'SELECT ''session='' || subject || '' actor='' || actor FROM c.me()') || ';' FROM h;
+		 SELECT acl_session_sql(handle, 'SELECT ''session_lake='' || name FROM c.lake()') || ';' FROM h;
+.output
+.read $under
+		 SELECT 'closed=' || acl_session_close(handle) FROM h;" \
+		"${obo_checks[@]}" "opened=true"
+	unset ENTRA_SESSION_TOKEN session_token
 fi
 echo "entra_live: the reference server's view (subjects, no tokens):"
 grep -E 'msg=request' "$work/server.log" | sed -E 's/^/  /' | tail -10

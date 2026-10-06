@@ -202,7 +202,13 @@ tokens. For every session it trades the user's token for one meant for the servi
     the platform for a token for `api://AzureADTokenExchange` and signs in as the application with it.
     Add `IDENTITY_CLIENT_ID` for a user-assigned identity. In a sovereign cloud, set
     `ASSERTION_AUDIENCE` to its federation audience (e.g. `api://AzureADTokenExchangeUSGov`).
-  - Not yet checked against a live tenant (it needs an Azure host).
+  - Not yet checked against a live tenant (it needs an Azure host). On-Behalf-Of itself is checked
+    live (`ENTRA_OBO=1` below).
+- **duckdb-acl reading Entra's discovery.** acl reads the issuer's
+  `/.well-known/openid-configuration` through httpfs, which refuses a document whose `HEAD` size
+  differs from what `GET` returns, as Entra's does (`The size reported by HEAD … was 24644 bytes, but
+  the full GET downloaded 1964 bytes`): every session is then refused. Until duckdb-acl reads it
+  otherwise, set `SET GLOBAL force_download = true` on the node.
 
 ## 4. A managed identity
 
@@ -336,7 +342,13 @@ and turns acting on after `LOAD acl`:
   - grants `use` to `role:analysts` and `role:nodes`: the lookup finds it;
   - revokes it from `role:analysts`: the lookup no longer finds it;
 - as the node with its certificate, which finds the secret granted to `role:nodes`;
-- with its secret too, when given.
+- with its secret too, when given;
+- with `ENTRA_OBO=1`, the node acting for the person's duckdb-acl session (On-Behalf-Of): the
+  person signs in to the node's API by the device flow (the script prints the code, never a token),
+  acl opens the session, and under it `whoami()` names the person with the node as the actor, and the
+  lookup finds the secret granted to the node's role. It needs the node set up as
+  [above](#a-node-acting-for-its-users-duckdb-acl) - its API `api://<node client id>` with the
+  `sessions` scope, v2 tokens - and a duckdb-acl build (`TRESOR_ACL_EXTENSION`, or this build's).
 
 Each step checks its own output and the script exits nonzero when one fails.
 
