@@ -136,10 +136,9 @@ tenant id, the app registrations and the certificate paths never go into the rep
    - The checks: `act_for_sessions` answers `on_behalf_of`; a `session=… actor=client:<node>` line exists only
      under a grant (the node's own whoami has no actor); the server logs the grant's revocation when the
      session closes.
-   - Found on the way: duckdb-acl reads Entra's discovery through httpfs, which refuses it (Entra answers
-     `HEAD` with another, HTML page, so the sizes differ); the node runs with
-     `SET GLOBAL force_download_threshold = 1048576` until it runs duckdb-acl's spec 101, which reads these
-     documents whole (reported; fixed there).
+   - Found on the way: duckdb-acl read Entra's discovery by ranged reads, which Entra refuses (its `HEAD`
+     answers another, HTML page, so the sizes differ); fixed in duckdb-acl's spec 101 (6be5bd0), which
+     `ACL_COMMIT` now pins. The first live run used `SET GLOBAL force_download_threshold = 1048576`.
 5. **Federated** (`FLOW 'federated'`): GitHub Actions' OIDC token as the node's assertion - a run from a
    workflow, next.
 6. **Managed identity:** only where it runs on Azure. That is a later run on an Azure VM.

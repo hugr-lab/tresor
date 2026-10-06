@@ -210,10 +210,6 @@ PY
 		    CERTIFICATE_FILE '$ENTRA_NODE_CERT_FILE');
 		 ATTACH 'tresor:$host' AS e (INSECURE_HTTP true, SECRET n);
 		 LOAD '$acl_ext';
-		 -- acl reads the issuer's discovery through httpfs, which refuses a document whose HEAD size and GET
-		 -- differ - Entra answers HEAD with another (HTML) page: small files are read whole, until duckdb-acl
-		 -- reads its documents whole itself (its spec 101)
-		 SET GLOBAL force_download_threshold = 1048576;
 		 ATTACH ':memory:' AS store;
 		 SELECT acl_use_db('store', 'acl', true) IS NOT NULL;
 		 SET GLOBAL acl_allow_anonymous_admin = true;

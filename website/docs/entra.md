@@ -207,14 +207,10 @@ tokens. For every session it trades the user's token for one meant for the servi
     `ASSERTION_AUDIENCE` to its federation audience (e.g. `api://AzureADTokenExchangeUSGov`).
   - Not yet checked against a live tenant (it needs an Azure host). On-Behalf-Of itself is checked
     live (`ENTRA_OBO=1` below).
-- **duckdb-acl reading Entra's discovery.** acl reads the issuer's
-  `/.well-known/openid-configuration` through httpfs, which refuses a document whose `HEAD` size
-  differs from what `GET` returns. Entra answers `HEAD` with another (HTML) page (`The size reported
-  by HEAD … was 24644 bytes, but the full GET downloaded 1964 bytes`): every session is then refused.
-  Until the node runs a duckdb-acl that reads these documents whole (its spec 101), set
-  `SET GLOBAL force_download_threshold = 1048576` on the node: files under 1 MiB are read whole, larger
-  ones (the users' lake files) still by range. `force_download = true` works too, but downloads
-  everything whole.
+- **duckdb-acl from its spec 101 on** (6be5bd0): earlier ones read the issuer's discovery by ranged
+  reads, and Entra answers `HEAD` with another (HTML) page, so every session is refused (`The size
+  reported by HEAD … but the full GET downloaded …`). On such a node,
+  `SET GLOBAL force_download_threshold = 1048576` reads small documents whole.
 
 ## 4. A managed identity
 
