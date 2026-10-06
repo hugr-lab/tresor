@@ -12,7 +12,8 @@
 #   ENTRA_API_URI           its Application ID URI (api://...), for the scopes
 #   ENTRA_PEOPLE_CLIENT_ID  the public client people log in with
 #   ENTRA_NODE_CLIENT_ID    the node app
-#   ENTRA_NODE_KEY_FILE     its private key (PEM, chmod 600) and ENTRA_NODE_CERT_FILE its certificate
+#   ENTRA_NODE_KEY_FILE     its private key (PEM, chmod 600) and ENTRA_NODE_CERT_FILE its certificate: the
+#                           certificate step and On-Behalf-Of; without them only the federated step can run
 #   ENTRA_NODE_SECRET       optional: the node's client secret, for the baseline step
 #   ENTRA_ADMIN_ROLE        the app role that makes a person an administrator (default secrets_admin)
 #   ENTRA_USE_ROLE          an app role the person holds, granted use (default analysts)
@@ -24,10 +25,12 @@
 #                           (api://<node>/sessions, v2 tokens), its delegated access_as_user consented, and the
 #                           people's client allowed `sessions` (website/docs/entra.md, a node acting for its
 #                           users); acl from TRESOR_ACL_EXTENSION or this build
+#   ENTRA_FEDERATED=1       also the node with GitHub Actions' OIDC token as its assertion (FLOW 'federated'):
+#                           only in a workflow with `id-token: write`, whose subject the node's federated
+#                           credential names (.github/workflows/entra-live.yml)
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-for name in ENTRA_TENANT ENTRA_API_CLIENT_ID ENTRA_API_URI ENTRA_PEOPLE_CLIENT_ID ENTRA_NODE_CLIENT_ID \
-	ENTRA_NODE_KEY_FILE ENTRA_NODE_CERT_FILE; do
+for name in ENTRA_TENANT ENTRA_API_CLIENT_ID ENTRA_API_URI ENTRA_PEOPLE_CLIENT_ID ENTRA_NODE_CLIENT_ID; do
 	[ -n "${!name:-}" ] || { echo "entra_live: $name is not set" >&2; exit 1; }
 done
 duckdb="$root/build/release/duckdb"
@@ -136,12 +139,16 @@ fi
 # the node finds what an administrator granted its role - when the person made it in this run
 node_checks=("login=private_key_jwt subject=.* roles=(.*,)?role:$node_re(,.*)? can_create=")
 [ "$person" = 1 ] && node_checks+=("node=1")
+has_key=0
+[ -n "${ENTRA_NODE_KEY_FILE:-}" ] && [ -n "${ENTRA_NODE_CERT_FILE:-}" ] && has_key=1
+if [ "$has_key" = 1 ]; then
 step "2. the node with its certificate (private_key_jwt)" \
 	"CREATE SECRET n (TYPE tresor, SCOPE 'tresor:$host', FLOW 'client_credentials', CLIENT_ID '$ENTRA_NODE_CLIENT_ID',
 	    ISSUER '$issuer', OAUTH_SCOPE '$ENTRA_API_URI/.default', PRIVATE_KEY_FILE '$ENTRA_NODE_KEY_FILE',
 	    CERTIFICATE_FILE '$ENTRA_NODE_CERT_FILE');
 	 ATTACH 'tresor:$host' AS e (INSECURE_HTTP true, SECRET n); $whoami $(found node)" \
 	"${node_checks[@]}"
+fi
 if [ -n "${ENTRA_NODE_SECRET:-}" ]; then
 	node_checks[0]="login=client_credentials subject=.* roles=(.*,)?role:$node_re(,.*)? can_create="
 	step "3. the node with its client secret (the baseline)" \
@@ -151,6 +158,7 @@ if [ -n "${ENTRA_NODE_SECRET:-}" ]; then
 		"${node_checks[@]}"
 fi
 if [ "${ENTRA_OBO:-0}" = "1" ]; then
+	[ "$has_key" = 1 ] || { echo "entra_live: ENTRA_OBO needs the node's key and certificate" >&2; exit 1; }
 	acl_ext="${TRESOR_ACL_EXTENSION:-$root/build/release/extension/acl/acl.duckdb_extension}"
 	[ -f "$acl_ext" ] || { echo "entra_live: no duckdb-acl at $acl_ext (TRESOR_ACL_EXTENSION)" >&2; exit 1; }
 	echo "entra_live: 4. the person signs in to the node's API (device flow):"
@@ -230,6 +238,20 @@ PY
 		 SELECT 'closed=' || acl_session_close(handle) FROM h;" \
 		"${obo_checks[@]}" "opened=true"
 	unset ENTRA_SESSION_TOKEN session_token
+fi
+if [ "${ENTRA_FEDERATED:-0}" = "1" ]; then
+	[ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || {
+		echo "entra_live: ENTRA_FEDERATED needs GitHub Actions' token service (id-token: write)" >&2
+		exit 1
+	}
+	federated_checks=("login=federated subject=.* roles=(.*,)?role:$node_re(,.*)? can_create=")
+	[ "$person" = 1 ] && federated_checks+=("federated_node=1")
+	step "5. the node federated: GitHub Actions' OIDC token as its assertion" \
+		"CREATE SECRET n (TYPE tresor, SCOPE 'tresor:$host', FLOW 'federated', CLIENT_ID '$ENTRA_NODE_CLIENT_ID',
+		    ISSUER '$issuer', OAUTH_SCOPE '$ENTRA_API_URI/.default', ASSERTION_SOURCE 'github_actions',
+		    ASSERTION_AUDIENCE 'api://AzureADTokenExchange');
+		 ATTACH 'tresor:$host' AS e (INSECURE_HTTP true, SECRET n); $whoami $(found federated_node)" \
+		"${federated_checks[@]}"
 fi
 echo "entra_live: the reference server's view (subjects, no tokens):"
 grep -E 'msg=request' "$work/server.log" | sed -E 's/^/  /' | tail -10

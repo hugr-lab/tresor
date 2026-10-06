@@ -349,6 +349,13 @@ and turns acting on after `LOAD acl`:
   lookup finds the secret granted to the node's role. It needs the node set up as
   [above](#a-node-acting-for-its-users-duckdb-acl) - its API `api://<node client id>` with the
   `sessions` scope, v2 tokens - and a duckdb-acl build (`TRESOR_ACL_EXTENSION`, or this build's).
+- with `ENTRA_FEDERATED=1`, in GitHub Actions only, the node with the workflow's OIDC token as its
+  assertion (`FLOW 'federated'`, `ASSERTION_SOURCE 'github_actions'`): the workflow
+  `.github/workflows/entra-live.yml`, run by hand, in the `entra-live` environment (the tenant's ids as
+  its variables, main only). The node's federated credential names it: issuer
+  `https://token.actions.githubusercontent.com`, subject `repo:<org>/<repo>:environment:entra-live`,
+  audience `api://AzureADTokenExchange`. Without `ENTRA_NODE_KEY_FILE` the certificate steps are
+  skipped.
 
 Each step checks its own output and the script exits nonzero when one fails.
 
