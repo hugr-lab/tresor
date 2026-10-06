@@ -13,10 +13,10 @@ nothing for the user to do. After that it works as in the CLI: `corp.secrets()`,
 variables, and secrets in DuckDB's lookup.
 
 - **The page logs in, not tresor.** A small JS helper, `attachTresor`, that we ship does four things:
-  - it loads tresor from a repository, checking its signature;
   - it reads the service's discovery;
-  - it logs the user in, silently when the IdP session exists;
-  - it hands the tokens to tresor and ATTACHes.
+  - it logs the user in, asking nothing while the IdP session exists;
+  - it loads tresor from a repository, checking its signature;
+  - it hands the refresh token to tresor and ATTACHes.
 - **tresor renews the login itself.** It holds the refresh token in memory, as a remembered login
   (specs/012), so the access token's 15 minutes are not the limit.
 
@@ -49,40 +49,54 @@ await conn.query("FROM corp.secrets()");
 
 An npm package (`@hugr-lab/tresor-web`, in `web/`), plain TypeScript. It depends on an OIDC library
 (`oidc-client-ts`); DuckDB-wasm is a peer, used structurally (`connect`, `registerFileBuffer`, `query`,
-`prepare`). It answers `"attached"`, or `"redirecting"` when the page is on its way to the IdP: the page calls it
-again when the person comes back, and it finishes the login from the URL.
+`prepare`; checked against `@duckdb/duckdb-wasm`'s types). It answers `"attached"`, or `"redirecting"` when the
+page is being sent to the IdP: the page calls it on every load, and on its return from the IdP the call finishes.
+One call per service and catalog at a time: a second one (React's StrictMode, a double click) shares the first's
+outcome rather than use the IdP's answer twice.
 
-1. **Load tresor** (`from`, optional; without it tresor must already be loaded).
+The order is chosen so that a code is exchanged while it lives (a minute), nothing is downloaded on the way out,
+and nothing reaches tresor before its signature is checked:
+
+1. **Read the service's discovery** with `fetch` (no redirect): `<https://host[/base]>/.well-known/duckdb-secrets`,
+   its `protocol` (`duckdb-secrets/1`), `api` and the issuer, with ATTACH's rules - https, http only for a
+   loopback service (`127.0.0.1`, `::1`, `localhost`: tresor's own list) with `insecureHttp`; with several
+   issuers an `issuer` option names one, as in the CLI.
+2. **Log in** with `oidc-client-ts`'s `OidcClient`:
+   - authorization code with PKCE, back to the page (or a `redirectUri`); the IdP's session makes the round
+     trip ask nothing;
+   - the client is the discovery's people's client, which must allow the page (a SPA / public client): the
+     remembered login is keyed by it, and tresor renews as it;
+   - on the page's return (the redirect URI's path, with `state` and a `code` or an `error`) the code is
+     exchanged at once; the answer leaves the URL whatever came of it, so a reload starts a new login; an
+     IdP's error is said as such;
+   - otherwise the page is sent to the IdP (`location.assign`; nothing awaits the navigation);
+   - no token is stored: only the PKCE state is (the page's storage, as oidc-client-ts keeps it).
+3. **Load tresor** (`from`, optional; without it tresor must already be loaded).
    - Once duckdb-wasm supports DuckDB v2.0's external repositories
      ([duckdb-wasm#2262](https://github.com/duckdb/duckdb-wasm/issues/2262)), this step is
      `CREATE EXTENSION REPOSITORY … FROM '<from>'` and `LOAD tresor FROM …`.
    - Until then, the helper does the same itself:
      - it fetches `<from>/<revision>/<platform>/tresor.duckdb_extension.wasm`, taking them from the running
-       DuckDB (`pragma_version()`: a release's tag, else the source id; `pragma_platform()`), or `revision` /
-       `platform` options;
+       DuckDB (`pragma_version()`: a version without `-dev` is a release, its tag the directory, else the
+       source id; `pragma_platform()`), or `revision` / `platform` options (a duckdb-wasm build may name its
+       directory otherwise: `DUCKDB_WASM_VERSION`);
      - it verifies the signature with WebCrypto, as DuckDB does: SHA-256 of each 1 MiB chunk, SHA-256 of
        their concatenation, RSA-2048 PKCS#1 v1.5 over the last 256 bytes;
-     - the keys are `<from>/.well-known/duckdb-extension-repo.json`'s `signature_keys`, or `publicKey`
-       when given (pinned);
-     - it then `registerFileBuffer`s the verified bytes and `LOAD`s them; an unverified file is not loaded,
-       and nobody is logged in for it.
-     - https only (http for a loopback repository with `insecureHttp`); the repository may redirect (a
-       CDN): the signature, not the URL, is the trust.
+     - DuckDB-wasm's `LOAD` fetches the library by its name (an `XMLHttpRequest` in the worker,
+       `extension_load_dynamic.cpp`) and dlopens what that answers; so the name is an **object URL of the
+       verified bytes**, `blob:…#/tresor.duckdb_extension.wasm` (the request ignores the fragment, DuckDB
+       takes the extension's name from it), registered with `registerFileBuffer` for DuckDB's own reads.
+       What is loaded is what was verified. To be proven in the browser run.
+     - https only (http for a loopback repository with `insecureHttp`); the file may be redirected to (a
+       CDN): the signature, not the URL, is what is trusted.
+   - **The keys.** DuckDB pins a repository's keys once, at `CREATE EXTENSION REPOSITORY`. A page has
+     nothing to pin them in but its own code: `publicKey` (one or several, PEM - several blocks in one
+     string too - or compact) is that, and the production mode. Without it the keys are read from
+     `<from>/.well-known/duckdb-extension-repo.json` (no redirect) on every use: trust on each use, which
+     guards against a file changed apart from its repository, not against the repository's origin.
    - **Caveat.** DuckDB-wasm itself checks signatures against core keys only, so for now it runs with
-     `allowUnsignedExtensions` and the helper's check is the trust anchor. The external-repository support
+     `allowUnsignedExtensions` and the helper's check is the only one. The external-repository support
      removes this caveat.
-2. **Read the service's discovery** with `fetch`: `<https://host[/base]>/.well-known/duckdb-secrets`, giving
-   the issuer, the people's `client_id`, the `scopes` and the `audience`. With several issuers, an
-   `issuer` option names one, as in the CLI.
-3. **Log in** with `oidc-client-ts`:
-   - authorization code with PKCE, redirect back to the page;
-   - the IdP's session makes it silent;
-   - the client is the discovery's people's client, which must allow the page (a SPA / public client): the
-     remembered login is keyed by it, and tresor renews as it;
-   - the redirect is the page's own, or a `redirectUri` option; a silent (iframe) attempt first with a
-     `silentRedirectUri`;
-   - the tokens are kept in memory (oidc-client-ts's user store in memory, never the page's storage) and
-     dropped once handed over.
 4. **Hand the login to tresor**: a prepared statement, the token a parameter, so it is never part of a
    statement's text (nor of DuckDB's query log):
    `FROM tresor_web_login(?, ?, issuer := ?, insecure_http := ?)` with `'tresor:host'`, the refresh token,
@@ -103,8 +117,8 @@ again when the person comes back, and it finishes the login from the URL.
    at the IdP's token endpoint, as a remembered login does natively; whoami then stores it again under
    the person's subject.
    - When the refresh token itself has expired (Entra SPA: 24 h), the wasm build fails with "a new login
-     to … is needed - … hand it over with tresor_web_login", and the helper repeats steps 3-4 (silent
-     while the IdP session lives). In wasm any failed renewal at ATTACH counts as a dead token (forgotten,
+     to … is needed - … hand it over with tresor_web_login", and the page calls the helper again: a new
+     login (asking nothing while the IdP session lives), handed over. In wasm any failed renewal at ATTACH counts as a dead token (forgotten,
      a new login asked): duckdb-wasm's client drops the body of an IdP's `400 invalid_grant`.
 
 ### tresor in wasm
@@ -212,10 +226,16 @@ Read from duckdb-wasm `lib/src/http_wasm.cc`, to check again on its 2.0 port and
     `openssl pkeyutl -sign -pkeyopt digest:sha256`) verifies, byte-identical to the helper's notion of
     it; tampered bytes (in each chunk, in the signature), another key, a short file and malformed keys
     are refused;
-  - `attachTresor` against stubs of DuckDB-wasm, `fetch` and the login: the order (verify, LOAD, then
-    the login), the prepared hand-over with the token only a parameter, the ATTACH; a tampered file
-    loads nothing and logs nobody in; a pinned key; "redirecting"; several issuers; the transport
-    rules; quoting;
+  - `attachTresor` against stubs of DuckDB-wasm, `fetch` and the login: the order (discovery, the code
+    exchanged, the download, LOAD, the hand-over, ATTACH, from an event log); the LOAD's name answering
+    exactly the verified bytes, revoked after; the prepared hand-over with the token only a parameter; a
+    tampered file loads nothing and hands nothing over; pinned keys (several in one PEM string);
+    "redirecting" with nothing downloaded; one call at a time; another protocol; several issuers; the
+    transport rules (127.0.0.2 is not loopback); quoting; the revision directory (`-dev`, a release
+    candidate);
+  - the login: the IdP's answer recognised only at the redirect URI, and removed from the URL even when
+    the exchange fails; an issuer without a people's client or the code flow;
+  - the types: `AsyncDuckDB` and `AsyncDuckDBConnection` are what `attachTresor` takes;
   - `test/sql/attach/web_login.test` runs the helper's exact prepared statement against tresor.
 
 ## Alternatives considered

@@ -46,7 +46,8 @@ export function isLoopback(host: string): boolean {
 		name = name.split(":")[0];
 	}
 	name = name.toLowerCase();
-	return name === "localhost" || name === "::1" || /^127\.\d+\.\d+\.\d+$/.test(name);
+	// exactly tresor's (IsLoopbackName): a page must not log in for a service tresor then refuses
+	return name === "localhost" || name === "::1" || name === "127.0.0.1";
 }
 
 /** https, or http on loopback when asked for: the rule for every URL a login sends something to. */
@@ -91,7 +92,10 @@ export async function readDiscovery(path: string, insecureHttp: boolean, fetchIm
 	}
 	const base = (insecureHttp ? "http://" : "https://") + host;
 	const doc = (await readJson(fetchImpl, base + "/.well-known/duckdb-secrets", "the discovery")) as Discovery;
-	if (!doc || typeof doc.api !== "string" || !Array.isArray(doc.issuers) || doc.issuers.length === 0) {
+	if (doc?.protocol !== "duckdb-secrets/1") {
+		throw new Error(`tresor: ${host} speaks "${doc?.protocol ?? ""}", this client speaks duckdb-secrets/1`);
+	}
+	if (typeof doc.api !== "string" || !Array.isArray(doc.issuers) || doc.issuers.length === 0) {
 		throw new Error(`tresor: the discovery of ${host} names no api or no issuer`);
 	}
 	checkTransport("api", doc.api, insecureHttp);

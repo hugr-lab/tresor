@@ -19,7 +19,7 @@ export interface Connection {
 export interface Database {
 	connect(): Promise<Connection>;
 	registerFileBuffer(name: string, buffer: Uint8Array): Promise<void>;
-	dropFile?(name: string): Promise<void>;
+	dropFile?(name: string): Promise<unknown>;
 }
 
 /** A SQL string literal. */
