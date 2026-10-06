@@ -95,12 +95,12 @@ DETACH corp;
 statement ok
 SET VARIABLE rt = (SELECT regexp_extract(content, '"refresh_token": "([^"]*)"', 1) FROM read_text('http://127.0.0.1:{TRESOR_TEST_PORT}/_page_login'));
 
-# as the page's helper calls it: a prepared statement, the token a parameter
+# exactly as the page's helper (web/src/attach.ts) calls it: a prepared statement, the token a parameter
 statement ok
-PREPARE hand_over AS FROM tresor_web_login($1, $2, insecure_http := true);
+PREPARE hand_over AS FROM tresor_web_login(?, ?, issuer := ?, insecure_http := ?);
 
 statement ok
-EXECUTE hand_over('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('rt'));
+EXECUTE hand_over('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('rt'), 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', true);
 
 statement ok
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);

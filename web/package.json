@@ -1,0 +1,42 @@
+{
+  "name": "@hugr-lab/tresor-web",
+  "version": "0.1.0",
+  "description": "attachTresor: tresor in DuckDB-wasm - the extension verified and loaded, the page's login handed over, the service attached",
+  "license": "MIT",
+  "type": "module",
+  "main": "build/src/index.js",
+  "types": "build/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./build/src/index.d.ts",
+      "default": "./build/src/index.js"
+    }
+  },
+  "files": [
+    "build/src"
+  ],
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "tsc -p . && node --test 'build/test/*.test.js'",
+    "prepublishOnly": "npm test"
+  },
+  "dependencies": {
+    "oidc-client-ts": "^3.5.0"
+  },
+  "peerDependencies": {
+    "@duckdb/duckdb-wasm": "*"
+  },
+  "peerDependenciesMeta": {
+    "@duckdb/duckdb-wasm": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@duckdb/duckdb-wasm": "^1.33.1-dev57.0",
+    "@types/node": "^22.0.0",
+    "typescript": "~5.9.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
