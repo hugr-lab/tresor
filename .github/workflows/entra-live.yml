@@ -2,9 +2,9 @@ name: Entra live (federated)
 
 # tresor against the owner's Entra ID tenant (specs/013): the node logs in with GitHub Actions' OIDC token as its
 # assertion (FLOW 'federated') - no secret anywhere. The node's app registration has a federated credential for
-# this repository's `entra-live` environment (subject repo:hugr-lab/tresor:environment:entra-live, audience
-# api://AzureADTokenExchange); the environment holds the tenant's ids as variables (not secrets: ids, no
-# credential) and deploys from main only. By hand: Actions → Entra live (federated) → Run workflow.
+# this repository's `entra-live` environment - subject repo:hugr-lab@206900226/tresor@1375985241:environment:entra-live
+# (GitHub's immutable form), audience api://AzureADTokenExchange; the environment holds the tenant's ids as
+# variables (not secrets: ids, no credential) and deploys from main only. By hand: Actions → Entra live (federated) → Run workflow.
 
 on:
   workflow_dispatch:

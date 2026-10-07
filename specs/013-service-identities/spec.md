@@ -1,7 +1,8 @@
 # Spec 013: a service logs in without a shared secret — private_key_jwt, federated assertions, Azure managed identity; Auth0's audience; Entra checked live
 
 - **Status**: implemented (Entra checked live on 2026-09-30: a person, a node with a certificate and with a secret;
-  on 2026-10-06 the node acting for a person's duckdb-acl session, On-Behalf-Of)
+  on 2026-10-06 the node acting for a person's duckdb-acl session, On-Behalf-Of; on 2026-10-07 the node federated
+  with GitHub Actions' token)
 - **Date**: 2026-09-24
 - **Author**: VGSML (with Claude)
 
@@ -139,8 +140,11 @@ tenant id, the app registrations and the certificate paths never go into the rep
    - Found on the way: duckdb-acl read Entra's discovery by ranged reads, which Entra refuses (its `HEAD`
      answers another, HTML page, so the sizes differ); fixed in duckdb-acl's spec 101 (6be5bd0), which
      `ACL_COMMIT` now pins. The first live run used `SET GLOBAL force_download_threshold = 1048576`.
-5. **Federated** (`FLOW 'federated'`): GitHub Actions' OIDC token as the node's assertion - a run from a
-   workflow, next.
+5. **Federated** (`FLOW 'federated'`, `ASSERTION_SOURCE 'github_actions'`), checked live on 2026-10-07 by
+   `.github/workflows/entra-live.yml` (by hand, the `entra-live` environment, main only): `login=federated`,
+   the node's role. The repository presents GitHub's immutable subject
+   (`repo:<org>@<org id>/<repo>@<repo id>:environment:entra-live`), which the node's federated credential
+   names; a credential takes minutes to apply.
 6. **Managed identity:** only where it runs on Azure. That is a later run on an Azure VM.
 
 It prints what each step saw (flows, `aud`, `iss` version), never a token. The Entra setup it
