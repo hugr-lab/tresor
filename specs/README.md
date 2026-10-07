@@ -38,3 +38,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | [018](018-variables/spec.md) | variables - named strings a service holds, an optional part of the protocol | implemented |
 | [019](019-repin-eb0d9df/spec.md) | re-pin duckdb to eb0d9df - the CLI's agent mode, duckdb-acl's issuers | implemented |
 | [020](020-wasm/spec.md) | tresor in a web application - DuckDB-wasm, the page's login, `attachTresor` | tresor's side implemented |
+| [021](021-repin-4fbae43/spec.md) | re-pin duckdb to 4fbae43 - with duckdb-acl and acl-otel | implemented |
