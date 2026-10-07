@@ -177,13 +177,16 @@ tokens. For every session it trades the user's token for one meant for the servi
 
 | Setting | Where | Value |
 | --- | --- | --- |
-| The node's own API | Expose an API | Application ID URI `api://acl-node`, a delegated scope (e.g. `sessions`) |
+| The node's own API | Expose an API | Application ID URI (`api://<node client id>`, the default), a delegated scope (e.g. `sessions`) |
 | Token version 2 | the node's Manifest | `"api": {"requestedAccessTokenVersion": 2}`: session tokens for the node are v2 |
 | On-Behalf-Of | API permissions → Add a permission → **APIs my organization uses** → `duckdb-secrets` → **Delegated** | `access_as_user`, with admin consent |
 | The client people reach the node with | its API permissions | the node's `sessions` scope |
 
 - Users' tokens arrive at the node with `aud` = the node's client id. duckdb-acl's issuer is set up
   with that audience (`acl_define_issuer`).
+- acl takes a role from one claim's value, whole: with `ROLE CLAIM 'scp'` the token must carry the one
+  scope (`scp` = `sessions`); a token with several space-separated scopes maps to no role. App roles on
+  the node's API (`ROLE CLAIM 'roles'`) avoid that.
 - They must be v2 tokens: the node's API needs version 2 too. A v1 session token is refused as
   `this acl session's token is from another issuer than <host>'s login`.
 - Only a user's token (delegated, with `scp`) can be exchanged; an application's cannot.
@@ -202,7 +205,12 @@ tokens. For every session it trades the user's token for one meant for the servi
     the platform for a token for `api://AzureADTokenExchange` and signs in as the application with it.
     Add `IDENTITY_CLIENT_ID` for a user-assigned identity. In a sovereign cloud, set
     `ASSERTION_AUDIENCE` to its federation audience (e.g. `api://AzureADTokenExchangeUSGov`).
-  - Not yet checked against a live tenant (it needs an Azure host).
+  - Not yet checked against a live tenant (it needs an Azure host). On-Behalf-Of itself is checked
+    live (`ENTRA_OBO=1` below).
+- **duckdb-acl from its spec 101 on** (6be5bd0): earlier ones read the issuer's discovery by ranged
+  reads, and Entra answers `HEAD` with another (HTML) page, so every session is refused (`The size
+  reported by HEAD … but the full GET downloaded …`). On such a node,
+  `SET GLOBAL force_download_threshold = 1048576` reads small documents whole.
 
 ## 4. A managed identity
 
@@ -336,7 +344,21 @@ and turns acting on after `LOAD acl`:
   - grants `use` to `role:analysts` and `role:nodes`: the lookup finds it;
   - revokes it from `role:analysts`: the lookup no longer finds it;
 - as the node with its certificate, which finds the secret granted to `role:nodes`;
-- with its secret too, when given.
+- with its secret too, when given;
+- with `ENTRA_OBO=1`, the node acting for the person's duckdb-acl session (On-Behalf-Of): the
+  person signs in to the node's API by the device flow (the script prints the code, never a token),
+  acl opens the session, and under it `whoami()` names the person with the node as the actor (and,
+  when the person step ran, the lookup finds the secret granted to the node's role); the grant is
+  revoked when the session closes. It needs the node set up as
+  [above](#a-node-acting-for-its-users-duckdb-acl) - its API `api://<node client id>` with the
+  `sessions` scope, v2 tokens - and a duckdb-acl build (`TRESOR_ACL_EXTENSION`, or this build's).
+- with `ENTRA_FEDERATED=1`, in GitHub Actions only, the node with the workflow's OIDC token as its
+  assertion (`FLOW 'federated'`, `ASSERTION_SOURCE 'github_actions'`): the workflow
+  `.github/workflows/entra-live.yml`, run by hand, in the `entra-live` environment (the tenant's ids as
+  its variables, main only). The node's federated credential names it: issuer
+  `https://token.actions.githubusercontent.com`, subject `repo:<org>/<repo>:environment:entra-live`,
+  audience `api://AzureADTokenExchange`. Without `ENTRA_NODE_KEY_FILE` the certificate steps are
+  skipped.
 
 Each step checks its own output and the script exits nonzero when one fails.
 

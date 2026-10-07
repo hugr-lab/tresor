@@ -1,0 +1,78 @@
+name: Entra live (federated)
+
+# tresor against the owner's Entra ID tenant (specs/013): the node logs in with GitHub Actions' OIDC token as its
+# assertion (FLOW 'federated') - no secret anywhere. The node's app registration has a federated credential for
+# this repository's `entra-live` environment (subject repo:hugr-lab/tresor:environment:entra-live, audience
+# api://AzureADTokenExchange); the environment holds the tenant's ids as variables (not secrets: ids, no
+# credential) and deploys from main only. By hand: Actions → Entra live (federated) → Run workflow.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write   # GitHub's OIDC token: the node's assertion
+
+concurrency:
+  group: entra-live
+  cancel-in-progress: false
+
+jobs:
+  federated:
+    name: The node, federated
+    runs-on: ubuntu-24.04
+    environment: entra-live
+    env:
+      GEN: ninja
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/vcpkg_bincache,readwrite'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache
+
+      - name: Setup vcpkg
+        run: make vcpkg-setup
+
+      # the CI's caches, read only: this run builds what CI built
+      - name: Restore vcpkg binary packages
+        uses: actions/cache/restore@v6
+        with:
+          path: vcpkg_bincache
+          key: vcpkg-bincache-linux_amd64-${{ hashFiles('.gitmodules', 'vcpkg.json', 'extension_config.cmake') }}-
+          restore-keys: |
+            vcpkg-bincache-linux_amd64-${{ hashFiles('.gitmodules', 'vcpkg.json', 'extension_config.cmake') }}-
+            vcpkg-bincache-linux_amd64-
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v6
+        with:
+          path: .ccache
+          key: ccache-linux_amd64-${{ hashFiles('.gitmodules') }}-
+          restore-keys: |
+            ccache-linux_amd64-${{ hashFiles('.gitmodules') }}-
+            ccache-linux_amd64-
+
+      - name: Build
+        run: EXT_FLAGS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache" make
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: The node logs in with GitHub Actions' token
+        env:
+          ENTRA_TENANT: ${{ vars.ENTRA_TENANT }}
+          ENTRA_API_CLIENT_ID: ${{ vars.ENTRA_API_CLIENT_ID }}
+          ENTRA_API_URI: ${{ vars.ENTRA_API_URI }}
+          ENTRA_PEOPLE_CLIENT_ID: ${{ vars.ENTRA_PEOPLE_CLIENT_ID }}
+          ENTRA_NODE_CLIENT_ID: ${{ vars.ENTRA_NODE_CLIENT_ID }}
+          ENTRA_SKIP_PERSON: '1'   # no person in a workflow: the node's login and whoami
+          ENTRA_FEDERATED: '1'
+        run: scripts/dev/entra_live.sh
