@@ -138,7 +138,14 @@ Certificates & secrets → Federated credentials → Add credential:
     - `…:environment:<name>`;
     - `…:ref:refs/tags/<tag>`;
     - `…:pull_request`.
+  - **Immutable subjects.** A repository with GitHub's immutable subject claim (`use_immutable_subject`,
+    see `gh api repos/<org>/<repo>/actions/oidc/customization/sub`) presents
+    `repo:<org>@<org id>/<repo>@<repo id>:…` instead, e.g.
+    `repo:hugr-lab@206900226/tresor@1375985241:environment:entra-live`. A credential with the old form
+    is refused with `AADSTS700213: No matching federated identity record found for presented assertion
+    subject '…'` - the message names the subject to register.
   - audience: `api://AzureADTokenExchange`.
+  - A new or changed credential takes a few minutes to apply: until then the same `AADSTS700213`.
 
 Nothing secret exists anywhere: the node presents the platform's token.
 
@@ -356,7 +363,8 @@ and turns acting on after `LOAD acl`:
   assertion (`FLOW 'federated'`, `ASSERTION_SOURCE 'github_actions'`): the workflow
   `.github/workflows/entra-live.yml`, run by hand, in the `entra-live` environment (the tenant's ids as
   its variables, main only). The node's federated credential names it: issuer
-  `https://token.actions.githubusercontent.com`, subject `repo:<org>/<repo>:environment:entra-live`,
+  `https://token.actions.githubusercontent.com`, subject `repo:<org>/<repo>:environment:entra-live` (or
+  its immutable form, above),
   audience `api://AzureADTokenExchange`. Without `ENTRA_NODE_KEY_FILE` the certificate steps are
   skipped.
 
