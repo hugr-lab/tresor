@@ -12,7 +12,7 @@ The duckdb submodule moves from eb0d9df to 4fbae43, the head of `v2.0-cyanoptera
 commits; still no v2.0.0 tag). Nothing else moves:
 - httpfs: duckdb's tree still pins 5e34903 (`.github/config/extensions/httpfs.cmake`);
 - extension-ci-tools 39ffc46 and duckdb-ext-common v0.10.0: what duckdb-acl #184 pins too;
-- `ACL_COMMIT`: duckdb-acl with #184 (spec 104), whose duckdb is 4fbae43.
+- `ACL_COMMIT`: duckdb-acl with #184 (spec 104), whose duckdb is 4fbae43 - merged as 7758874.
 
 ## What changed in duckdb that tresor meets
 
@@ -37,4 +37,4 @@ commits; still no v2.0.0 tag). Nothing else moves:
 
 ## Follow-ups
 
-- `ACL_COMMIT` to duckdb-acl's merged #184 commit, once merged.
+- `ACL_COMMIT` to duckdb-acl's merged #184 commit - done: 7758874.
