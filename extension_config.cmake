@@ -1,5 +1,15 @@
 # This file is included by DuckDB's build system. It specifies which extension to load
 
+# Windows with clang-cl (extension-ci-tools since #428) and vcpkg ports built by MSVC (OpenSSL here): clang-cl
+# pools a string literal into a COMDAT the linker may resolve to MSVC's copy of the same literal, aligned less
+# than clang-cl's code assumes - an aligned load of it faults before main, coming and going with the layout of
+# .rdata (duckdb/extension-ci-tools#430; duckdb-acl spec 106). /GF- turns string pooling off for what clang-cl
+# compiles, so every pooled literal the link selects is an MSVC one. Included at the top level before duckdb adds
+# src/, so it reaches duckdb's own objects too. Nothing under cl, MinGW or any other platform (specs/022).
+if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    add_compile_options(/GF-)
+endif()
+
 # tresor itself, never linked (duckdb links only what duckdb_extension_statically_link() or
 # STATICALLY_LINK_EXTENSIONS names, since DONT_LINK went away): the design's entry point is
 # `ATTACH 'tresor:...'`, which loads an INSTALLED extension by the path's prefix (specs/001) - a test
