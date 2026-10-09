@@ -22,7 +22,7 @@ ATTACH prefix works).
   | --- | --- | --- |
   | duckdb | submodule `duckdb/` | branch `v2.0-cyanoptera`, commit = duckdb-acl's |
   | extension-ci-tools | submodule `extension-ci-tools/` | `main`, commit = duckdb-acl's |
-  | duckdb-ext-common | submodule `duckdb-ext-common/` | tag `v0.10.0` (keychain/ specs/012, service identities specs/013, the OIDC core's pluggable transport specs/020); duckdb-acl on `v0.7.1` - the same contract stamps |
+  | duckdb-ext-common | submodule `duckdb-ext-common/` | tag `v0.11.0` (keychain/ specs/012, service identities specs/013, the OIDC core's pluggable transport specs/020); the same tag as duckdb-acl - `acl_checkout.sh` checks the contract stamps match |
   | distribution | `.github/workflows/distribution.yml` | `@main`, `duckdb_version: v2.0-cyanoptera` |
   | duckdb-acl (tests only) | `ACL_COMMIT` in `scripts/ci/acl_checkout.sh` | a duckdb-acl commit whose duckdb is ours |
 
