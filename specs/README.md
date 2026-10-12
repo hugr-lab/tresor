@@ -40,3 +40,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | [020](020-wasm/spec.md) | tresor in a web application - DuckDB-wasm, the page's login, `attachTresor` | tresor's side implemented |
 | [021](021-repin-4fbae43/spec.md) | re-pin duckdb to 4fbae43 - with duckdb-acl and acl-otel | implemented |
 | [022](022-clangcl-gf/spec.md) | /GF- for clang-cl on Windows - MSVC-built ports and pooled literals | implemented |
+| [023](023-repin-bba7360/spec.md) | re-pin duckdb to bba7360 - with duckdb-acl and acl-otel | implemented |

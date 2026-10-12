@@ -6,7 +6,7 @@
 #
 #   scripts/ci/acl_checkout.sh <dir>
 set -euo pipefail
-ACL_COMMIT=314f95dccbd8c50d889f154de98a3364f0b0ae95 # duckdb-acl main: spec 110 (ci-tools main again), with 107 (audit lineage, ACLA 3 - not tresor's contract), duckdb 4fbae43
+ACL_COMMIT=53be80a07a36dbc94f8b7a580de7d4569eff41e8 # duckdb-acl #217 (spec 123): duckdb bba7360 - to its merged commit
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 dest="${1:?usage: acl_checkout.sh <dir>}"
 

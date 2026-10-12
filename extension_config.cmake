@@ -31,7 +31,7 @@ if(DEFINED ENV{TRESOR_TEST_HTTPFS} AND "$ENV{TRESOR_TEST_HTTPFS}" STREQUAL "1")
     duckdb_extension_load(httpfs
         APPLY_PATCHES
         GIT_URL https://github.com/duckdb/duckdb-httpfs
-        GIT_TAG 5e34903685e4d429cbb19b063406abdd8ce30591
+        GIT_TAG 23b865d8350660a0ca4f18884634acae17b8dc09
     )
     duckdb_extension_statically_link(httpfs)
 endif()
