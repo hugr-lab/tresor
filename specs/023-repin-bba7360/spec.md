@@ -12,7 +12,7 @@ commits; duckdb-acl first took 664aafa that morning, then the head moved 63 more
 - httpfs 5e34903 → 23b865d, the commit duckdb's tree now pins (`.github/config/extensions/httpfs.cmake`);
 - duckdb-ext-common v0.11.0 → v0.12.0, as duckdb-acl: it adds a contract (`acl_lineage_sources.hpp`) tresor
   does not use; ACLC stays 2, ACLA 3;
-- `ACL_COMMIT`: duckdb-acl #217 (spec 123), whose duckdb is bba7360;
+- `ACL_COMMIT`: duckdb-acl #217 (spec 123), whose duckdb is bba7360 - merged as 05dd910;
 - extension-ci-tools unchanged (39ffc46).
 
 ## What changed in duckdb that tresor meets
@@ -35,6 +35,5 @@ node, acl's never set, private_key_jwt), and the wasm build.
 
 ## Follow-ups
 
-- `ACL_COMMIT` to #217's merged commit.
 - tresor's built-in HTTP client and `enable_external_access` (whether a disabled setting stops tresor's own
   requests to the IdP and the service): its own spec.
