@@ -28,6 +28,7 @@ include_directories(${DUCKDB_EXT_COMMON_OIDC_INCLUDE} ${CMAKE_SOURCE_DIR}/third_
 # credential store, never a file (specs/012). Compiled in, under tresor's namespace.
 include(${TRESOR_ROOT}/duckdb-ext-common/keychain/keychain.cmake)
 include_directories(${DUCKDB_EXT_COMMON_KEYCHAIN_INCLUDE})
+set(TRESOR_KEYCHAIN_LIBS ${DUCKDB_EXT_COMMON_KEYCHAIN_LIBS})
 
 set(TRESOR_SOURCES
     ${TRESOR_ROOT}/src/tresor_extension.cpp
@@ -86,10 +87,32 @@ foreach(system_prefix "/opt/homebrew" "/usr/local")
 endforeach()
 find_package(OpenSSL REQUIRED)
 
+# Built in beside duckdb-acl (acl_sources.cmake, ACL_ROOT): one directory, so whichever duckdb-ext-common the
+# include directories name first serves its headers - the OIDC core's, the contracts - to both halves. They must be
+# the same files, not only the same contract stamps (oidc_core.hpp carries none): refused otherwise.
+function(tresor_check_shared_headers)
+    if(NOT DEFINED ACL_ROOT OR NOT EXISTS "${ACL_ROOT}/duckdb-ext-common")
+        return()
+    endif()
+    file(GLOB shared RELATIVE "${TRESOR_ROOT}/duckdb-ext-common" "${TRESOR_ROOT}/duckdb-ext-common/oidc/include/*"
+         "${TRESOR_ROOT}/duckdb-ext-common/contracts/*")
+    foreach(header ${shared})
+        if(EXISTS "${ACL_ROOT}/duckdb-ext-common/${header}")
+            file(SHA256 "${TRESOR_ROOT}/duckdb-ext-common/${header}" ours)
+            file(SHA256 "${ACL_ROOT}/duckdb-ext-common/${header}" theirs)
+            if(NOT ours STREQUAL theirs)
+                message(FATAL_ERROR "tresor and duckdb-acl, built into one extension, need the same duckdb-ext-common: "
+                                    "${header} differs (pin both submodules to one commit)")
+            endif()
+        endif()
+    endforeach()
+endfunction()
+
 # tresor's libraries, on the targets the including build made
 function(tresor_configure_targets)
+    tresor_check_shared_headers()
     foreach(target ${ARGN})
-        target_link_libraries(${target} OpenSSL::SSL OpenSSL::Crypto ${DUCKDB_EXT_COMMON_KEYCHAIN_LIBS})
+        target_link_libraries(${target} OpenSSL::SSL OpenSSL::Crypto ${TRESOR_KEYCHAIN_LIBS})
         # the bundled httplib reads the OS trust store: the Security framework on macOS; winsock and
         # crypt32 (OpenSSL's RNG) on Windows, which MinGW does not pick up from httplib's pragmas
         if(APPLE)

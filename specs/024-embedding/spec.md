@@ -47,10 +47,11 @@ uses both and is unchanged.
   `DUCKDB_CPP_EXTENSION_ENTRY(tresor, ...)`, `TresorExtension` (declaration and members) and
   `#define DUCKDB_EXTENSION_MAIN` are not compiled - the embedder's entry is the one main.
 - **The version**: `TresorExtension().Version()` had two callers, `tresor_version()` and the User-Agent of tresor's
-  requests. Both call the free function `TresorVersion()` now: `EXT_VERSION_TRESOR` in tresor's own build (duckdb
-  defines it for the extension it builds), else `TRESOR_VERSION`, which `tresor_sources.cmake` defines under
-  `TRESOR_EMBEDDED` on `tresor_extension.cpp` from tresor's own git (`duckdb_extension_generate_version` of
-  `TRESOR_ROOT`, as duckdb computes an extension's) - so `hugr_node` says tresor's version, not its own.
+  requests. Both call the free function `TresorVersion()` now: embedded, `TRESOR_VERSION`, which
+  `tresor_sources.cmake` defines under `TRESOR_EMBEDDED` on `tresor_extension.cpp` from tresor's own git
+  (`duckdb_extension_generate_version` of `TRESOR_ROOT`, as duckdb computes an extension's) - so `hugr_node` says
+  tresor's version, not its own, whatever else its scope defines; otherwise `EXT_VERSION_TRESOR` (duckdb defines it
+  for the extension it builds). tresor's own entry and `TresorExtension::Load` call `LoadTresorCore` too: one path.
 - No forward declarations were needed (`ExtensionLoader` comes with `duckdb.hpp`); a future one is a `struct` where
   the type is one (MSVC mangles the kind).
 - Unchanged: tresor is never statically linked into duckdb's test shell; the distribution build; the protocol.
@@ -58,17 +59,29 @@ uses both and is unchanged.
 ## Enforcement & security
 
 Nothing changes at run time in tresor's own artifact. An embedded tresor is the same code under the embedder's
-entry: the same rules on tokens, the keychain and material (CLAUDE.md "Key rules"). One image then carries one copy
-of the duckdb-ext-common contract headers per include order (the embedder's directory sees `include_directories` of
-both acl and tresor; whichever duckdb-ext-common comes first answers `acl_connection.hpp` / `tresor_audit.hpp` for
-both) - the embedder pins duckdb-acl and tresor at duckdb-ext-common tags with the same contract stamps, as the pin
-table already requires when they load into one DuckDB as separate extensions.
+entry: the same rules on tokens, the keychain and material (CLAUDE.md "Key rules").
+
+- **One duckdb-ext-common for both halves.** The embedder's directory sees the `include_directories` of acl and
+  tresor; whichever duckdb-ext-common comes first serves `oidc_core.hpp` and the contract headers to both (a
+  source-level include directory would not help: CMake puts those after the target's). `oidc_core.hpp` carries no
+  stamp, so the same contract stamps are not enough: `tresor_configure_targets` compares tresor's and acl's
+  (`ACL_ROOT`) `oidc/include/*` and `contracts/*` and refuses to configure (`FATAL_ERROR`) on any difference - pin
+  both submodules to one duckdb-ext-common commit (today both are on 21a695d, v0.12.0).
+- **The namespace macro in hugr_node.** acl's target-wide `DUCKDB_EXT_COMMON_OIDC_NAMESPACE=acl` and tresor's
+  source-level `=tresor` both reach tresor's TUs: the latter wins, with a macro-redefinition warning on each tresor
+  TU (`-Wmacro-redefined` on clang, a "redefined" warning on GCC) - which fails any `-Werror` build. Until acl
+  moves its definition to its own sources (follow-ups), hugr_node must not build with `-Werror`.
+- **The embedder's directory inherits** `OPENSSL_USE_STATIC_LIBS` and the `CMAKE_IGNORE_PREFIX_PATH` exclusion of
+  `/opt/homebrew` and `/usr/local` for its later `find_package` calls (acl's file does the same).
+- **The version embedded** comes from tresor's git (`duckdb_extension_generate_version`); vendored without `.git`
+  it is empty, and so are `tresor_version()` and the User-Agent's version.
 
 ## Testing
 
 - **The embedder** (`test/extension/tresor_embedder/`): an extension built the way `hugr_node` is - `set(TRESOR_EMBEDDED
   ON)`, `include(tresor_sources.cmake)`, its own entry calling `LoadTresorCore` and then registering its own
-  `tresor_embedder_probe()`. Built in the test build beside acl_stub (`TRESOR_TEST_HTTPFS=1`), loadable only.
+  `tresor_embedder_probe()`. Built in the test build beside acl_stub (`TRESOR_TEST_HTTPFS=1`), static and
+  loadable, linked into nothing - the tests load the loadable by build path.
   - its target defines `DUCKDB_EXT_COMMON_OIDC_NAMESPACE=embedder` target-wide, as duckdb-acl's configure does on
     `hugr_node`'s target: tresor compiles only if its source-level `tresor` wins;
   - it defines `tresor_duckdb_cpp_init` and `duckdb::TresorExtension::Name()` itself: were `TRESOR_EMBEDDED` to leave
@@ -81,10 +94,15 @@ table already requires when they load into one DuckDB as separate extensions.
   setting.
 - `test/sql/attach/embedded.test` (`scripts/ci/test_attach.sh`, on both HTTP clients): through the embedder, a
   client-credentials login against the fake service and IdP, `corp.whoami()`, a secret of the service in DuckDB's
-  lookup.
+  lookup; and acting for an acl session (acl_stub publishing): the session hooks reached through the object cache,
+  the exchange and grant, the session user's `whoami()` and a secret's material through the grant.
+- Not tested here: acl's real sources in the same target (`acl_sources.cmake` + `LoadAclCore` beside
+  `LoadTresorCore`) - that is hugr-node's build and smoke; the shared-header check above guards its include order.
 - Both `require-env TRESOR_TEST_HTTPFS`; CI's build jobs set it, and the suites' floors forbid that skip.
 - Standalone equivalence: the release build's compile commands for tresor's 42 compilations (21 sources, two
-  targets) and the tresor targets' link lines, before and after, compared with flags sorted - identical.
+  targets) and the tresor targets' link lines, before and after, compared with flags sorted - identical. (Only
+  duckdb's generated `tresor_describe.c` differs: it no longer gets the three module definitions, which it never
+  read.)
 - The gate: the release build, `test/sql/*`, `test_attach.sh` on both clients, `smoke_load.sh`, `make wasm_eh`.
 
 ## Alternatives considered
@@ -98,8 +116,9 @@ table already requires when they load into one DuckDB as separate extensions.
 
 ## Follow-ups
 
-- duckdb-acl: its `acl_configure_targets` could put `DUCKDB_EXT_COMMON_OIDC_NAMESPACE=acl` on acl's sources rather
-  than the target, so `hugr_node`'s tresor TUs see one definition instead of a redefinition warning.
+- duckdb-acl (before hugr_node can build with `-Werror`): its `acl_configure_targets` puts
+  `DUCKDB_EXT_COMMON_OIDC_NAMESPACE=acl` on acl's sources rather than the target, so `hugr_node`'s tresor TUs see
+  one definition instead of a redefinition warning.
 - hugr-node: `set(TRESOR_EMBEDDED ON)`, `include(<tresor>/tresor_sources.cmake)`, `${TRESOR_SOURCES}` in its
   sources, `tresor_configure_targets(...)`, `LoadTresorCore(loader)` in its entry; tresor's `vcpkg.json` (openssl)
   in its manifest.

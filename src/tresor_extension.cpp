@@ -124,10 +124,10 @@ void LoadTresorCore(ExtensionLoader &loader) {
 }
 
 std::string TresorVersion() {
-#if defined(EXT_VERSION_TRESOR)
-	return EXT_VERSION_TRESOR;
-#elif defined(TRESOR_VERSION)
+#if defined(TRESOR_EMBEDDED) && defined(TRESOR_VERSION)
 	return TRESOR_VERSION; // built into another extension: tresor's own (tresor_sources.cmake)
+#elif defined(EXT_VERSION_TRESOR)
+	return EXT_VERSION_TRESOR;
 #else
 	return "";
 #endif
@@ -135,7 +135,7 @@ std::string TresorVersion() {
 
 #ifndef TRESOR_EMBEDDED
 void TresorExtension::Load(ExtensionLoader &loader) {
-	LoadInternal(loader);
+	LoadTresorCore(loader);
 }
 std::string TresorExtension::Name() {
 	return "tresor";
@@ -152,7 +152,7 @@ std::string TresorExtension::Version() const {
 extern "C" {
 
 DUCKDB_CPP_EXTENSION_ENTRY(tresor, loader) {
-	duckdb::LoadInternal(loader);
+	duckdb::LoadTresorCore(loader);
 }
 }
 #endif

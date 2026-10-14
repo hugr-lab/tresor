@@ -18,8 +18,8 @@
 namespace duckdb {
 
 // Traps for what TRESOR_EMBEDDED leaves out of tresor: were tresor's TresorExtension compiled in, its members and
-// this class's would be the same symbols, and the loadable would not link - on GNU ld (the Linux CI job) and
-// link.exe; Apple's linker lets the duplicate pass under -dead_strip
+// this class's would be the same symbols, and the loadable would not link - on GNU ld (the Linux CI job); Apple's
+// linker lets the duplicate pass under -dead_strip, and nothing builds the embedder on Windows
 class TresorExtension {
 public:
 	std::string Name();

@@ -37,3 +37,45 @@ lake	PERSISTENT	corp
 
 statement ok
 DETACH corp;
+
+# acting for duckdb-acl's sessions (specs/008) through the embedder's copy: the session hooks reached through the
+# object cache, the observer, the exchange and the grant - acl_stub (linked in the test shell) publishes sessions
+require acl_stub
+
+statement ok
+SELECT acl_stub_publisher('acl_stub (ACLC 2)');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS corp (INSECURE_HTTP true, ACT_FOR_SESSIONS true, SESSION_GRANT_WAIT 5);
+
+query II
+SELECT subject, actor FROM corp.whoami();
+----
+client:etl	NULL
+
+query I
+SELECT acl_stub_open('emb1', 'node-token-alice', 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', 300);
+----
+1
+
+statement ok
+SET acl_stub_session = 'emb1';
+
+query II
+SELECT subject, actor FROM corp.whoami();
+----
+alice	client:etl
+
+query I
+SELECT tresor_secret_param('node_lake', 'key_id');
+----
+VARCHAR NODE
+
+statement ok
+RESET acl_stub_session;
+
+statement ok
+SELECT acl_stub_close('emb1', 'client');
+
+statement ok
+DETACH corp;
