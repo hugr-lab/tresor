@@ -4,12 +4,22 @@
 
 namespace duckdb {
 
+//! specs/024: tresor's whole load - the ATTACH type, the secret type, every tresor_* function and setting - for
+//! tresor's own entry point and for an extension that builds tresor into itself (hugr-node's hugr_node), whose
+//! entry calls it. Under TRESOR_EMBEDDED tresor's entry point and TresorExtension are not compiled.
+void LoadTresorCore(ExtensionLoader &loader);
+
+//! tresor's version, as tresor_version() and the User-Agent say it - tresor's own when built into another extension
+std::string TresorVersion();
+
+#ifndef TRESOR_EMBEDDED
 class TresorExtension : public Extension {
 public:
 	void Load(ExtensionLoader &db) override;
 	std::string Name() override;
 	std::string Version() const override;
 };
+#endif
 
 //! The `tresor` secret type: a service's login (tresor_secret.cpp).
 void RegisterTresorSecret(ExtensionLoader &loader);

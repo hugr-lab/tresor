@@ -116,7 +116,7 @@ oidc::HttpResult Send(DatabaseInstance &db, const string &method, const string &
 		params->logger = nullptr;
 		params->extra_headers.clear();
 		HTTPHeaders request_headers;
-		request_headers.Insert("User-Agent", "tresor/" + TresorExtension().Version() + " (duckdb)");
+		request_headers.Insert("User-Agent", "tresor/" + TresorVersion() + " (duckdb)");
 		for (auto &header : headers) {
 			request_headers.Insert(header.first, header.second);
 		}

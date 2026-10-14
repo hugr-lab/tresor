@@ -1,0 +1,81 @@
+# name: test/sql/attach/embedded.test
+# description: tresor built into another extension logs in and serves secrets, against the fake service (specs/024)
+# group: [attach]
+
+require-env TRESOR_TEST_PORT
+
+# tresor_embedder is built beside acl_stub (extension_config.cmake), only with TRESOR_TEST_HTTPFS=1
+require-env TRESOR_TEST_HTTPFS
+
+statement ok
+SET autoload_known_extensions = false;
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor_embedder/tresor_embedder.duckdb_extension';
+
+statement ok
+SET tresor_keychain = 'off';
+
+statement ok
+CREATE SECRET etl_login (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'client_credentials',
+    CLIENT_ID 'etl', CLIENT_SECRET 's3cr3t', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+
+# the whole path through the embedder's copy: discovery, the IdP's flow (the OIDC core, compiled as tresor's
+# under a target that defines another namespace), the service's API, the storage in DuckDB's lookup
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+
+query IIII
+SELECT subject, roles, can_create, login FROM corp.whoami();
+----
+client:etl	['role:etl']	[*]	client_credentials
+
+query III
+SELECT name, persistent, storage FROM which_secret('s3://lake/sales/2026.parquet', 's3');
+----
+lake	PERSISTENT	corp
+
+statement ok
+DETACH corp;
+
+# acting for duckdb-acl's sessions (specs/008) through the embedder's copy: the session hooks reached through the
+# object cache, the observer, the exchange and the grant - acl_stub (linked in the test shell) publishes sessions
+require acl_stub
+
+statement ok
+SELECT acl_stub_publisher('acl_stub (ACLC 2)');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS corp (INSECURE_HTTP true, ACT_FOR_SESSIONS true, SESSION_GRANT_WAIT 5);
+
+query II
+SELECT subject, actor FROM corp.whoami();
+----
+client:etl	NULL
+
+query I
+SELECT acl_stub_open('emb1', 'node-token-alice', 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', 300);
+----
+1
+
+statement ok
+SET acl_stub_session = 'emb1';
+
+query II
+SELECT subject, actor FROM corp.whoami();
+----
+alice	client:etl
+
+query I
+SELECT tresor_secret_param('node_lake', 'key_id');
+----
+VARCHAR NODE
+
+statement ok
+RESET acl_stub_session;
+
+statement ok
+SELECT acl_stub_close('emb1', 'client');
+
+statement ok
+DETACH corp;
