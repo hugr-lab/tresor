@@ -12,9 +12,6 @@ on:
         description: an extra tag besides the short sha
         required: false
         default: ''
-  # TEMPORARY (specs/027): the first image from the PR's branch - a dispatch needs the workflow on main
-  push:
-    branches: [spec027-live-pipelines]
 
 permissions:
   contents: read
@@ -102,7 +99,7 @@ jobs:
 
       - name: Push
         env:
-          EXTRA_TAG: ${{ github.event_name == 'push' && 'spec027-test' || inputs.tag }}
+          EXTRA_TAG: ${{ inputs.tag }}
         run: |
           docker push "$IMAGE:$SHORT_SHA"
           if [ -n "$EXTRA_TAG" ]; then

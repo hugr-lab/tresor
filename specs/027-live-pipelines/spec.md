@@ -60,7 +60,8 @@ extra tag). tresor's OpenSSL is vcpkg's, whose compiled-in certificate directory
 `SSL_CERT_FILE` / `SSL_CERT_DIR` point it at the bundle. linux/amd64 only.
 
 A dispatch needs the workflow on the default branch: the PR's branch carried a temporary `push` trigger to
-build the first images (`spec027-test`), removed before merge.
+build the first images (tag `spec027-test`; the stand's image is `170d4cc`,
+`sha256:8a9107cff2519a3dfdcbbfe696075657af09c2c8124e0f504409d3ff5a5b28a4`), removed in the PR's last commit.
 
 ### Keycloak federated client authentication (Keycloak's source and docs, tags 26.4.0-26.8.1)
 
