@@ -145,7 +145,8 @@ tenant id, the app registrations and the certificate paths never go into the rep
    the node's role. The repository presents GitHub's immutable subject
    (`repo:<org>@<org id>/<repo>@<repo id>:environment:entra-live`), which the node's federated credential
    names; a credential takes minutes to apply.
-6. **Managed identity:** only where it runs on Azure. That is a later run on an Azure VM.
+6. **Managed identity**, directly and as the node's federated credential, and an AKS pod's projected token: checked
+   live on an Azure stand on 2026-10-14 (specs/027).
 
 It prints what each step saw (flows, `aud`, `iss` version), never a token. The Entra setup it
 expects (apps, API permissions, `accessTokenAcceptedVersion`) is documented in

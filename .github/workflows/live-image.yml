@@ -1,0 +1,111 @@
+name: Live image
+
+# ghcr.io/hugr-lab/tresor-live (specs/027): the DuckDB CLI at the duckdb submodule's pin and tresor at this commit,
+# with scripts/live at /live - what the live checks of a pipeline's login run on Azure and Kubernetes
+# (/live/check.sh mi|fed|aks|kc). Built like CI's Linux job, from CI's caches (restore only), and pushed with the
+# workflow's own token, tagged with the short sha. By hand: Actions → Live image → Run workflow (main).
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: an extra tag besides the short sha
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  packages: write   # ghcr.io/hugr-lab/tresor-live
+
+concurrency:
+  group: live-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    name: Build and push the live image
+    runs-on: ubuntu-24.04
+    env:
+      GEN: ninja
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/vcpkg_bincache,readwrite'
+      IMAGE: ghcr.io/hugr-lab/tresor-live
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache
+
+      - name: Setup vcpkg
+        run: make vcpkg-setup
+
+      # the CI's caches, read only: this run builds what CI built
+      - name: Restore vcpkg binary packages
+        uses: actions/cache/restore@v6
+        with:
+          path: vcpkg_bincache
+          key: vcpkg-bincache-linux_amd64-${{ hashFiles('.gitmodules', 'vcpkg.json', 'extension_config.cmake') }}-
+          restore-keys: |
+            vcpkg-bincache-linux_amd64-${{ hashFiles('.gitmodules', 'vcpkg.json', 'extension_config.cmake') }}-
+            vcpkg-bincache-linux_amd64-
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v6
+        with:
+          path: .ccache
+          key: ccache-linux_amd64-${{ hashFiles('.gitmodules') }}-
+          restore-keys: |
+            ccache-linux_amd64-${{ hashFiles('.gitmodules') }}-
+            ccache-linux_amd64-
+
+      - name: Build
+        run: EXT_FLAGS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache" make
+
+      - name: Stage the image's files
+        run: |
+          mkdir -p _image/live
+          cp build/release/duckdb _image/duckdb
+          cp build/release/extension/tresor/tresor.duckdb_extension _image/
+          cp scripts/live/check.sh scripts/live/run.sh scripts/live/*.sql _image/live/
+          echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Build the image
+        run: docker build --platform linux/amd64 -f scripts/live/Dockerfile -t "$IMAGE:$SHORT_SHA" _image
+
+      # the image must load tresor, and reach an https host through the image's CA bundle: discovery of a host that
+      # is no secrets service fails with an answer, never with "https request failed" (a certificate not trusted)
+      - name: The image works
+        run: |
+          docker run --rm "$IMAGE:$SHORT_SHA" /usr/local/bin/duckdb -unsigned -no-agent -list -noheader -c \
+            "LOAD '/opt/tresor/tresor.duckdb_extension'; SELECT 'tresor=' || tresor_version();" | tee version.txt
+          grep -q '^tresor=' version.txt
+          out="$(docker run --rm "$IMAGE:$SHORT_SHA" /usr/local/bin/duckdb -unsigned -no-agent -list -noheader -c \
+            "LOAD '/opt/tresor/tresor.duckdb_extension'; ATTACH 'tresor:github.com' AS e;" 2>&1 || true)"
+          echo "$out"
+          echo "$out" | grep -q 'discovery of github.com'
+          if echo "$out" | grep -q 'https request failed'; then exit 1; fi
+          # the stand's script does not run without its environment (set -u: the shell refuses)
+          if docker run --rm "$IMAGE:$SHORT_SHA" /live/check.sh; then exit 1; fi
+
+      - name: Log in to ghcr.io
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+      - name: Push
+        env:
+          EXTRA_TAG: ${{ inputs.tag }}
+        run: |
+          docker push "$IMAGE:$SHORT_SHA"
+          if [ -n "$EXTRA_TAG" ]; then
+            docker tag "$IMAGE:$SHORT_SHA" "$IMAGE:$EXTRA_TAG"
+            docker push "$IMAGE:$EXTRA_TAG"
+          fi
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$SHORT_SHA")"
+          echo "pushed $digest"
+          echo "### $digest" >> "$GITHUB_STEP_SUMMARY"

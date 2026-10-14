@@ -1,0 +1,60 @@
+# Keycloak in a cluster, trusting the cluster's service-account tokens as client assertions (tresor specs/027):
+# scripts/live/keycloak_kind.sh applies it to a kind cluster, with the realm (server/testdata/keycloak/
+# realm-federated.json) as the ConfigMap keycloak-realm. Test credentials only - never a real deployment.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: keycloak
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tresor-logins
+---
+# the pipeline's identity: the federated subject system:serviceaccount:tresor-logins:duckdb
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: duckdb
+  namespace: tresor-logins
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keycloak
+  namespace: keycloak
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: keycloak}
+  template:
+    metadata:
+      labels: {app: keycloak}
+    spec:
+      # its own token (iss = the cluster's issuer) is what Keycloak reads the cluster's discovery and keys with;
+      # the cluster CA beside it is trusted automatically (--truststore-kubernetes-enabled, default true)
+      serviceAccountName: keycloak
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:KEYCLOAK_VERSION
+          args: ["start-dev", "--import-realm", "--http-port=8080"]
+          env:
+            - {name: KC_BOOTSTRAP_ADMIN_USERNAME, value: admin}
+            - {name: KC_BOOTSTRAP_ADMIN_PASSWORD, value: admin}
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet: {path: /realms/federated, port: 8080}
+            periodSeconds: 5
+          volumeMounts:
+            - {name: realm, mountPath: /opt/keycloak/data/import, readOnly: true}
+      volumes:
+        - name: realm
+          configMap:
+            name: keycloak-realm

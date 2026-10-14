@@ -382,6 +382,24 @@ SELECT acl_stub_close('mi-s1', 'client');
 statement ok
 DETACH mf;
 
+# Azure's identity endpoints mint a v1 token for api://AzureADTokenExchange: its aud is that application's app id
+# (as Container Apps answered, specs/027) - the same audience, sent
+statement ok
+CREATE OR REPLACE SECRET mif (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting', FLOW 'federated',
+    CLIENT_ID 'minode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_SOURCE 'azure_managed_identity',
+    IDENTITY_CLIENT_ID 'v1');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS mf (INSECURE_HTTP true, SECRET mif);
+
+query I
+SELECT login FROM mf.whoami();
+----
+federated
+
+statement ok
+DETACH mf;
+
 # a token the platform minted for another audience is never the assertion
 statement ok
 CREATE OR REPLACE SECRET mif (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting', FLOW 'federated',

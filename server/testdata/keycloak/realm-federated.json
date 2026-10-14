@@ -1,0 +1,68 @@
+{
+  "realm": "federated",
+  "enabled": true,
+  "accessTokenLifespan": 300,
+  "roles": {
+    "realm": [
+      {"name": "nodes"}
+    ]
+  },
+  "identityProviders": [
+    {
+      "alias": "kubernetes",
+      "displayName": "The cluster's service accounts (tresor specs/027): its issuer, as a service-account token's iss",
+      "providerId": "kubernetes",
+      "enabled": true,
+      "config": {
+        "issuer": "https://kubernetes.default.svc.cluster.local"
+      }
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "k8s-node",
+      "name": "A pipeline in Kubernetes: its service-account token is its client assertion (Signed JWT - Federated)",
+      "publicClient": false,
+      "clientAuthenticatorType": "federated-jwt",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "attributes": {
+        "jwt.credential.issuer": "kubernetes",
+        "jwt.credential.sub": "system:serviceaccount:tresor-logins:duckdb"
+      },
+      "protocolMappers": [
+        {
+          "name": "audience duckdb-secrets",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "duckdb-secrets",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "client_id (as the service_account scope adds it)",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usersessionmodel-note-mapper",
+          "config": {
+            "user.session.note": "client_id",
+            "claim.name": "client_id",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-k8s-node",
+      "enabled": true,
+      "serviceAccountClientId": "k8s-node",
+      "realmRoles": ["default-roles-federated", "nodes"]
+    }
+  ]
+}

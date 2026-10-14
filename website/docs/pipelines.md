@@ -31,8 +31,9 @@ Best first. Use the first row that fits where the job runs.
 | [A token already held](#a-token-already-held) | `FLOW 'token'` | a token, which expires |
 
 Each flow is tested against the fake service in CI, and a key login against Keycloak. Checked live
-against Entra: a key, a client secret, and GitHub Actions' token; a Kubernetes federated credential
-and a managed identity are not yet ([Entra's note](./entra.md)).
+against Entra: a key, a client secret, GitHub Actions' token, a managed identity (on Azure Container
+Apps), a managed identity as an app registration's federated credential, and an AKS pod's projected
+token; a Kubernetes token with Keycloak on kind (specs/027).
 
 Every recipe below has the same shape: a `tresor` secret whose `SCOPE` names the service, then
 `ATTACH`. The ATTACH finds the secret by its scope; `ATTACH … (SECRET name)` names it instead.
@@ -95,6 +96,44 @@ ATTACH 'tresor:secrets.corp.example' AS corp;
   issuer and the subject `system:serviceaccount:<namespace>:<service account>`
   ([Entra](./entra.md#3-a-node)). The cluster's OIDC issuer and its keys must be reachable from the
   identity provider.
+
+### With Keycloak
+
+Keycloak authenticates a client with a Kubernetes service-account token: a **Kubernetes identity
+provider** trusts the cluster's issuer, and the client's authenticator is **Signed JWT -
+Federated** (`federated-jwt`). Use **Keycloak 26.7 or later**. Both features
+(`client-auth-federated`, `kubernetes-service-accounts`) are on by default since 26.6, but before
+26.7 Keycloak requires a `client_id` parameter to equal the token's subject. tresor always sends
+`CLIENT_ID`, so an older Keycloak refuses a client named anything else.
+
+1. **Identity providers → Add provider → Kubernetes**. Set *Kubernetes Issuer URL* to the `iss`
+   of the cluster's tokens, exactly. A cluster's internal issuer is
+   `https://kubernetes.default.svc.cluster.local`, and Keycloak must then run in that cluster. A
+   managed cluster's public OIDC issuer, such as AKS's
+   `https://<region>.oic.prod-aks.azure.com/<tenant id>/<uuid>/`, works from anywhere. From 26.8,
+   an *Issuer discovery URL* can be given instead, and Keycloak reads the issuer from it.
+2. **The job's client**: a confidential client with service accounts. Under *Credentials*, set
+   *Client Authenticator* to *Signed JWT - Federated*, *Identity provider* to the provider's
+   alias, and *Federated subject* to `system:serviceaccount:<namespace>:<service account>`. Give
+   it the audience mapper for the service, and give its service account the role the job uses.
+   A realm created with the feature on already has *Signed JWT - Federated* in its client
+   authentication flow. An older realm needs it added to a copy of the flow.
+3. **The pod's token**: the audience is the realm's issuer URL, as Keycloak names itself
+   (`https://<keycloak>/realms/<realm>`), and its only audience. By default Keycloak takes a
+   Kubernetes token only within an hour of its issue time, so set `expirationSeconds` to 3600
+   or less. The kubelet replaces the file well before then.
+
+```sql
+CREATE SECRET etl (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'federated',
+    CLIENT_ID 'etl', ISSUER 'https://login.corp.example/realms/main',
+    ASSERTION_FILE '/var/run/secrets/tresor/token');
+ATTACH 'tresor:secrets.corp.example' AS corp;
+```
+
+Keycloak finds the client by the token's issuer and subject. tresor also sends `CLIENT_ID`, and
+Keycloak refuses the login when the two do not name the same client. The test realm
+`server/testdata/keycloak/realm-federated.json` is this setup, checked against Keycloak 26.8.1
+in a kind cluster (`scripts/live/keycloak_kind.sh`).
 
 ## GitHub Actions
 
@@ -293,8 +332,8 @@ throttle token requests. Start workers in waves, or keep them long-lived.
      ([reference server](./reference-server.md#identity-provider-setup-keycloak)); for a key, the
      client authenticator "Signed JWT" (`client-jwt`) with the job's certificate or key, as the test
      realm's `keynode` client (`server/testdata/keycloak/realm-tresor.json`). A key login against
-     Keycloak is checked in CI. Keycloak's own federated client authentication
-     is not checked here.
+     Keycloak is checked in CI. For a Kubernetes token, "Signed JWT - Federated"
+     ([Kubernetes, with Keycloak](#with-keycloak)).
 2. **A role on the API** for the client (an app role, a realm role), which the token carries. An
    administrator grants that role `use` on the secrets the job reads. Grants go to roles and groups,
    never to one client.
