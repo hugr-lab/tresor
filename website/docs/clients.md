@@ -38,8 +38,8 @@ ATTACH 'tresor:secrets.corp.example' AS corp;   -- waits until the login complet
 - A failed login is told once more, to the `ATTACH` (or the call) that asks after it; then it is
   forgotten, and the next `tresor_login` starts anew.
 - `remember := false` keeps the login for the next ATTACH only, in this process: that ATTACH does not
-  remember it either. (`REMEMBER false` on the ATTACH does not undo a login `tresor_login` already
-  remembered: `tresor_logoff` does.)
+  remember it either. (An ATTACH with `REMEMBER false` does not use a login `tresor_login` remembered:
+  it logs in by itself, and the remembered one stays until `tresor_logoff`.)
 - It also takes an attached catalog's name: `FROM tresor_login('corp')`.
 - It never returns a token.
 

@@ -36,18 +36,27 @@ TresorCatalog::TresorCatalog(AttachedDatabase &db, shared_ptr<TresorSession> ses
 	});
 	auto &instance = db.GetDatabase();
 	// outside the session's lock (TresorSession::Call): a logoff cancels the login, a DETACH stops the wait
-	session->OnPendingLogin([&instance](const LoginKey &key, const std::function<bool()> &stop) {
-		auto pending = PendingLogins::Get(instance)->Find(key);
-		if (!pending) {
-			return;
-		}
-		auto deadline =
-		    std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
-		        .count() +
-		    AttachRequest().timeout_seconds;
-		pending->WaitBeyond(PendingLogin::State::STARTING, deadline, stop);
-		pending->WaitBeyond(PendingLogin::State::PENDING, deadline, stop);
-	});
+	session->OnPendingLogin(
+	    [&instance](const LoginKey &key, const std::function<bool()> &stop) {
+		    auto pending = PendingLogins::Get(instance)->Find(key);
+		    if (!pending) {
+			    return;
+		    }
+		    auto deadline =
+		        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+		            .count() +
+		        AttachRequest().timeout_seconds;
+		    pending->WaitBeyond(PendingLogin::State::STARTING, deadline, stop);
+		    pending->WaitBeyond(PendingLogin::State::PENDING, deadline, stop);
+	    },
+	    [&instance](const LoginKey &key) {
+		    auto pending = PendingLogins::Get(instance)->Find(key);
+		    if (!pending) {
+			    return false;
+		    }
+		    lock_guard<mutex> guard(pending->lock);
+		    return pending->state != PendingLogin::State::FAILED;
+	    });
 }
 
 TresorCatalog::~TresorCatalog() {
@@ -55,6 +64,7 @@ TresorCatalog::~TresorCatalog() {
 }
 
 void TresorCatalog::Shutdown() {
+	session->StopWaiting(); // a call waiting for a login in progress (specs/025) lets the DETACH go on
 	storage.Deactivate(*session);
 	shared_ptr<TresorActor> stopping;
 	bool first;

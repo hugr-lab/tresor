@@ -117,6 +117,7 @@ void PendingLogins::Cancel(const LoginKey &key, const string &why) {
 		if (was_running) {
 			login->state = PendingLogin::State::FAILED;
 			login->error = why;
+			login->ended_by_logoff = true;
 		}
 		WipeTokens(login->tokens);
 	}

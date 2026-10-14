@@ -62,6 +62,7 @@ struct Caller {
 	string correlation_id;             // the statement's, as acl publishes it
 	string traceparent;                // the statement's W3C trace context (well-formed, or empty)
 	std::function<void()> rejected;    // the service refused the grant (401): the session gets nothing more
+	std::function<bool()> interrupted; // the statement was interrupted (ends a wait for a login, specs/025)
 
 	bool IsNode() const {
 		return acl_session.empty();

@@ -521,6 +521,10 @@ Caller TresorSecretStorage::CallerFor(optional_ptr<ClientContext> context) {
 	if (!caller.session || !context) {
 		return caller; // detached; or no connection to ask - the node's own work
 	}
+	auto statement = context.get();
+	caller.interrupted = [statement]() {
+		return statement->IsInterrupted();
+	};
 	// whose statement is this: duckdb-acl publishes the session a statement runs under on its connection
 	string why;
 	auto state = acl::AclConnection::Reach(*context, why);
@@ -622,32 +626,48 @@ vector<Descriptor> TresorSecretStorage::Snapshot(const Caller &caller, shared_pt
 		}
 		auto &view = *view_out;
 		// logged off (specs/025): nothing held is served - the list is asked for, which takes up a new login (or
-		// waits for one in progress); without one, nothing
+		// waits for one in progress); without one, nothing, and not asked again for a while unless a login is under
+		// way (each ask reads the credential store)
 		auto logged_off = caller.session->LoggedOff();
+		auto in_progress = logged_off && caller.session->LoginInProgress();
 		bool first;
 		{
 			lock_guard<mutex> guard(lock);
+			if (!Serves(caller, view)) {
+				continue; // emptied since ViewOf: the view that serves now
+			}
 			auto now = NowSeconds();
 			first = !view.listed;
+			if (logged_off && !in_progress && now - view.failed_at < RETRY_AFTER_SECONDS) {
+				view_out = nullptr;
+				return vector<Descriptor>();
+			}
 			if (!logged_off &&
 			    (now - view.failed_at < RETRY_AFTER_SECONDS || (!first && now - view.listed_at < LIST_TTL_SECONDS))) {
 				return view.descriptors;
 			}
 		}
 		// stale: one refresh at a time, outside the state lock; a lookup arriving meanwhile goes on with the
-		// list it has rather than queueing behind the network - unless the view has none yet (a new acl session)
-		// or the login is off
+		// list it has rather than queueing behind the network - unless the view has none yet (a new acl session).
+		// Logged off, it has nothing: a lookup meanwhile (another waits for a login) finds nothing
 		unique_lock<mutex> fetching(view.fetch_lock, std::defer_lock);
-		if (first || logged_off) {
+		if (first && !logged_off) {
 			fetching.lock();
 		} else if (!fetching.try_lock()) {
 			lock_guard<mutex> guard(lock);
+			if (logged_off || !Serves(caller, view)) {
+				view_out = nullptr;
+				return vector<Descriptor>();
+			}
 			return view.descriptors;
 		}
 		uint64_t started;
 		uint64_t started_epoch;
 		{
 			lock_guard<mutex> guard(lock);
+			if (!Serves(caller, view)) {
+				continue;
+			}
 			if (first && view.listed && !logged_off) {
 				return view.descriptors; // listed while this one waited
 			}
@@ -657,10 +677,10 @@ vector<Descriptor> TresorSecretStorage::Snapshot(const Caller &caller, shared_pt
 		try {
 			auto fresh = FetchDescriptors(caller);
 			lock_guard<mutex> guard(lock);
-			if (epoch != started_epoch) {
+			if (epoch != started_epoch || !Serves(caller, view)) {
 				continue; // the caches were emptied meanwhile (another login): this answer is not the view's
 			}
-			if (session == caller.session && generation == started) { // a write meanwhile: this list is already old
+			if (generation == started) { // a write meanwhile: this list is already old
 				view.descriptors = std::move(fresh);
 				view.listed_at = NowSeconds();
 				view.listed = true;
@@ -669,27 +689,27 @@ vector<Descriptor> TresorSecretStorage::Snapshot(const Caller &caller, shared_pt
 		} catch (PermissionException &) {
 			if (caller.IsNode()) {
 				lock_guard<mutex> guard(lock);
-				view.failed_at = NowSeconds();
-				if (epoch != started_epoch) {
+				if (epoch != started_epoch || !Serves(caller, view)) {
 					view_out = nullptr;
 					return vector<Descriptor>();
 				}
+				view.failed_at = NowSeconds();
 				return view.descriptors;
 			}
 			return vector<Descriptor>(); // the grant was refused (marked by the call): this session gets nothing
 		} catch (std::exception &) {
+			lock_guard<mutex> guard(lock);
+			if (epoch != started_epoch || !Serves(caller, view)) {
+				view_out = nullptr; // emptied meanwhile: the list in hand is the previous login's
+				return vector<Descriptor>();
+			}
+			view.failed_at = NowSeconds();
 			if (caller.session->LoggedOff()) {
 				view_out = nullptr; // logged off, and no new login: nothing
 				return vector<Descriptor>();
 			}
 			// the service is unreachable: the last list stays authoritative for matching (a secret it covers
 			// fails at its material fetch - closed; a path it does not cover is not this storage's business)
-			lock_guard<mutex> guard(lock);
-			view.failed_at = NowSeconds();
-			if (epoch != started_epoch) {
-				view_out = nullptr; // emptied meanwhile: the list in hand is the previous login's
-				return vector<Descriptor>();
-			}
 			return view.descriptors;
 		}
 	}
@@ -701,11 +721,18 @@ vector<Descriptor> TresorSecretStorage::Refresh(const Caller &caller) {
 	if (!caller.session) {
 		throw InvalidInputException("tresor: %s is detached", storage_name);
 	}
+	uint64_t started_epoch;
+	{
+		lock_guard<mutex> guard(lock);
+		started_epoch = epoch;
+	}
 	// throws the refusal: an acl session without a grant, or one the service refused (marked by the call)
 	auto fresh = FetchDescriptors(caller);
 	auto view = ViewOf(caller);
 	lock_guard<mutex> guard(lock);
-	if (view && session == caller.session) {
+	// emptied meanwhile (a logoff, another login): the list is the previous login's - answered to this call, which
+	// asked as it, but never cached for the next one
+	if (view && Serves(caller, *view) && epoch == started_epoch) {
 		view->descriptors = fresh;
 		view->listed_at = NowSeconds();
 		view->failed_at = 0;
@@ -949,9 +976,10 @@ bool TresorSecretStorage::VariableOf(const Caller &caller, const string &name, s
 		throw InvalidInputException("tresor: %s is detached", storage_name);
 	}
 	auto now = NowSeconds();
-	{
+	// logged off, or emptied since ViewOf (specs/025): nothing from the cache
+	if (!caller.session->LoggedOff()) {
 		lock_guard<mutex> guard(lock);
-		auto cached = view->variables.find(name);
+		auto cached = Serves(caller, *view) ? view->variables.find(name) : view->variables.end();
 		if (cached != view->variables.end() && cached->second.valid_until > now) {
 			value = cached->second.value;
 			if (auto live = audit.lock()) {
@@ -998,9 +1026,11 @@ bool TresorSecretStorage::VariableOf(const Caller &caller, const string &name, s
 	auto lifetime = sensitive && yyjson_is_true(sensitive) ? STATIC_MATERIAL_SECONDS : LIST_TTL_SECONDS;
 	{
 		lock_guard<mutex> guard(lock);
-		auto &entry = view->variables[name];
-		entry.value = value;
-		entry.valid_until = now + lifetime;
+		if (Serves(caller, *view)) {
+			auto &entry = view->variables[name];
+			entry.value = value;
+			entry.valid_until = now + lifetime;
+		}
 	}
 	audited.Ok();
 	return true;
@@ -1075,7 +1105,8 @@ unique_ptr<const BaseSecret> TresorSecretStorage::RefreshMaterial(const string &
 			// moment ago is the answer to this one too (requests of one scan may refresh in parallel); a
 			// mint made by an ordinary lookup is not - it may be the very credential that was refused
 			lock_guard<mutex> guard(lock);
-			auto cached = view->materials.find(d.name);
+			// emptied since the list was taken (specs/025): nothing of the previous login's
+			auto cached = Serves(caller, *view) ? view->materials.find(d.name) : view->materials.end();
 			auto now = NowSeconds();
 			if (cached != view->materials.end() && cached->second.version == d.version &&
 			    cached->second.refreshed_at != 0 && now - cached->second.refreshed_at < FRESH_MINT_SECONDS &&

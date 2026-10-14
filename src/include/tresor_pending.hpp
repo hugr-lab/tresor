@@ -41,6 +41,8 @@ struct PendingLogin {
 	bool remember = true;
 	//! the kept tokens were taken by an ATTACH: another one does not find them
 	bool consumed = false;
+	//! a logoff ended it (Cancel): told to a status call, never a reason to fail an ATTACH
+	bool ended_by_logoff = false;
 	oidc::TokenSet tokens;
 
 	std::atomic<bool> cancelled {false};

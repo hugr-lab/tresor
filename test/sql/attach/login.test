@@ -158,17 +158,17 @@ logged off from 127.0.0.1:{TRESOR_TEST_PORT} - log in: FROM tresor_login('corp')
 statement ok
 CREATE TABLE switched AS FROM tresor_login('corp', prompt := 'select_account');
 
-# the next lookup waits for that login and takes it up - and answers for bob: alice_lake is not served, bob's own
-# secrets are
-query I
-SELECT count(*) FROM which_secret('s3://alice-lake/x.parquet', 's3') WHERE storage = 'corp';
-----
-0
-
+# the next lookup waits for that login and takes it up (a lookup that just found nothing does not hold it back) -
+# and answers for bob: bob's own secrets are served, alice_lake is not
 query I
 SELECT name FROM which_secret('s3://lake/team-a/x.parquet', 's3') WHERE storage = 'corp';
 ----
 lake_team_a
+
+query I
+SELECT count(*) FROM which_secret('s3://alice-lake/x.parquet', 's3') WHERE storage = 'corp';
+----
+0
 
 query I
 SELECT subject LIKE '%bob' FROM corp.whoami();
@@ -295,6 +295,21 @@ FROM tresor_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', insecure_http := true, 
 
 statement ok
 FROM tresor_logoff(service := '127.0.0.1:{TRESOR_TEST_PORT}', issuer := 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', client_id := 'duckdb');
+
+# ...which is no reason to fail an ATTACH after it: that one logs in by itself
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true, REMEMBER false);
+
+statement ok
+DETACH corp;
+
+statement ok
+FROM tresor_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', insecure_http := true, login := 'device');
+
+statement ok
+FROM tresor_logoff(service := '127.0.0.1:{TRESOR_TEST_PORT}', issuer := 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', client_id := 'duckdb');
+
+# a status call says so
 
 query I
 SELECT status FROM tresor_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', insecure_http := true, login := 'device');

@@ -170,16 +170,21 @@ string TresorSession::AccessToken(bool force) {
 	tokens = std::move(renewed);
 	issued_at = NowSeconds();
 	if (taken_up) {
-		// the login taken up works: no longer logged off, and the next call asks whoami who it is (specs/025)
+		// the login taken up works: no longer logged off, and the next call asks whoami who it is (specs/025) - until
+		// then nobody is named (the audit's principal), never the previous person
 		taken_up = false;
 		logged_off = false;
+		logged_off_seen = false;
 		resumed = true;
+		previous_subject = subject;
+		subject.clear();
 	}
 	return tokens.access_token;
 }
 
 ServiceResponse TresorSession::Call(const string &method, const string &path, const string &body,
-                                    const std::map<std::string, std::string> &extra_headers, int timeout_seconds) {
+                                    const std::map<std::string, std::string> &extra_headers, int timeout_seconds,
+                                    const std::function<bool()> &interrupted) {
 	oidc::TransportScope http(transport);
 	if (wait_pending) {
 		// logged off: a login tresor_login started for this key is waited for first (specs/025) - never under the
@@ -192,7 +197,10 @@ ServiceResponse TresorSession::Call(const string &method, const string &path, co
 			key = Key();
 		}
 		if (waiting) {
-			wait_pending(key, [this] { return closing.load(); });
+			wait_pending(key, [this, &interrupted] { return closing.load() || (interrupted && interrupted()); });
+			if (interrupted && interrupted()) {
+				throw InterruptException();
+			}
 		}
 	}
 	string used;
@@ -345,6 +353,7 @@ bool TresorSession::Remembers(const LoginKey &key) {
 
 void TresorSession::TakeUpWhoami(string &token) {
 	string before;
+	uint64_t take_up;
 	string placeholder; // whose the stored entry taken up was (tresor_login's placeholder, or a person)
 	{
 		lock_guard<mutex> guard(lock);
@@ -352,8 +361,9 @@ void TresorSession::TakeUpWhoami(string &token) {
 			return; // another call did it
 		}
 		resumed = false;
-		before = subject;
+		before = previous_subject;
 		placeholder = remember_subject;
+		take_up = take_ups;
 	}
 	auto again = [&]() {
 		lock_guard<mutex> guard(lock);
@@ -385,8 +395,8 @@ void TresorSession::TakeUpWhoami(string &token) {
 	auto now = WhoamiSubject(probe.body);
 	{
 		lock_guard<mutex> guard(lock);
-		if (logged_off || closed) {
-			return; // logged off (or detached) again meanwhile: this login is over before it was named
+		if (logged_off || closed || take_ups != take_up) {
+			return; // logged off (or detached, or another login taken up) meanwhile: not this whoami's to name
 		}
 		subject = now;
 		remember_subject = now;
@@ -430,6 +440,7 @@ bool TresorSession::TakeUpLogin() {
 	issued_at = 0;
 	logged_out = false;
 	taken_up = true;
+	take_ups++;
 	remember = store;
 	remember_mode = mode;
 	remember_subject = stored_subject; // a placeholder until whoami names the person (TakeUpWhoami)
@@ -445,11 +456,16 @@ string TresorSession::LogOff() {
 		tokens = oidc::TokenSet();
 		logged_out = true;
 		logged_off = true;
+		logged_off_seen = true;
 		taken_up = false;
 		resumed = false;
+		take_ups++;
+		// no take-up until the logoff removed this login from the store (AllowResume): it is still stored now, and a
+		// lookup meanwhile would take it up again
 		if (!remember.expired()) {
-			resume_store = remember;
+			logged_off_store = remember;
 		}
+		resume_store.reset();
 		remember.reset();
 		remember_subject.clear();
 	}
@@ -458,6 +474,13 @@ string TresorSession::LogOff() {
 		on_logged_off();
 	}
 	return refresh;
+}
+
+void TresorSession::AllowResume() {
+	lock_guard<mutex> guard(lock);
+	if (logged_off && !logged_off_store.expired()) {
+		resume_store = logged_off_store;
+	}
 }
 
 void TresorSession::Close() {

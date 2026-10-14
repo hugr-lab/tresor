@@ -167,6 +167,7 @@ Row Forget(ClientContext &context, const tresor::LoginKey &key,
 		}
 		tokens.push_back(std::move(token));
 	};
+	vector<shared_ptr<TresorSession>> ended; // logged off here
 	tresor::oidc::Endpoints endpoints;
 	string service;
 	string login;
@@ -184,6 +185,7 @@ Row Forget(ClientContext &context, const tresor::LoginKey &key,
 			login = session.LoginName();
 		}
 		auto held = session.LogOff();
+		ended.push_back(entry.second);
 		keep(held);
 		row.removed = true;
 		row.catalogs.push_back(entry.first);
@@ -199,6 +201,10 @@ Row Forget(ClientContext &context, const tresor::LoginKey &key,
 			keep(stored);
 		}
 		row.removed = store->Remove(key, mode) || row.removed;
+	}
+	// gone from the store: a kept catalog may take up the next login from now on, never this one (specs/025)
+	for (auto &session : ended) {
+		session->AllowResume();
 	}
 	if (!tokens.empty() && endpoints.revocation_endpoint.empty() && Reachable(key.issuer)) {
 		endpoints = tresor::oidc::Discover(key.issuer); // not attached here: the issuer's own discovery

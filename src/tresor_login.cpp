@@ -802,37 +802,57 @@ PersonLoginStatus StartPersonLogin(ClientContext &context, const AttachRequest &
 				    deadline, [raw] { return raw->cancelled.load(); }, extra);
 			};
 		}
-		auto shared = login;
-		std::thread thread([shared, run, transport, weak_store, mode]() {
-			oidc::TransportScope thread_http(transport);
-			auto tokens = run();
-			{
-				lock_guard<mutex> guard(shared->lock);
-				if (shared->state == PendingLogin::State::FAILED) {
-					// a logoff ended it meanwhile: whatever arrived is not kept
-				} else if (!tokens.Ok()) {
-					shared->state = PendingLogin::State::FAILED;
-					shared->error = tokens.error_code == "cancelled" ? "cancelled" : tokens.error;
-				} else {
-					auto store = weak_store.lock();
-					if (!shared->keep_tokens && store && !tokens.refresh_token.empty()) {
-						// remembered as an ATTACH's login is, under a placeholder subject until a whoami names the
-						// person
-						lock_guard<mutex> chain(store->KeyLock(shared->key));
-						store->Store(shared->key, BACKGROUND_LOGIN_SUBJECT, tokens.refresh_token, mode);
-					} else {
-						shared->keep_tokens = true; // no store, or no refresh token: for the next ATTACH only
-						shared->tokens = tokens;
-					}
-					shared->state = PendingLogin::State::DONE;
-				}
-				std::fill(tokens.refresh_token.begin(), tokens.refresh_token.end(), '\0');
-				std::fill(tokens.access_token.begin(), tokens.access_token.end(), '\0');
+		{
+			lock_guard<mutex> guard(login->lock);
+			if (login->cancelled || login->state == PendingLogin::State::FAILED) {
+				// a logoff cancelled it while it was set up: it never starts (no browser opens)
+				run = nullptr;
 			}
-			shared->changed.notify_all();
-		});
-		lock_guard<mutex> guard(login->lock);
-		login->thread = std::move(thread);
+		}
+		auto shared = login;
+		std::thread thread;
+		if (run) {
+			thread = std::thread([shared, run, transport, weak_store, mode]() {
+				oidc::TransportScope thread_http(transport);
+				auto tokens = run();
+				{
+					lock_guard<mutex> guard(shared->lock);
+					if (shared->state == PendingLogin::State::FAILED) {
+						// a logoff ended it meanwhile: whatever arrived is not kept
+					} else if (!tokens.Ok()) {
+						shared->state = PendingLogin::State::FAILED;
+						shared->error = tokens.error_code == "cancelled" ? "cancelled" : tokens.error;
+					} else {
+						auto store = weak_store.lock();
+						if (!shared->keep_tokens && store && !tokens.refresh_token.empty()) {
+							// remembered as an ATTACH's login is, under a placeholder subject until a whoami names the
+							// person
+							lock_guard<mutex> chain(store->KeyLock(shared->key));
+							store->Store(shared->key, BACKGROUND_LOGIN_SUBJECT, tokens.refresh_token, mode);
+						} else {
+							shared->keep_tokens = true; // no store, or no refresh token: for the next ATTACH only
+							shared->tokens = tokens;
+						}
+						shared->state = PendingLogin::State::DONE;
+					}
+					std::fill(tokens.refresh_token.begin(), tokens.refresh_token.end(), '\0');
+					std::fill(tokens.access_token.begin(), tokens.access_token.end(), '\0');
+				}
+				shared->changed.notify_all();
+			});
+		}
+		std::thread orphan;
+		{
+			lock_guard<mutex> guard(login->lock);
+			if (login->cancelled) {
+				orphan = std::move(thread); // stopped (or cancelled) while it was set up: nobody else would join it
+			} else {
+				login->thread = std::move(thread);
+			}
+		}
+		if (orphan.joinable()) {
+			orphan.join(); // the flow sees the flag within a second
+		}
 	} catch (std::exception &ex) {
 		// it never started: told by this call's error, and forgotten
 		{
@@ -1062,7 +1082,8 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 						taken = true;
 						// remember := false: not remembered by this ATTACH either
 						remember = remember && pending->remember;
-					} else if (state == PendingLogin::State::FAILED) {
+					} else if (state == PendingLogin::State::FAILED && !pending->ended_by_logoff) {
+						// (one a logoff ended is no reason to fail this ATTACH: it logs in by itself)
 						failed = pending->error;
 					}
 				}

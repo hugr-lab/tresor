@@ -84,10 +84,10 @@ ServiceResponse Caller::Call(const string &method, const string &path, const str
 		headers["traceparent"] = traceparent; // the statement's trace goes on at the service (protocol, Tracing)
 	}
 	if (IsNode()) {
-		return session->Call(method, path, body, headers);
+		return session->Call(method, path, body, headers, 30, interrupted);
 	}
 	headers["Delegation"] = grant;
-	auto response = session->Call(method, path, body, headers);
+	auto response = session->Call(method, path, body, headers, 30, interrupted);
 	if (response.status == 401) {
 		// the node's login was renewed and retried by the session: a 401 now is the grant, refused
 		if (rejected) {
