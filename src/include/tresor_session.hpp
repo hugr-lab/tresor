@@ -106,14 +106,28 @@ public:
 	bool Remembers(const LoginKey &key);
 	//! The key this session's login would be remembered under.
 	LoginKey Key() const;
-	//! tresor_logoff: the login is over here too - the tokens go, the next call asks for a new ATTACH. The
-	//! refresh token, for revocation, is handed out once (empty when there is none).
+	//! tresor_logoff: the login is over here too - the tokens go. The refresh token, for revocation, is handed out
+	//! once (empty when there is none). A catalog kept (`detach := false`, specs/025) takes up the next login
+	//! remembered under its key; until then a call says how to log in.
 	string LogOff();
+	//! Told when a kept catalog took up a new login (specs/025): the subject before and now - another person means
+	//! everything held for the previous one goes. Set once, before the session is shared.
+	void OnResumed(std::function<void(const string &before, const string &now)> callback) {
+		on_resumed = std::move(callback);
+	}
+	//! How a kept catalog waits for a login in progress for its key (tresor_login's, specs/025). Set once.
+	void OnPendingLogin(std::function<void(const LoginKey &key)> wait) {
+		wait_pending = std::move(wait);
+	}
 
 private:
 	//! A usable access token, renewing it when it has less than a minute left; `force` renews anyway
 	//! (after a 401). Called with the lock held.
 	string AccessToken(bool force);
+	//! After a logoff: a login remembered under this session's key since, taken up (specs/025). With the lock held.
+	bool TakeUpLogin();
+	//! After a login was taken up: whoami names who it is (another person: on_resumed empties the catalog).
+	void TakeUpWhoami(const string &token);
 
 	ServiceInfo info;
 	LoginFlow flow;
@@ -124,8 +138,13 @@ private:
 	int64_t issued_at = 0;        // when `tokens` arrived: the renewal margin is at most half their life
 	ServiceCredential credential; // a service's login: what re-mints it (a secret, or paths - never read content)
 	bool closed = false;
-	bool logged_out = false;                        // the IdP ended the login (invalid_grant): only a new ATTACH helps
-	weak_ptr<RememberedLogins> remember;            // specs/012: where a rotated refresh token goes
+	bool logged_out = false;                 // the IdP ended the login (invalid_grant): only a new ATTACH helps
+	weak_ptr<RememberedLogins> remember;     // specs/012: where a rotated refresh token goes
+	bool logged_off = false;                 // tresor_logoff ended it: a new login may be taken up (specs/025)
+	weak_ptr<RememberedLogins> resume_store; // where a new login would be remembered
+	bool resumed = false;                    // a new login was taken up: the next call asks whoami
+	std::function<void(const string &before, const string &now)> on_resumed;
+	std::function<void(const LoginKey &key)> wait_pending;
 	KeychainMode remember_mode = KeychainMode::OFF; // the mode it was remembered in: stored only while it holds
 	string remember_subject;                        // whose login it is: another person's stored since is not adopted
 };

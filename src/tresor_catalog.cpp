@@ -1,4 +1,9 @@
 #include "tresor_catalog.hpp"
+#include "tresor_events.hpp"
+#include "tresor_login.hpp"
+#include "tresor_pending.hpp"
+
+#include <chrono>
 
 #include "duckdb/catalog/catalog_transaction.hpp"
 #include "duckdb/common/exception.hpp"
@@ -13,6 +18,33 @@ TresorCatalog::TresorCatalog(AttachedDatabase &db, shared_ptr<TresorSession> ses
                              vector<Descriptor> initial_p, unique_ptr<ActorOptions> acting_p)
     : DuckCatalog(db), session(std::move(session_p)), storage(storage_p), initial(std::move(initial_p)),
       acting(std::move(acting_p)) {
+	// a catalog kept over a logoff takes up the next login (specs/025): another person empties it first
+	auto &store = storage;
+	auto name = db.GetName().GetIdentifierName();
+	auto host = session->Info().host;
+	session->OnResumed([&store, name, host](const string &before, const string &now) {
+		if (before != now) {
+			store.ResetCaches();
+		}
+		Audited audited(store.AuditOf(), "login", nullptr);
+		audited.event.service = name;
+		audited.event.host = host;
+		audited.event.user = now;
+		audited.Detail(before == now ? "resumed" : "resumed_other").Ok();
+	});
+	auto &instance = db.GetDatabase();
+	session->OnPendingLogin([&instance](const LoginKey &key) {
+		auto pending = PendingLogins::Get(instance)->Find(key);
+		if (!pending) {
+			return;
+		}
+		auto deadline =
+		    std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+		        .count() +
+		    AttachRequest().timeout_seconds;
+		pending->WaitBeyond(PendingLogin::State::STARTING, deadline, nullptr);
+		pending->WaitBeyond(PendingLogin::State::PENDING, deadline, nullptr);
+	});
 }
 
 TresorCatalog::~TresorCatalog() {

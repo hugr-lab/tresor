@@ -976,6 +976,14 @@ bool TresorSecretStorage::VariableOf(const Caller &caller, const string &name, s
 	return true;
 }
 
+void TresorSecretStorage::ResetCaches() {
+	lock_guard<mutex> guard(lock);
+	node = make_shared_ptr<View>();
+	acl_views.clear();
+	refusals_told.clear();
+	generation++;
+}
+
 void TresorSecretStorage::InvalidateVariable(const string &name) {
 	lock_guard<mutex> guard(lock);
 	if (node) {

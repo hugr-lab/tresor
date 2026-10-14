@@ -33,3 +33,6 @@ _acl/
 # the web page's helper (web/): installed and built locally
 web/node_modules/
 web/build/
+
+# agents' git worktrees (Claude Code)
+.claude/worktrees/

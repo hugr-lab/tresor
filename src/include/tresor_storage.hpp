@@ -93,6 +93,9 @@ public:
 	bool VariableOf(const Caller &caller, const string &name, string &value, optional_ptr<ClientContext> context);
 	//! After a variable's write: its cached values go, for every caller.
 	void InvalidateVariable(const string &name);
+	//! Another person took up the catalog's login (specs/025): everything held for the previous one goes - the
+	//! list, the material, the variables - and a refresh started before does not land.
+	void ResetCaches();
 	//! Fresh material for a listed secret, bypassing the cache (the tresor provider: httpfs's REFRESH auto).
 	unique_ptr<const BaseSecret> RefreshMaterial(const string &name, optional_ptr<CatalogTransaction> transaction);
 

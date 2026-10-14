@@ -53,7 +53,14 @@ string TresorSession::AccessToken(bool force) {
 		throw InvalidInputException("tresor: the session to %s is closed (DETACHed)", info.host);
 	}
 	if (logged_out) {
-		throw InvalidInputException("tresor: the login to %s is over - log in again: DETACH and ATTACH", info.host);
+		if (!logged_off) {
+			throw InvalidInputException("tresor: the login to %s is over - log in again: DETACH and ATTACH", info.host);
+		}
+		if (!TakeUpLogin()) {
+			throw InvalidInputException("tresor: logged off from %s - log in: FROM tresor_login('tresor:%s')",
+			                            info.host, info.host);
+		}
+		force = true; // the remembered refresh token, renewed now
 	}
 	// renew a minute ahead - or at half-life, for tokens that live two minutes or less
 	auto margin = MinValue<int64_t>(RENEW_MARGIN_SECONDS, MaxValue<int64_t>(0, (tokens.expires_at - issued_at) / 2));
@@ -168,12 +175,17 @@ ServiceResponse TresorSession::Call(const string &method, const string &path, co
 	string used;
 	for (int attempt = 0; attempt < 2; attempt++) {
 		string token;
+		bool take_up;
 		{
 			// the lock covers the token and its renewal only, never the request: a node serves many users'
 			// sessions through one login, and one slow call must not hold up the others
 			lock_guard<mutex> guard(lock);
 			// after a 401, renew - unless another call already did while this one was on the wire
 			token = AccessToken(attempt > 0 && tokens.access_token == used);
+			take_up = resumed;
+		}
+		if (take_up) {
+			TakeUpWhoami(token);
 		}
 		used = token;
 		std::map<std::string, std::string> headers {{"Authorization", "Bearer " + token},
@@ -308,11 +320,80 @@ bool TresorSession::Remembers(const LoginKey &key) {
 	       mine.service == key.service;
 }
 
+void TresorSession::TakeUpWhoami(const string &token) {
+	string before;
+	{
+		lock_guard<mutex> guard(lock);
+		if (!resumed) {
+			return; // another call did it
+		}
+		resumed = false;
+		before = subject;
+	}
+	// who logged in: the same person goes on, another one's catalog is emptied of the previous one's first
+	auto probe = oidc::HttpSend("GET", info.api + "/v1/whoami",
+	                            {{"Authorization", "Bearer " + token}, {"Accept", "application/json"}}, "", "", 30);
+	if (!probe.error.empty() || probe.status != 200) {
+		lock_guard<mutex> guard(lock);
+		resumed = true; // asked again by the next call
+		throw IOException("tresor: %s did not say who logged in: %s", info.host,
+		                  probe.error.empty() ? DescribeProblem(probe.status, probe.body) : probe.error);
+	}
+	auto now = WhoamiSubject(probe.body);
+	{
+		lock_guard<mutex> guard(lock);
+		subject = now;
+		remember_subject = now;
+		auto store = remember.lock();
+		if (store && !tokens.refresh_token.empty()) {
+			// the entry now names the person, as an ATTACH's does (the placeholder no session adopts)
+			lock_guard<mutex> chain(store->KeyLock(Key()));
+			store->Store(Key(), remember_subject, tokens.refresh_token, remember_mode);
+		}
+	}
+	if (on_resumed) {
+		on_resumed(before, now);
+	}
+}
+
+bool TresorSession::TakeUpLogin() {
+	auto store = resume_store.lock();
+	if (!store) {
+		return false;
+	}
+	if (wait_pending) {
+		wait_pending(Key()); // a login tresor_login started for this key: until it ends
+	}
+	auto mode = store->Mode();
+	string stored_subject;
+	string refresh;
+	{
+		lock_guard<mutex> chain(store->KeyLock(Key()));
+		if (!store->Load(Key(), mode, stored_subject, refresh)) {
+			return false;
+		}
+	}
+	tokens = oidc::TokenSet();
+	tokens.refresh_token = std::move(refresh);
+	issued_at = 0;
+	logged_out = false;
+	logged_off = false;
+	remember = store;
+	remember_mode = mode;
+	remember_subject = stored_subject; // a placeholder until whoami names the person (the call below)
+	resumed = true;
+	return true;
+}
+
 string TresorSession::LogOff() {
 	lock_guard<mutex> guard(lock);
 	auto refresh = tokens.refresh_token;
 	tokens = oidc::TokenSet();
 	logged_out = true;
+	logged_off = true;
+	if (!remember.expired()) {
+		resume_store = remember;
+	}
 	remember.reset();
 	remember_subject.clear();
 	return refresh;

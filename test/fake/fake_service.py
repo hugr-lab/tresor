@@ -51,6 +51,8 @@ CODES = {}     # authorization code -> (challenge, redirect_uri, identity)
 DEVICES = {}   # device code -> pending polls left before approval
 
 PERSON = {"subject": "alice", "roles": ["role:analysts", "group:sales"], "create": ["team_a_*"]}
+# specs/025: who logs in when the IdP is asked to pick the account (prompt=select_account) - another person
+OTHER_PERSON = {"subject": "bob", "roles": ["role:analysts"], "create": []}
 SERVICE = {"subject": "client:etl", "roles": ["role:etl"], "create": True}
 CLIENTS = {"etl": "s3cr3t"}
 STATIC_TOKENS = {"static-token": {"subject": "client:static", "roles": [], "create": False}}
@@ -156,7 +158,7 @@ IDP_STATS = {"authorize": 0, "refresh": 0, "refresh_scope": "", "revoked_tokens"
              # specs/020: headers of DuckDB's that reached the IdP or the API, and the discovery's client
              "leaked": 0, "discovery_agent": "",
              # specs/013: what the audience parameter, the platform endpoints and the assertions carried
-             "authorize_audience": "", "cc_audience": "", "mi_resource": "", "gh_audience": "", "assertions": 0,
+             "authorize_audience": "", "authorize_prompt": "", "cc_audience": "", "mi_resource": "", "gh_audience": "", "assertions": 0,
              "device_audience": "", "last_federated": "", "last_kid": "", "last_x5t": "",
              "variable_requests": 0}  # specs/018: every /v1/variables request, whatever the realm
 # specs/013: services that prove themselves without a secret - public keys from the test script's key directory
@@ -459,13 +461,18 @@ class Handler(BaseHTTPRequestHandler):
                 if query.get("client_id") != "duckdb" or query.get("code_challenge_method") != "S256":
                     self.send(400, {"error": "invalid_request"})
                     return
+                prompt = query.get("prompt", "")
                 code = "code-" + secrets.token_urlsafe(8)
                 with LOCK:
-                    CODES[code] = (query.get("code_challenge"), query.get("redirect_uri"), PERSON)
+                    CODES[code] = (query.get("code_challenge"), query.get("redirect_uri"),
+                                   OTHER_PERSON if prompt == "select_account" else PERSON)
                     IDP_STATS["authorize"] += 1
                     IDP_STATS["authorize_audience"] = query.get("audience", "")
-                target = query["redirect_uri"] + "?" + urllib.parse.urlencode(
-                    {"code": code, "state": query.get("state", "")})
+                    IDP_STATS["authorize_prompt"] = prompt  # specs/025
+                answer = {"code": code, "state": query.get("state", "")}
+                if prompt == "none":  # no session to log in silently with: OIDC's login_required
+                    answer = {"error": "login_required", "state": query.get("state", "")}
+                target = query["redirect_uri"] + "?" + urllib.parse.urlencode(answer)
                 self.send(302, b"", "text/plain", {"Location": target})
             else:
                 self.send(404, {"error": "not_found"})

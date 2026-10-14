@@ -3,6 +3,7 @@
 #include "tresor_extension.hpp"
 #include "tresor_login.hpp"
 #include "tresor_http.hpp"
+#include "tresor_pending.hpp"
 #include "tresor_remember.hpp"
 
 #include "acl_connection.hpp"
@@ -61,12 +62,15 @@ vector<std::pair<string, shared_ptr<TresorSession>>> Attached(ClientContext &con
 struct LogoffBindData : public TableFunctionData {
 	string catalog;
 	tresor::LoginKey key; // by name: all three
+	bool detach = true;   // specs/025: the catalogs on the login go; false keeps them waiting for a new login
 };
 
 struct Row {
 	tresor::LoginKey key;
 	bool removed = false;
 	bool revoked = false;
+	vector<string> catalogs; // attached on this login
+	int64_t detached = 0;
 };
 
 struct LogoffState : public GlobalTableFunctionState {
@@ -88,6 +92,10 @@ unique_ptr<FunctionData> LogoffBind(ClientContext &context, TableFunctionBindInp
 		auto name = StringUtil::Lower(named.first.GetIdentifierName());
 		if (named.second.IsNull()) {
 			throw InvalidInputException("tresor_logoff: %s must not be NULL", name);
+		}
+		if (name == "detach") {
+			data->detach = BooleanValue::Get(named.second);
+			continue;
 		}
 		if (name == "issuer") {
 			data->key.issuer = StripSlash(named.second.ToString());
@@ -118,6 +126,8 @@ unique_ptr<FunctionData> LogoffBind(ClientContext &context, TableFunctionBindInp
 	return_types.push_back(LogicalType::BOOLEAN);
 	names.emplace_back("revoked");
 	return_types.push_back(LogicalType::BOOLEAN);
+	names.emplace_back("detached");
+	return_types.push_back(LogicalType::BIGINT);
 	return std::move(data);
 }
 
@@ -169,6 +179,7 @@ Row Forget(ClientContext &context, const tresor::LoginKey &key,
 		auto held = session.LogOff();
 		keep(held);
 		row.removed = true;
+		row.catalogs.push_back(entry.first);
 	}
 	{
 		// after the sessions (session lock, then key lock - their order): an ATTACH renewing this chain right now
@@ -272,8 +283,24 @@ void LogoffScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 				                            data.catalog);
 			}
 		}
+		auto pending = tresor::PendingLogins::Get(*context.db);
 		for (auto &key : keys) {
 			state.rows.push_back(Forget(context, key, attached));
+			pending->Cancel(key, "logged off"); // a login tresor_login started for it ends too (specs/025)
+		}
+		if (data.detach) {
+			// the catalogs on a login that is over go (specs/025); one DuckDB will not detach in this statement stays,
+			// as with detach := false, and asks for a new login
+			auto &manager = DatabaseManager::Get(context);
+			for (auto &row : state.rows) {
+				for (auto &name : row.catalogs) {
+					try {
+						manager.DetachDatabase(context, Identifier(name), OnEntryNotFound::RETURN_NULL);
+						row.detached++;
+					} catch (std::exception &) {
+					}
+				}
+			}
 		}
 	}
 	while (state.offset < state.rows.size() && output.size() < STANDARD_VECTOR_SIZE) {
@@ -283,6 +310,7 @@ void LogoffScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 		output.data[2].Append(Value(row.key.client_id));
 		output.data[3].Append(Value::BOOLEAN(row.removed));
 		output.data[4].Append(Value::BOOLEAN(row.revoked));
+		output.data[5].Append(Value::BIGINT(row.detached));
 	}
 }
 
@@ -296,7 +324,8 @@ void RegisterTresorLogoff(ExtensionLoader &loader) {
 		function.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
 			options.Add("issuer", LogicalType::VARCHAR)
 			    .Add("client_id", LogicalType::VARCHAR)
-			    .Add("service", LogicalType::VARCHAR);
+			    .Add("service", LogicalType::VARCHAR)
+			    .Add("detach", LogicalType::BOOLEAN);
 		});
 		set.AddFunction(function);
 	}

@@ -111,13 +111,10 @@ SELECT login, idp('authorize')::INT - authorize FROM corp.whoami(), seen;
 remembered	0
 
 # a page's tab ends: its login goes with it
-query II
-SELECT removed, revoked FROM tresor_logoff('corp');
+query III
+SELECT removed, revoked, detached FROM tresor_logoff('corp');
 ----
-true	true
-
-statement ok
-DETACH corp;
+true	true	1
 
 # a token the IdP does not know: the ATTACH forgets it and logs in anew (natively, the browser; in wasm, the page)
 statement ok

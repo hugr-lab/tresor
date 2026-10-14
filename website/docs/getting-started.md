@@ -73,9 +73,14 @@ CALL tresor_logoff();                                       -- forget it, revoke
   one attachment's login. For a service that is not attached, name all three:
   `tresor_logoff(service := 'secrets.corp.example', issuer := '…', client_id := '…')`.
 - Either way the login is revoked at the identity provider when it supports RFC 7009, and the
-  attachment running on it must be attached again. A `REMEMBER false` attachment is not touched.
-- **To log in as someone else**, call `tresor_logoff` first or attach with `REMEMBER false`. An
-  explicit `LOGIN 'browser'` still uses the remembered login.
+  catalogs on it are detached. `detach := false` keeps them: they ask for a new login, and take it up
+  as soon as there is one. A `REMEMBER false` attachment is not touched.
+- **To log in as someone else**, call `tresor_logoff` first, then log in asking the identity
+  provider to pick the account: `FROM tresor_login('corp', prompt := 'select_account')` (or
+  `prompt := 'login'`). Otherwise its browser session logs the same person in again. A kept catalog
+  then goes on as the new person, emptied of everything held for the previous one.
+- From DuckDB UI, a notebook or an IDE, log in with `tresor_login`: it answers with the link to open
+  (and a device code) as a row, where stderr shows nowhere - [From your tools](./clients.md).
 - `tresor_logoff` is refused for a statement run under a duckdb-acl session.
 
 A service's login (a tresor secret) is never remembered: it logs in again from its secret.

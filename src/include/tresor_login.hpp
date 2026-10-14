@@ -57,6 +57,23 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 //! up, so the ATTACH renews it and nothing else. Returns that key.
 LoginKey HandOverLogin(ClientContext &context, const AttachRequest &request, const string &refresh_token);
 
+//! tresor_login (specs/025): a person's login answered at once and completed in the background.
+struct PersonLoginStatus {
+	LoginKey key;
+	string flow;   // browser, device
+	string status; // pending, done, failed: <why>
+	string url;
+	string user_code;
+	int64_t expires_at = 0; // epoch seconds; 0 when nothing waits
+};
+//! Report the login for `request`'s service (remembered: done; in progress: its state) or start one. `prompt`:
+//! the IdP's authorization prompt (browser only); `remember` false keeps the tokens for one ATTACH, in memory.
+PersonLoginStatus StartPersonLogin(ClientContext &context, const AttachRequest &request, const string &prompt,
+                                   bool remember);
+
+//! The principal whoami's answer names (`subject:<issuer>|<sub>`); empty when it names none.
+string WhoamiSubject(const string &body);
+
 //! The browser for the login URL (tresor_browser.cpp).
 bool CanOpenBrowser();
 bool OpenBrowser(const std::string &url);

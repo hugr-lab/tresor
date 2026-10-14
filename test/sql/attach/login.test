@@ -1,0 +1,206 @@
+# name: test/sql/attach/login.test
+# description: tresor_login - a person's login answered at once, completed in the background; logoff detaches or keeps; a kept catalog takes up the next login (specs/025)
+# group: [attach]
+
+require-env TRESOR_TEST_PORT
+
+require httpfs
+
+require acl_stub
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+SET tresor_keychain = 'memory';
+
+statement ok
+SET tresor_audit_level = 'all';
+
+statement ok
+CALL enable_logging('tresor', storage := 'memory');
+
+statement ok
+CREATE MACRO idp(what) AS (SELECT regexp_extract(content, '"' || what || '": ([^,}]*)', 1) FROM read_text('http://127.0.0.1:{TRESOR_TEST_PORT}/_stats'));
+
+# --- refusals ----------------------------------------------------------------------------------------------------
+
+statement error
+FROM tresor_login('nothing_attached');
+----
+neither a service
+
+statement error
+FROM tresor_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', insecure_http := true, prompt := 'whatever');
+----
+prompt is login, select_account, consent or none
+
+statement error
+FROM tresor_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', insecure_http := true, refresh := true);
+----
+refresh
+
+statement ok
+SET acl_stub_session = 'alice';
+
+statement error
+FROM tresor_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', insecure_http := true);
+----
+not under a duckdb-acl session
+
+statement ok
+RESET acl_stub_session;
+
+# a service's catalog logs in from its secret: nothing for tresor_login to do
+statement ok
+CREATE SECRET etl_login (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting', FLOW 'client_credentials',
+    CLIENT_ID 'etl', CLIENT_SECRET 's3cr3t', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/acting' AS svc (INSECURE_HTTP true);
+
+statement error
+FROM tresor_login('svc');
+----
+is a service's login
+
+statement ok
+DETACH svc;
+
+statement ok
+DROP SECRET etl_login;
+
+# --- the browser: answered at once with the URL, completed by the (fake) browser, found by ATTACH ------------------
+
+statement ok
+CREATE TABLE seen AS SELECT idp('authorize')::INT AS authorize;
+
+statement ok
+CREATE TABLE first AS FROM tresor_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', insecure_http := true, login := 'browser');
+
+query IIII
+SELECT flow, status IN ('pending', 'done'), url LIKE 'http://127.0.0.1:%/idp/authorize?%', user_code IS NULL FROM first;
+----
+browser	true	true	true
+
+# the ATTACH waits for it, and goes on with what it left: no second login
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+
+query II
+SELECT login, subject LIKE '%alice' FROM corp.whoami();
+----
+remembered	true
+
+query I
+SELECT idp('authorize')::INT - authorize FROM seen;
+----
+1
+
+# already logged in: done at once, nothing asked
+query II
+SELECT status, url IS NULL FROM tresor_login('corp');
+----
+done	true
+
+# --- logoff detaches by default -----------------------------------------------------------------------------------
+
+query III
+SELECT removed, revoked, detached FROM tresor_logoff('corp');
+----
+true	true	1
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'corp';
+----
+0
+
+# --- the device flow: the code in the row --------------------------------------------------------------------------
+
+query IIII
+SELECT flow, status, user_code, url LIKE '%/activate' FROM tresor_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', insecure_http := true, login := 'device');
+----
+device	pending	ABCD-EFGH	true
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+
+query I
+SELECT subject LIKE '%alice' FROM corp.whoami();
+----
+true
+
+# --- logoff keeping the catalog; it takes up the next login - another person here --------------------------------
+
+query III
+SELECT removed, revoked, detached FROM tresor_logoff('corp', detach := false);
+----
+true	true	0
+
+statement error
+FROM corp.whoami();
+----
+logged off from 127.0.0.1:{TRESOR_TEST_PORT} - log in: FROM tresor_login
+
+# switching identity: the IdP is asked to pick the account (the fake's other person, bob)
+statement ok
+CREATE TABLE switched AS FROM tresor_login('corp', prompt := 'select_account');
+
+# the next call waits for that login, and takes it up: whoami names bob, the catalog was emptied of alice's first
+query I
+SELECT subject LIKE '%bob' FROM corp.whoami();
+----
+true
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('tresor') WHERE kind = 'login' AND detail = 'resumed_other';
+----
+1
+
+# the IdP was asked to pick the account
+query I
+SELECT idp('authorize_prompt');
+----
+"select_account"
+
+# --- an IdP's refusal: the ATTACH that waits for it says so ---------------------------------------------------------
+
+statement ok
+FROM tresor_logoff('corp');
+
+statement ok
+FROM tresor_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', insecure_http := true, login := 'browser', prompt := 'none');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+----
+that tresor_login started failed
+
+# --- remember := false: the tokens wait for one ATTACH, nothing is remembered ---------------------------------------
+
+statement ok
+FROM tresor_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', insecure_http := true, login := 'browser', remember := false);
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true, REMEMBER false);
+
+query I
+SELECT login FROM corp.whoami();
+----
+browser
+
+statement ok
+DETACH corp;
+
+# --- a logoff ends a login in progress ------------------------------------------------------------------------------
+
+statement ok
+FROM tresor_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', insecure_http := true, login := 'device');
+
+statement ok
+FROM tresor_logoff(service := '127.0.0.1:{TRESOR_TEST_PORT}', issuer := 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', client_id := 'duckdb');
+
+query I
+SELECT status FROM tresor_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', insecure_http := true, login := 'device');
+----
+failed: logged off

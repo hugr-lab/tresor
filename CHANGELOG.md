@@ -40,6 +40,10 @@ The first release, with DuckDB 2.0.
   DuckDB's HTTP client, the only one in wasm), `tresor_web_login()` (a login the page made, handed over and
   remembered in memory), CORS in the protocol and the reference server (`cors_origins`), and the page's
   helper `@hugr-lab/tresor-web` (`attachTresor`: the extension verified and loaded, the login handed over).
+- **Log in from any client** (specs/025): `tresor_login()` answers at once with the link and device code
+  (DuckDB UI, notebooks, IDEs) and completes in the background, an ATTACH waiting for it; `tresor_logoff`
+  detaches the catalogs on the login (`detach := false` keeps them, taking up the next login); `prompt` to switch
+  identity.
 - **Audit and traces**: every login, lookup, write and grant as a typed event, for DuckDB's log and
   for OpenTelemetry through acl-otel (`tresor_audit_level`, TRSA 1) (specs/011).
 - **The protocol `duckdb-secrets/1`** (draft until this release), a reference server in Go and a

@@ -1,6 +1,7 @@
 #include "tresor_login.hpp"
 #include "tresor_actor.hpp"
 #include "tresor_http.hpp"
+#include "tresor_pending.hpp"
 #include "tresor_remember.hpp"
 
 #include <algorithm>
@@ -284,6 +285,55 @@ string SecretString(const KeyValueSecret &secret, const char *key) {
 	return value.IsNull() ? "" : value.ToString();
 }
 
+//! Which flow a person's login takes: what LOGIN asks, among what the IdP offers (auto: the browser where one can
+//! open, else the device flow).
+LoginFlow ChoosePersonFlow(const AttachRequest &request, const ServiceInfo &info, const Discovered::Issuer &issuer) {
+	auto browser_possible = !info.endpoints.authorization_endpoint.empty() && issuer.OffersHuman("authorization_code");
+	auto device_possible = !info.endpoints.device_authorization_endpoint.empty() && issuer.OffersHuman("device_code");
+	switch (request.mode) {
+	case LoginMode::BROWSER:
+		if (!browser_possible) {
+			throw InvalidInputException("tresor: the identity provider of %s offers no browser login", request.host);
+		}
+		return LoginFlow::BROWSER;
+	case LoginMode::DEVICE:
+		if (!device_possible) {
+			throw InvalidInputException("tresor: the identity provider of %s offers no device login", request.host);
+		}
+		return LoginFlow::DEVICE;
+	case LoginMode::AUTO:
+		break;
+	}
+	if (browser_possible && (CanOpenBrowser() || !device_possible)) {
+		return LoginFlow::BROWSER;
+	}
+	if (device_possible) {
+		return LoginFlow::DEVICE;
+	}
+	throw InvalidInputException("tresor: the identity provider of %s offers neither a browser nor a device login for "
+	                            "people - a service logs in with a tresor secret",
+	                            request.host);
+}
+
+//! The chosen issuer's side of `info`: the issuer, its audience, its endpoints (by its own discovery), each checked.
+void ResolveIssuer(const AttachRequest &request, const Discovered::Issuer &issuer, ServiceInfo &info) {
+	CheckTransport(request, "issuer", issuer.issuer);
+	info.issuer = issuer.issuer;
+	info.audience = issuer.audience;
+	info.audience_parameter = issuer.audience_parameter;
+	info.endpoints = oidc::Discover(issuer.issuer);
+	if (!info.endpoints.Ok()) {
+		throw IOException("tresor: the identity provider %s of %s: %s", issuer.issuer, request.host,
+		                  info.endpoints.error);
+	}
+	for (auto *endpoint : {&info.endpoints.token_endpoint, &info.endpoints.authorization_endpoint,
+	                       &info.endpoints.device_authorization_endpoint, &info.endpoints.revocation_endpoint}) {
+		if (!endpoint->empty()) {
+			CheckTransport(request, "identity provider endpoint", *endpoint);
+		}
+	}
+}
+
 oidc::TokenSet PersonLogin(ClientContext &context, const AttachRequest &request, const ServiceInfo &info,
                            const Discovered::Issuer &issuer, LoginFlow &flow) {
 #ifdef __EMSCRIPTEN__
@@ -292,33 +342,7 @@ oidc::TokenSet PersonLogin(ClientContext &context, const AttachRequest &request,
 	                            "provider and hands it over with tresor_web_login",
 	                            request.host);
 #endif
-	auto browser_possible = !info.endpoints.authorization_endpoint.empty() && issuer.OffersHuman("authorization_code");
-	auto device_possible = !info.endpoints.device_authorization_endpoint.empty() && issuer.OffersHuman("device_code");
-	switch (request.mode) {
-	case LoginMode::BROWSER:
-		if (!browser_possible) {
-			throw InvalidInputException("tresor: the identity provider of %s offers no browser login", request.host);
-		}
-		flow = LoginFlow::BROWSER;
-		break;
-	case LoginMode::DEVICE:
-		if (!device_possible) {
-			throw InvalidInputException("tresor: the identity provider of %s offers no device login", request.host);
-		}
-		flow = LoginFlow::DEVICE;
-		break;
-	case LoginMode::AUTO:
-		if (browser_possible && (CanOpenBrowser() || !device_possible)) {
-			flow = LoginFlow::BROWSER;
-		} else if (device_possible) {
-			flow = LoginFlow::DEVICE;
-		} else {
-			throw InvalidInputException("tresor: the identity provider of %s offers neither a browser nor a device "
-			                            "login for people - a service logs in with a tresor secret",
-			                            request.host);
-		}
-		break;
-	}
+	flow = ChoosePersonFlow(request, info, issuer);
 	auto deadline = NowSeconds() + request.timeout_seconds;
 	auto cancelled = [&context] {
 		return context.IsInterrupted();
@@ -622,6 +646,201 @@ int64_t ParseGrantWait(int64_t seconds) {
 	return seconds;
 }
 
+PersonLoginStatus StartPersonLogin(ClientContext &context, const AttachRequest &request, const string &prompt,
+                                   bool remember) {
+#ifdef __EMSCRIPTEN__
+	throw InvalidInputException("tresor_login: in a browser the page logs in, and hands it over with tresor_web_login");
+#endif
+	auto transport = TransportFor(context);
+	oidc::TransportScope http(transport);
+	ServiceInfo info;
+	info.host = request.host;
+	info.insecure_http = request.insecure_http;
+	auto discovered = Discover(request, info.discovery);
+	auto &issuer = ChooseIssuer(request, discovered, request.issuer);
+	ResolveIssuer(request, issuer, info);
+	info.client_id = issuer.client_id;
+	if (info.client_id.empty()) {
+		throw IOException("tresor: %s names no client_id for people to log in with", request.host);
+	}
+	info.scope = StringUtil::Join(issuer.scopes, " ");
+	PersonLoginStatus out;
+	out.key = LoginKey {StripSlashes(info.issuer), info.client_id, request.host};
+
+	auto store = RememberedLogins::Get(*context.db);
+	string why;
+	auto mode = store->Mode();
+	bool storable = remember && store->Usable(why);
+	auto registry = PendingLogins::Get(*context.db);
+	auto report = [&](PendingLogin &login) {
+		lock_guard<mutex> guard(login.lock);
+		out.flow = login.flow;
+		out.url = login.url;
+		out.user_code = login.user_code;
+		out.expires_at = login.expires_at;
+		switch (login.state) {
+		case PendingLogin::State::STARTING:
+		case PendingLogin::State::PENDING:
+			out.status = "pending";
+			break;
+		case PendingLogin::State::DONE:
+			out.status = "done";
+			break;
+		case PendingLogin::State::FAILED:
+			out.status = "failed: " + login.error;
+			break;
+		}
+	};
+	if (auto existing = registry->Find(out.key)) {
+		report(*existing);
+		bool kept;
+		{
+			lock_guard<mutex> guard(existing->lock);
+			kept = existing->keep_tokens && existing->state == PendingLogin::State::DONE;
+		}
+		// a failure is told once; a login that reached the store is the store's now - only kept tokens wait here
+		if (out.status != "pending" && !kept) {
+			registry->Remove(out.key);
+		}
+		return out;
+	}
+	if (storable) {
+		lock_guard<mutex> chain(store->KeyLock(out.key));
+		string subject;
+		string refresh;
+		if (store->Load(out.key, mode, subject, refresh)) {
+			std::fill(refresh.begin(), refresh.end(), '\0');
+			out.status = "done"; // already logged in: tresor_logoff first, to log in as someone else
+			return out;
+		}
+	}
+
+	auto flow = ChoosePersonFlow(request, info, issuer);
+	std::map<std::string, std::string> extra;
+	if (info.audience_parameter && !info.audience.empty()) {
+		extra["audience"] = info.audience;
+	}
+	if (!prompt.empty() && flow == LoginFlow::BROWSER) {
+		extra["prompt"] = prompt;
+	}
+	auto login = make_shared_ptr<PendingLogin>();
+	login->key = out.key;
+	login->service = request.host;
+	login->flow = LoginFlowName(flow);
+	login->keep_tokens = !storable;
+	auto deadline = NowSeconds() + request.timeout_seconds;
+	auto host = request.host;
+	weak_ptr<RememberedLogins> weak_store = store;
+	std::function<oidc::TokenSet()> run;
+	if (flow == LoginFlow::DEVICE) {
+		// the device's half here: its code is what the person needs, and what this call answers
+		auto begun = oidc::DeviceBegin(info.endpoints, info.client_id, info.scope, extra);
+		if (!begun.Ok()) {
+			throw IOException("tresor: the device login to %s could not start: %s", host, begun.error);
+		}
+		login->url = begun.verification_uri_complete.empty() ? begun.verification_uri : begun.verification_uri_complete;
+		login->user_code = begun.user_code;
+		login->expires_at = MinValue<int64_t>(deadline, NowSeconds() + begun.expires_in);
+		login->state = PendingLogin::State::PENDING;
+		Printer::Print(OutputStream::STREAM_STDERR, "tresor: to log in to " + host + ", visit " +
+		                                                begun.verification_uri + " and enter the code " +
+		                                                begun.user_code);
+		auto endpoints = info.endpoints;
+		auto client_id = info.client_id;
+		auto device_code = begun.device_code;
+		auto interval = begun.interval;
+		auto until = login->expires_at;
+		auto raw = login.get();
+		run = [endpoints, client_id, device_code, interval, until, raw]() {
+			return oidc::DevicePoll(endpoints, client_id, device_code, interval, until,
+			                        [raw] { return raw->cancelled.load(); });
+		};
+	} else {
+		auto endpoints = info.endpoints;
+		auto client_id = info.client_id;
+		auto scope = info.scope;
+		auto raw = login.get();
+		run = [endpoints, client_id, scope, extra, deadline, raw, host]() {
+			return oidc::AuthorizationCodeLogin(
+			    endpoints, client_id, scope,
+			    [raw, host, deadline](const std::string &url) {
+				    {
+					    lock_guard<mutex> guard(raw->lock);
+					    raw->url = url;
+					    raw->expires_at = deadline;
+					    if (raw->state == PendingLogin::State::STARTING) {
+						    raw->state = PendingLogin::State::PENDING;
+					    }
+				    }
+				    raw->changed.notify_all();
+				    Printer::Print(OutputStream::STREAM_STDERR,
+				                   "tresor: log in to " + host + " in your browser - if it did not open, visit:\n  " +
+				                       url);
+				    OpenBrowser(url);
+			    },
+			    deadline, [raw] { return raw->cancelled.load(); }, extra);
+		};
+	}
+	auto shared = login;
+	login->thread = std::thread([shared, run, transport, weak_store, mode]() {
+		oidc::TransportScope thread_http(transport);
+		auto tokens = run();
+		{
+			lock_guard<mutex> guard(shared->lock);
+			if (shared->state == PendingLogin::State::FAILED) {
+				// a logoff ended it meanwhile: whatever arrived is not kept
+			} else if (!tokens.Ok()) {
+				shared->state = PendingLogin::State::FAILED;
+				shared->error = tokens.error_code == "cancelled" ? "cancelled" : tokens.error;
+			} else {
+				auto store = weak_store.lock();
+				if (!shared->keep_tokens && store && !tokens.refresh_token.empty()) {
+					// remembered as an ATTACH's login is, under a placeholder subject until a whoami names the person
+					lock_guard<mutex> chain(store->KeyLock(shared->key));
+					store->Store(shared->key, BACKGROUND_LOGIN_SUBJECT, tokens.refresh_token, mode);
+				} else {
+					shared->keep_tokens = true; // no store, or no refresh token: for the next ATTACH only
+					shared->tokens = tokens;
+				}
+				shared->state = PendingLogin::State::DONE;
+			}
+			std::fill(tokens.refresh_token.begin(), tokens.refresh_token.end(), '\0');
+			std::fill(tokens.access_token.begin(), tokens.access_token.end(), '\0');
+		}
+		shared->changed.notify_all();
+	});
+	registry->Add(login);
+	// what the person needs is known once the browser's receiver listens (the device's code is known already)
+	auto interrupted = [&context] {
+		return context.IsInterrupted();
+	};
+	login->WaitBeyond(PendingLogin::State::STARTING, NowSeconds() + 30, interrupted);
+	report(*login);
+	if (out.status.rfind("failed", 0) == 0) {
+		registry->Remove(out.key);
+	}
+	return out;
+}
+
+string WhoamiSubject(const string &body) {
+	JsonDoc doc(body);
+	auto root = doc.Root();
+	// the principal as the protocol spells one (`subject:<issuer>|<sub>`), as the audit's `user` is: whoami answers
+	// the bare `sub` and its issuer. A subject that already names its kind is kept: tests' fake service answers
+	// `client:<id>` for its services, which a conforming service never does
+	auto subject = root && yyjson_is_obj(root) ? yyjson_obj_get(root, "subject") : nullptr;
+	auto issuer = root && yyjson_is_obj(root) ? yyjson_obj_get(root, "issuer") : nullptr;
+	if (!subject || !yyjson_is_str(subject)) {
+		return string();
+	}
+	string sub = yyjson_get_str(subject);
+	bool named = StringUtil::StartsWith(sub, "subject:") || StringUtil::StartsWith(sub, "client:");
+	if (!named && issuer && yyjson_is_str(issuer) && yyjson_get_len(issuer) > 0) {
+		sub = "subject:" + string(yyjson_get_str(issuer)) + "|" + sub;
+	}
+	return sub;
+}
+
 LoginKey HandOverLogin(ClientContext &context, const AttachRequest &request, const string &refresh_token) {
 	auto store = RememberedLogins::Get(*context.db);
 	if (store->Mode() != KeychainMode::MEMORY) {
@@ -704,21 +923,7 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 			asked_issuer = bound;
 		}
 		auto &issuer = ChooseIssuer(request, discovered, asked_issuer);
-		CheckTransport(request, "issuer", issuer.issuer);
-		info.issuer = issuer.issuer;
-		info.audience = issuer.audience;
-		info.audience_parameter = issuer.audience_parameter;
-		info.endpoints = oidc::Discover(issuer.issuer);
-		if (!info.endpoints.Ok()) {
-			throw IOException("tresor: the identity provider %s of %s: %s", issuer.issuer, request.host,
-			                  info.endpoints.error);
-		}
-		for (auto *endpoint : {&info.endpoints.token_endpoint, &info.endpoints.authorization_endpoint,
-		                       &info.endpoints.device_authorization_endpoint, &info.endpoints.revocation_endpoint}) {
-			if (!endpoint->empty()) {
-				CheckTransport(request, "identity provider endpoint", *endpoint);
-			}
-		}
+		ResolveIssuer(request, issuer, info);
 		if (service_secret) {
 			// how the service proves itself (specs/013): what the secret names - a secret, or paths
 			credential.client_id = SecretString(*service_secret, "client_id");
@@ -800,7 +1005,47 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 			interactive = [&context, &request, &info, chosen](LoginFlow &person_flow) {
 				return PersonLogin(context, request, info, *chosen, person_flow);
 			};
-			if (remember && RememberedLogin(context, request, info, tokens, started_from)) {
+			// a login tresor_login started for this service (specs/025): wait for it, then take what it left - the
+			// tokens it kept for this ATTACH, or the remembered login below
+			bool taken = false;
+			LoginKey pending_key {StripSlashes(info.issuer), info.client_id, request.host};
+			auto registry = PendingLogins::Get(*context.db);
+			if (auto pending = registry->Find(pending_key)) {
+				auto deadline = NowSeconds() + request.timeout_seconds;
+				auto interrupted = [&context] {
+					return context.IsInterrupted();
+				};
+				pending->WaitBeyond(PendingLogin::State::STARTING, deadline, interrupted);
+				auto state = pending->WaitBeyond(PendingLogin::State::PENDING, deadline, interrupted);
+				if (context.IsInterrupted()) {
+					throw InterruptException();
+				}
+				string failed;
+				{
+					lock_guard<mutex> guard(pending->lock);
+					if (state == PendingLogin::State::DONE && pending->keep_tokens) {
+						tokens = std::move(pending->tokens);
+						pending->tokens = oidc::TokenSet();
+						flow = pending->flow == "device" ? LoginFlow::DEVICE : LoginFlow::BROWSER;
+						taken = true;
+					} else if (state == PendingLogin::State::FAILED) {
+						failed = pending->error;
+					}
+				}
+				if (state == PendingLogin::State::PENDING || state == PendingLogin::State::STARTING) {
+					throw InvalidInputException("tresor: the login to %s that tresor_login started did not complete "
+					                            "within LOGIN_TIMEOUT",
+					                            request.host);
+				}
+				registry->Remove(pending_key); // used: done, kept, or failed
+				if (!failed.empty()) {
+					throw InvalidInputException("tresor: the login to %s that tresor_login started failed: %s",
+					                            request.host, failed);
+				}
+			}
+			if (taken) {
+				// a fresh login: remembered below, when REMEMBER holds
+			} else if (remember && RememberedLogin(context, request, info, tokens, started_from)) {
 				flow = LoginFlow::REMEMBERED;
 				// does it reach this service? One plain whoami, no renew-and-retry: a service that refuses it
 				// (another audience, a scope the IdP would not widen) gets the person's login instead, and that
@@ -832,22 +1077,9 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 		throw InvalidInputException("tresor: %s refused the login: %s", request.host,
 		                            DescribeProblem(whoami.status, whoami.body));
 	}
-	{
-		JsonDoc doc(whoami.body);
-		auto root = doc.Root();
-		// the principal as the protocol spells one (`subject:<issuer>|<sub>`), as the audit's `user` is: whoami
-		// answers the bare `sub` and its issuer. A subject that already names its kind is kept: tests' fake
-		// service answers `client:<id>` for its services, which a conforming service never does
-		auto subject = root && yyjson_is_obj(root) ? yyjson_obj_get(root, "subject") : nullptr;
-		auto issuer = root && yyjson_is_obj(root) ? yyjson_obj_get(root, "issuer") : nullptr;
-		if (subject && yyjson_is_str(subject)) {
-			string sub = yyjson_get_str(subject);
-			bool named = StringUtil::StartsWith(sub, "subject:") || StringUtil::StartsWith(sub, "client:");
-			if (!named && issuer && yyjson_is_str(issuer) && yyjson_get_len(issuer) > 0) {
-				sub = "subject:" + string(yyjson_get_str(issuer)) + "|" + sub;
-			}
-			session->SetSubject(std::move(sub));
-		}
+	auto subject = WhoamiSubject(whoami.body);
+	if (!subject.empty()) {
+		session->SetSubject(std::move(subject));
 	}
 	if (remember) {
 		// the service accepted it: this login is remembered for the next ATTACH of this service (specs/012) - what
