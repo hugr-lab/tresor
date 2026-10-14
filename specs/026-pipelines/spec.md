@@ -1,6 +1,6 @@
 # Spec 026: pipelines - a service identity, never a person's login
 
-- **Status**: in progress
+- **Status**: implemented
 - **Date**: 2026-10-14
 - **Author**: hugr lab
 - **Asked by**: the owner: how an ETL job on a remote executor connects
@@ -42,3 +42,12 @@ login), and `ASSERTION_SOURCE 'gcp_metadata'` (GCE's identity token) - each its 
 
 `npx docusaurus build` (links, anchors); the recipes' SQL is what the existing tests run
 (`service_identities.test`, `service_login.test`, the Entra live run).
+
+## Checked
+
+- The page: `website/docs/pipelines.md`. Its SQL is the tests' (option names from `src/tresor_secret.cpp`).
+- dbt-duckdb (main at ef78e1f, 2026-10-05), read in its source: `extensions` (a `name`/`repo` entry runs
+  `install <name> from <repo>` with the repo pasted unquoted), then `secrets` (`CREATE OR REPLACE SECRET <name>
+  (type tresor, <key> '<value>', …, scope '…')`, temporary), then `attach` (`ATTACH IF NOT EXISTS '<path>' AS
+  <alias> (SECRET <name>, …)`, a `true` option as a bare keyword). That SQL, as dbt-duckdb renders it, logged in
+  against the fake service (`client:etl`, `client_credentials`).

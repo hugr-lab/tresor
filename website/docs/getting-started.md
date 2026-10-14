@@ -158,6 +158,8 @@ CREATE SECRET node (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'mana
   the service's discovery sets `audience_parameter`. Nothing to configure on the client, except
   that a node acting for sessions then has to pin `EXCHANGE_AUDIENCE` itself.
 
+For an ETL job, a dbt run or a CI workflow, [Pipelines](./pipelines.md) has a recipe per executor.
+
 A `PERSISTENT` secret is written to DuckDB's local secret directory like any other. A
 `CLIENT_SECRET` in it is written too; the flows above write only paths and ids. Keep a secret's
 credential in a temporary secret when the process can create it from its environment.

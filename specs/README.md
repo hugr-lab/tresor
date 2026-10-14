@@ -42,3 +42,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | [022](022-clangcl-gf/spec.md) | /GF- for clang-cl on Windows - MSVC-built ports and pooled literals | implemented |
 | [023](023-repin-bba7360/spec.md) | re-pin duckdb to bba7360 - with duckdb-acl and acl-otel | implemented |
 | [024](024-embedding/spec.md) | tresor built into another extension - `tresor_sources.cmake`, `LoadTresorCore` (hugr-node) | implemented |
+| [026](026-pipelines/spec.md) | pipelines - a service identity, never a person's login; the docs page per executor, dbt-duckdb | implemented |
