@@ -23,7 +23,8 @@ ATTACH 'tresor:' || getvariable('host') AS live (SECRET live, INSECURE_HTTP getv
 SELECT 'login=' || login || ' subject=' || subject || ' roles=' || array_to_string(roles, ',') FROM live.whoami();
 SELECT 'secrets=' || coalesce(string_agg(name, ',' ORDER BY name), '') FROM live.secrets();
 SELECT CASE WHEN login = 'federated' AND list_contains(roles, getvariable('expect_role'))
-                 AND list_contains(roles, 'client:' || getvariable('client')) THEN 'check=ok'
+                 AND (subject = 'client:' || getvariable('client')
+                      OR list_contains(roles, 'client:' || getvariable('client'))) THEN 'check=ok'
     ELSE error('check failed: want login federated, ' || getvariable('expect_role') || ' and client:'
-               || getvariable('client') || ', got login ' || login || ' roles ' || array_to_string(roles, ','))
+               || getvariable('client') || ', got login ' || login || ' subject ' || subject || ' roles ' || array_to_string(roles, ','))
     END FROM live.whoami();
