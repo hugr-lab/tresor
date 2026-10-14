@@ -227,7 +227,7 @@ lake:
       extensions:
         - httpfs
         - name: tresor
-          repo: "'https://extensions.corp.example'"    # your repository, quoted: dbt-duckdb pastes it as is
+          repo: community
       secrets:
         - type: tresor
           name: corp_login
@@ -242,7 +242,7 @@ lake:
           secret: corp_login
 ```
 
-- dbt-duckdb turns this into `INSTALL tresor FROM 'https://extensions.corp.example'`, `LOAD tresor`,
+- dbt-duckdb turns this into `INSTALL tresor FROM community`, `LOAD tresor`,
   a temporary `CREATE OR REPLACE SECRET corp_login (type tresor, flow 'federated', …, scope
   'tresor:secrets.corp.example')` and `ATTACH IF NOT EXISTS 'tresor:secrets.corp.example' AS corp
   (SECRET corp_login)`.
@@ -253,6 +253,8 @@ lake:
   Python package dbt-duckdb runs on must be the DuckDB 2.0 build tresor was built for.
 - Any flow works the same way: its options are the secret's keys, in lower case. A client secret
   comes from the environment, never the file: `client_secret: "{{ env_var('ETL_CLIENT_SECRET') }}"`.
+- tresor is a DuckDB community extension. Your organisation's own extension repository works the same way:
+  `repo` is pasted as is, so a URL needs its own quotes - `repo: "'https://extensions.corp.example'"`.
 - A build of your own is unsigned: `config_options: {allow_unsigned_extensions: true}`.
 - Other ATTACH options go under the attachment's `options` (for example `insecure_http: true`
   against a local service).
