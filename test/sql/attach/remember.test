@@ -168,11 +168,12 @@ statement ok
 SET acl_stub_session = '';
 
 # --- tresor_logoff: forgotten, revoked at the IdP, and the attachment on it is over - that service's only -------
+# (kept here, detach := false: the default detaches it, specs/025 - login.test)
 
-query IIIII
-SELECT service = '127.0.0.1:{TRESOR_TEST_PORT}', issuer = 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', client_id, removed, revoked FROM tresor_logoff('b');
+query IIIIII
+SELECT service = '127.0.0.1:{TRESOR_TEST_PORT}', issuer = 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', client_id, removed, revoked, detached FROM tresor_logoff('b', detach := false);
 ----
-true	true	duckdb	true	true
+true	true	duckdb	true	true	0
 
 query I
 SELECT idp('revoked_tokens')::INT - revoked FROM seen;
@@ -182,7 +183,7 @@ SELECT idp('revoked_tokens')::INT - revoked FROM seen;
 statement error
 SELECT * FROM b.whoami();
 ----
-is over
+logged off from
 
 # another service's login, and a REMEMBER false one, are not this login
 query I
@@ -201,14 +202,16 @@ DETACH b;
 statement ok
 DETACH nr;
 
-# every remembered login here: c's
-query II
-SELECT service = '127.0.0.1:{TRESOR_TEST_PORT}/second', removed FROM tresor_logoff();
+# every remembered login here: c's - and c goes with it (the default)
+query III
+SELECT service = '127.0.0.1:{TRESOR_TEST_PORT}/second', removed, detached FROM tresor_logoff();
 ----
-true	true
+true	true	1
 
-statement ok
-DETACH c;
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'c';
+----
+0
 
 # forgotten: the next ATTACH is a browser login again
 statement ok

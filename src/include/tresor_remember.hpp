@@ -28,6 +28,8 @@ enum class KeychainMode : uint8_t { AUTO, OFF, MEMORY };
 //! The subject a login handed over by a web page is stored under until the ATTACH's whoami names the person
 //! (specs/020): no real subject (`subject:<issuer>|<sub>`) is ever this, so no attached session adopts it.
 constexpr const char *HANDED_OVER_SUBJECT = "tresor_web_login";
+//! Likewise for a login tresor_login completed in the background (specs/025), until an ATTACH's whoami.
+constexpr const char *BACKGROUND_LOGIN_SUBJECT = "tresor_login";
 
 struct LoginKey {
 	string issuer;

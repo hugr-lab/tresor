@@ -48,6 +48,8 @@ set(TRESOR_SOURCES
     ${TRESOR_ROOT}/src/tresor_credentials.cpp
     ${TRESOR_ROOT}/src/tresor_logoff.cpp
     ${TRESOR_ROOT}/src/tresor_web_login.cpp
+    ${TRESOR_ROOT}/src/tresor_login_function.cpp
+    ${TRESOR_ROOT}/src/tresor_pending.cpp
     ${TRESOR_ROOT}/src/tresor_act.cpp
     ${TRESOR_ROOT}/src/tresor_variables.cpp
     ${DUCKDB_EXT_COMMON_OIDC_SOURCES}

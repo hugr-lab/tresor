@@ -29,5 +29,7 @@ void RegisterTresorSecretParam(ExtensionLoader &loader);
 void RegisterTresorLogoff(ExtensionLoader &loader);
 //! tresor_web_login (specs/020): a login a web page made, handed over
 void RegisterTresorWebLogin(ExtensionLoader &loader);
+//! tresor_login (specs/025): a person's login answered at once, completed in the background
+void RegisterTresorLogin(ExtensionLoader &loader);
 
 } // namespace duckdb

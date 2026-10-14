@@ -109,6 +109,7 @@ void LoadInternal(ExtensionLoader &loader) {
 	tresor::RegisterHttpClient(loader.GetDatabaseInstance());
 	RegisterTresorLogoff(loader);
 	RegisterTresorWebLogin(loader);
+	RegisterTresorLogin(loader);
 
 	RegisterTresorSecret(loader);
 	RegisterTresorSecretParam(loader);
