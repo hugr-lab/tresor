@@ -37,13 +37,19 @@ struct PendingLogin {
 	string error;
 	//! remember := false (or no store): the tokens wait here for one ATTACH, never in the store
 	bool keep_tokens = false;
+	//! tresor_login's `remember`: false - the ATTACH that takes the kept tokens does not remember them either
+	bool remember = true;
+	//! the kept tokens were taken by an ATTACH: another one does not find them
+	bool consumed = false;
 	oidc::TokenSet tokens;
 
 	std::atomic<bool> cancelled {false};
-	std::thread thread;
+	std::thread thread; // under `lock`: set once started, taken by Stop
 
 	//! Wait until the state leaves `from` (or `deadline`, or `interrupted` says so); the state then.
 	State WaitBeyond(State from, int64_t deadline, const std::function<bool()> &interrupted);
+	//! The kept tokens go (wiped), as does a thread nobody joined.
+	~PendingLogin();
 };
 
 //! The instance's logins in progress, by key. Owns their threads: closing the instance cancels and joins them.
@@ -63,11 +69,13 @@ public:
 
 	//! The login in progress (or ended, not yet reported) for `key`; null when there is none.
 	shared_ptr<PendingLogin> Find(const LoginKey &key);
-	//! Register a new one for `key`, replacing (cancelling, joining) whatever was there.
-	void Add(shared_ptr<PendingLogin> login);
-	//! Forget the one for `key` (its thread cancelled and joined); returns it.
-	shared_ptr<PendingLogin> Remove(const LoginKey &key);
-	//! A logoff: the one for `key` ends as failed ("logged off"), its thread cancelled.
+	//! Register `login` for its key - unless one is there already: that one is returned, and `login` is not
+	//! registered. Null when `login` was.
+	shared_ptr<PendingLogin> FindOrAdd(shared_ptr<PendingLogin> login);
+	//! Forget `login` (its thread cancelled and joined) - the registry's entry for its key only if it is that one
+	//! still, never a newer login for the key.
+	void Remove(const shared_ptr<PendingLogin> &login);
+	//! A logoff: the one for `key` ends as failed ("logged off"), its thread cancelled; an ended one is forgotten.
 	void Cancel(const LoginKey &key, const string &why);
 
 	~PendingLogins() override;

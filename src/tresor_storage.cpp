@@ -613,60 +613,88 @@ shared_ptr<TresorSecretStorage::View> TresorSecretStorage::ViewOf(const Caller &
 }
 
 vector<Descriptor> TresorSecretStorage::Snapshot(const Caller &caller, shared_ptr<View> &view_out) {
-	view_out = ViewOf(caller);
-	if (!view_out) {
-		return vector<Descriptor>();
-	}
-	auto &view = *view_out;
-	bool first;
-	{
-		lock_guard<mutex> guard(lock);
-		auto now = NowSeconds();
-		first = !view.listed;
-		if (now - view.failed_at < RETRY_AFTER_SECONDS || (!first && now - view.listed_at < LIST_TTL_SECONDS)) {
+	// twice at most: a fetch that took up a new login (a kept catalog, specs/025) emptied the caches meanwhile, and
+	// the list is fetched again for the view that serves now
+	for (int round = 0; round < 2; round++) {
+		view_out = ViewOf(caller);
+		if (!view_out) {
+			return vector<Descriptor>();
+		}
+		auto &view = *view_out;
+		// logged off (specs/025): nothing held is served - the list is asked for, which takes up a new login (or
+		// waits for one in progress); without one, nothing
+		auto logged_off = caller.session->LoggedOff();
+		bool first;
+		{
+			lock_guard<mutex> guard(lock);
+			auto now = NowSeconds();
+			first = !view.listed;
+			if (!logged_off &&
+			    (now - view.failed_at < RETRY_AFTER_SECONDS || (!first && now - view.listed_at < LIST_TTL_SECONDS))) {
+				return view.descriptors;
+			}
+		}
+		// stale: one refresh at a time, outside the state lock; a lookup arriving meanwhile goes on with the
+		// list it has rather than queueing behind the network - unless the view has none yet (a new acl session)
+		// or the login is off
+		unique_lock<mutex> fetching(view.fetch_lock, std::defer_lock);
+		if (first || logged_off) {
+			fetching.lock();
+		} else if (!fetching.try_lock()) {
+			lock_guard<mutex> guard(lock);
 			return view.descriptors;
 		}
-	}
-	// stale: one refresh at a time, outside the state lock; a lookup arriving meanwhile goes on with the
-	// list it has rather than queueing behind the network - unless the view has none yet (a new acl session)
-	unique_lock<mutex> fetching(view.fetch_lock, std::defer_lock);
-	if (first) {
-		fetching.lock();
-	} else if (!fetching.try_lock()) {
-		lock_guard<mutex> guard(lock);
-		return view.descriptors;
-	}
-	uint64_t started;
-	{
-		lock_guard<mutex> guard(lock);
-		if (first && view.listed) {
-			return view.descriptors; // listed while this one waited
+		uint64_t started;
+		uint64_t started_epoch;
+		{
+			lock_guard<mutex> guard(lock);
+			if (first && view.listed && !logged_off) {
+				return view.descriptors; // listed while this one waited
+			}
+			started = generation;
+			started_epoch = epoch;
 		}
-		started = generation;
-	}
-	try {
-		auto fresh = FetchDescriptors(caller);
-		lock_guard<mutex> guard(lock);
-		if (session == caller.session && generation == started) { // a write meanwhile: this list is already old
-			view.descriptors = std::move(fresh);
-			view.listed_at = NowSeconds();
-			view.listed = true;
-		}
-		return view.descriptors;
-	} catch (PermissionException &) {
-		if (caller.IsNode()) {
+		try {
+			auto fresh = FetchDescriptors(caller);
+			lock_guard<mutex> guard(lock);
+			if (epoch != started_epoch) {
+				continue; // the caches were emptied meanwhile (another login): this answer is not the view's
+			}
+			if (session == caller.session && generation == started) { // a write meanwhile: this list is already old
+				view.descriptors = std::move(fresh);
+				view.listed_at = NowSeconds();
+				view.listed = true;
+			}
+			return view.descriptors;
+		} catch (PermissionException &) {
+			if (caller.IsNode()) {
+				lock_guard<mutex> guard(lock);
+				view.failed_at = NowSeconds();
+				if (epoch != started_epoch) {
+					view_out = nullptr;
+					return vector<Descriptor>();
+				}
+				return view.descriptors;
+			}
+			return vector<Descriptor>(); // the grant was refused (marked by the call): this session gets nothing
+		} catch (std::exception &) {
+			if (caller.session->LoggedOff()) {
+				view_out = nullptr; // logged off, and no new login: nothing
+				return vector<Descriptor>();
+			}
+			// the service is unreachable: the last list stays authoritative for matching (a secret it covers
+			// fails at its material fetch - closed; a path it does not cover is not this storage's business)
 			lock_guard<mutex> guard(lock);
 			view.failed_at = NowSeconds();
+			if (epoch != started_epoch) {
+				view_out = nullptr; // emptied meanwhile: the list in hand is the previous login's
+				return vector<Descriptor>();
+			}
 			return view.descriptors;
 		}
-		return vector<Descriptor>(); // the grant was refused (marked by the call): this session gets nothing
-	} catch (std::exception &) {
-		// the service is unreachable: the last list stays authoritative for matching (a secret it covers
-		// fails at its material fetch - closed; a path it does not cover is not this storage's business)
-		lock_guard<mutex> guard(lock);
-		view.failed_at = NowSeconds();
-		return view.descriptors;
 	}
+	view_out = nullptr; // emptied twice while fetching: nothing this time
+	return vector<Descriptor>();
 }
 
 vector<Descriptor> TresorSecretStorage::Refresh(const Caller &caller) {
@@ -692,9 +720,11 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &calle
 	auto now = NowSeconds();
 	optional_ptr<ClientContext> context = transaction ? transaction->context : nullptr;
 	unique_ptr<const BaseSecret> hit;
-	{
+	// logged off, or a view emptied by another login since the lookup took it (specs/025): nothing from the cache
+	auto logged_off = caller.session->LoggedOff();
+	if (!logged_off) {
 		lock_guard<mutex> guard(lock);
-		auto cached = view.materials.find(d.name);
+		auto cached = Serves(caller, view) ? view.materials.find(d.name) : view.materials.end();
 		if (cached != view.materials.end() && cached->second.version == d.version && cached->second.valid_until > now) {
 			hit = cached->second.secret->Clone();
 		}
@@ -802,8 +832,8 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &calle
 	}
 	audited.Ok();
 	lock_guard<mutex> guard(lock);
-	if (session != caller.session) {
-		return std::move(secret); // detached meanwhile: served once, never cached
+	if (!Serves(caller, view)) {
+		return std::move(secret); // detached or emptied meanwhile: served once, never cached
 	}
 	// expired entries go now: material is kept for a bounded time, not until DETACH
 	for (auto it = view.materials.begin(); it != view.materials.end();) {
@@ -976,12 +1006,27 @@ bool TresorSecretStorage::VariableOf(const Caller &caller, const string &name, s
 	return true;
 }
 
-void TresorSecretStorage::ResetCaches() {
+void TresorSecretStorage::ResetCaches(const TresorSession &which) {
 	lock_guard<mutex> guard(lock);
+	if (session.get() != &which) {
+		return; // another ATTACH of this name serves now
+	}
 	node = make_shared_ptr<View>();
 	acl_views.clear();
 	refusals_told.clear();
 	generation++;
+	epoch++;
+}
+
+bool TresorSecretStorage::Serves(const Caller &caller, const View &view) const {
+	if (session != caller.session) {
+		return false;
+	}
+	if (caller.IsNode()) {
+		return node.get() == &view;
+	}
+	auto found = acl_views.find(caller.acl_session);
+	return found != acl_views.end() && found->second.get() == &view;
 }
 
 void TresorSecretStorage::InvalidateVariable(const string &name) {

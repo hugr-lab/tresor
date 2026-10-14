@@ -45,10 +45,35 @@ string PendingLogins::Account(const LoginKey &key) {
 	return out;
 }
 
+static void WipeTokens(oidc::TokenSet &tokens) {
+	std::fill(tokens.refresh_token.begin(), tokens.refresh_token.end(), '\0');
+	std::fill(tokens.access_token.begin(), tokens.access_token.end(), '\0');
+	tokens = oidc::TokenSet();
+}
+
+PendingLogin::~PendingLogin() {
+	WipeTokens(tokens);
+	cancelled = true;
+	if (thread.joinable()) {
+		// the registry joins every thread it forgets; one started after a Stop is joined here - or, the last owner
+		// being that thread itself, let go (it is ending)
+		if (thread.get_id() == std::this_thread::get_id()) {
+			thread.detach();
+		} else {
+			thread.join();
+		}
+	}
+}
+
 void PendingLogins::Stop(PendingLogin &login) {
 	login.cancelled = true;
-	if (login.thread.joinable()) {
-		login.thread.join(); // the flows check the flag at least every second
+	std::thread running;
+	{
+		lock_guard<mutex> guard(login.lock);
+		running = std::move(login.thread);
+	}
+	if (running.joinable()) {
+		running.join(); // the flows check the flag at least every second
 	}
 }
 
@@ -58,32 +83,25 @@ shared_ptr<PendingLogin> PendingLogins::Find(const LoginKey &key) {
 	return it == logins.end() ? nullptr : it->second;
 }
 
-void PendingLogins::Add(shared_ptr<PendingLogin> login) {
-	shared_ptr<PendingLogin> replaced;
-	{
-		lock_guard<mutex> guard(lock);
-		auto &slot = logins[Account(login->key)];
-		replaced = std::move(slot);
-		slot = std::move(login);
+shared_ptr<PendingLogin> PendingLogins::FindOrAdd(shared_ptr<PendingLogin> login) {
+	lock_guard<mutex> guard(lock);
+	auto &slot = logins[Account(login->key)];
+	if (slot) {
+		return slot;
 	}
-	if (replaced) {
-		Stop(*replaced);
-	}
+	slot = std::move(login);
+	return nullptr;
 }
 
-shared_ptr<PendingLogin> PendingLogins::Remove(const LoginKey &key) {
-	shared_ptr<PendingLogin> removed;
+void PendingLogins::Remove(const shared_ptr<PendingLogin> &login) {
 	{
 		lock_guard<mutex> guard(lock);
-		auto it = logins.find(Account(key));
-		if (it == logins.end()) {
-			return nullptr;
+		auto it = logins.find(Account(login->key));
+		if (it != logins.end() && it->second == login) {
+			logins.erase(it);
 		}
-		removed = std::move(it->second);
-		logins.erase(it);
 	}
-	Stop(*removed);
-	return removed;
+	Stop(*login);
 }
 
 void PendingLogins::Cancel(const LoginKey &key, const string &why) {
@@ -100,14 +118,13 @@ void PendingLogins::Cancel(const LoginKey &key, const string &why) {
 			login->state = PendingLogin::State::FAILED;
 			login->error = why;
 		}
-		std::fill(login->tokens.refresh_token.begin(), login->tokens.refresh_token.end(), '\0');
-		login->tokens = oidc::TokenSet();
+		WipeTokens(login->tokens);
 	}
 	login->changed.notify_all();
 	if (!was_running) {
 		// an ended login (done: its tokens were the store's or kept here; failed) is over with the logoff: the next
 		// tresor_login starts anew rather than report it
-		Remove(key);
+		Remove(login);
 	}
 }
 

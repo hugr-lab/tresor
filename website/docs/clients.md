@@ -33,8 +33,13 @@ ATTACH 'tresor:secrets.corp.example' AS corp;   -- waits until the login complet
   is the page to enter it on.
 - An `ATTACH` of that service while the login is in progress waits for it, up to `LOGIN_TIMEOUT`.
 - Called again, it answers the login's status: `pending`, `done`, or `failed: <why>`. Already logged
-  in, it answers `done` at once.
-- `remember := false` keeps the login for the next ATTACH only, in this process.
+  in, it answers `done` at once. A call while a login is in progress answers that login, whatever
+  options it names: to start another one, `tresor_logoff` first.
+- A failed login is told once more, to the `ATTACH` (or the call) that asks after it; then it is
+  forgotten, and the next `tresor_login` starts anew.
+- `remember := false` keeps the login for the next ATTACH only, in this process: that ATTACH does not
+  remember it either. (`REMEMBER false` on the ATTACH does not undo a login `tresor_login` already
+  remembered: `tresor_logoff` does.)
 - It also takes an attached catalog's name: `FROM tresor_login('corp')`.
 - It never returns a token.
 
@@ -64,9 +69,14 @@ Without `prompt`, the identity provider's browser session would log the same per
 `prompt := 'login'` to enter the credentials again (any provider).
 
 An IDE that shows `corp` in its tree can keep the catalog: `tresor_logoff('corp', detach := false)`.
-Its queries then ask for a login. After `tresor_login`, the next query takes it up. If another person
-logged in, everything held for the previous one goes first: the list of secrets, the material, the
-variables. The audit records a `login` with detail `resumed`, or `resumed_other` for another person.
+Nothing held for the previous login is served from then on, and its queries ask for a login
+(`FROM tresor_login('corp')`). After `tresor_login`, the next query takes it up - waiting for it while
+it is in progress. Everything held for the previous login goes first: the list of secrets, the
+material, the variables. The audit records a `login` with detail `resumed`, or `resumed_other` for
+another person. `tresor_logoff('corp')` detaches a kept catalog that is still logged off.
+
+The connection's default database (after `USE corp`) is not detached by `tresor_logoff`: DuckDB
+refuses that. It stays, logged off, as with `detach := false`.
 
 ## The credential store on macOS
 

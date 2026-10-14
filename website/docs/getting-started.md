@@ -76,9 +76,12 @@ CALL tresor_logoff();                                       -- forget it, revoke
   catalogs on it are detached. `detach := false` keeps them: they ask for a new login, and take it up
   as soon as there is one. A `REMEMBER false` attachment is not touched.
 - **To log in as someone else**, call `tresor_logoff` first, then log in asking the identity
-  provider to pick the account: `FROM tresor_login('corp', prompt := 'select_account')` (or
-  `prompt := 'login'`). Otherwise its browser session logs the same person in again. A kept catalog
-  then goes on as the new person, emptied of everything held for the previous one.
+  provider to pick the account:
+  `FROM tresor_login('tresor:secrets.corp.example', prompt := 'select_account')` (or
+  `prompt := 'login'`), and `ATTACH` again. Otherwise its browser session logs the same person in
+  again. A catalog kept with `detach := false` can be named instead of the service
+  (`tresor_login('corp', ...)`): it goes on as the new person, emptied of everything held for the
+  previous one.
 - From DuckDB UI, a notebook or an IDE, log in with `tresor_login`: it answers with the link to open
   (and a device code) as a row, where stderr shows nowhere - [From your tools](./clients.md).
 - `tresor_logoff` is refused for a statement run under a duckdb-acl session.

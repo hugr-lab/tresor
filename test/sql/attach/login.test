@@ -132,21 +132,44 @@ true
 
 # --- logoff keeping the catalog; it takes up the next login - another person here --------------------------------
 
+# alice's own lake, looked up (and its list and material cached)
+query I
+SELECT name FROM which_secret('s3://alice-lake/x.parquet', 's3') WHERE storage = 'corp';
+----
+alice_lake
+
 query III
 SELECT removed, revoked, detached FROM tresor_logoff('corp', detach := false);
 ----
 true	true	0
 
+# logged off: nothing of alice's is served any more - not from the cache either
+query I
+SELECT count(*) FROM which_secret('s3://alice-lake/x.parquet', 's3') WHERE storage = 'corp';
+----
+0
+
 statement error
 FROM corp.whoami();
 ----
-logged off from 127.0.0.1:{TRESOR_TEST_PORT} - log in: FROM tresor_login
+logged off from 127.0.0.1:{TRESOR_TEST_PORT} - log in: FROM tresor_login('corp')
 
-# switching identity: the IdP is asked to pick the account (the fake's other person, bob)
+# switching identity: the IdP is asked to pick the account (the fake's other person, bob, who may not use alice_lake)
 statement ok
 CREATE TABLE switched AS FROM tresor_login('corp', prompt := 'select_account');
 
-# the next call waits for that login, and takes it up: whoami names bob, the catalog was emptied of alice's first
+# the next lookup waits for that login and takes it up - and answers for bob: alice_lake is not served, bob's own
+# secrets are
+query I
+SELECT count(*) FROM which_secret('s3://alice-lake/x.parquet', 's3') WHERE storage = 'corp';
+----
+0
+
+query I
+SELECT name FROM which_secret('s3://lake/team-a/x.parquet', 's3') WHERE storage = 'corp';
+----
+lake_team_a
+
 query I
 SELECT subject LIKE '%bob' FROM corp.whoami();
 ----
@@ -163,10 +186,46 @@ SELECT idp('authorize_prompt');
 ----
 "select_account"
 
-# --- an IdP's refusal: the ATTACH that waits for it says so ---------------------------------------------------------
+# --- an IdP outage while a kept catalog takes up a login: that call fails, the next one goes on -------------------
 
 statement ok
-FROM tresor_logoff('corp');
+FROM tresor_logoff('corp', detach := false);
+
+# the IdP's next refresh answers 503 (armed first: this read's own secret lookup would take up the login)
+statement ok
+FROM read_text('http://127.0.0.1:{TRESOR_TEST_PORT}/_fail_refresh');
+
+statement ok
+FROM tresor_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', insecure_http := true, login := 'browser');
+
+statement error
+FROM corp.whoami();
+----
+renewing the login to 127.0.0.1:{TRESOR_TEST_PORT} failed
+
+query I
+SELECT subject LIKE '%alice' FROM corp.whoami();
+----
+true
+
+# --- a kept catalog still logged off: tresor_logoff('corp') detaches it --------------------------------------------
+
+query III
+SELECT removed, revoked, detached FROM tresor_logoff('corp', detach := false);
+----
+true	true	0
+
+query III
+SELECT removed, revoked, detached FROM tresor_logoff('corp');
+----
+false	false	1
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'corp';
+----
+0
+
+# --- an IdP's refusal: the ATTACH that waits for it says so - whoever saw the failure first -------------------------
 
 statement ok
 FROM tresor_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', insecure_http := true, login := 'browser', prompt := 'none');
@@ -192,6 +251,43 @@ browser
 statement ok
 DETACH corp;
 
+# ...and not by an ATTACH that would remember (REMEMBER's default): the next ATTACH logs in anew
+statement ok
+FROM tresor_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', insecure_http := true, login := 'browser', remember := false);
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+
+query I
+SELECT login FROM corp.whoami();
+----
+browser
+
+statement ok
+DETACH corp;
+
+statement ok
+CREATE TABLE seen_again AS SELECT idp('authorize')::INT AS authorize;
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+
+query I
+SELECT login FROM corp.whoami();
+----
+browser
+
+query I
+SELECT idp('authorize')::INT - authorize FROM seen_again;
+----
+1
+
+# that one was remembered: forgotten again, detached
+query III
+SELECT removed, revoked, detached FROM tresor_logoff('corp');
+----
+true	true	1
+
 # --- a logoff ends a login in progress ------------------------------------------------------------------------------
 
 statement ok
@@ -204,3 +300,32 @@ query I
 SELECT status FROM tresor_login('tresor:127.0.0.1:{TRESOR_TEST_PORT}', insecure_http := true, login := 'device');
 ----
 failed: logged off
+
+# --- a catalog DuckDB will not detach in this statement (the connection's default database) stays, logged off ------
+
+statement ok
+ATTACH ':memory:' AS home;
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+
+statement ok
+USE corp;
+
+query III
+SELECT removed, revoked, detached FROM tresor_logoff('corp');
+----
+true	true	0
+
+statement error
+FROM corp.whoami();
+----
+logged off from 127.0.0.1:{TRESOR_TEST_PORT} - log in: FROM tresor_login('corp')
+
+statement ok
+USE home;
+
+query III
+SELECT removed, revoked, detached FROM tresor_logoff('corp');
+----
+false	false	1

@@ -24,7 +24,8 @@ a sqllogictest can only steer the fake through what it attaches:
                grant the node's own rights apply, for the grant's user; writes under a grant are refused
     shifty     like acting, but its discovery names another audience ("payroll-api") than the node's token has
 
-Every realm serves the same secrets (SECRETS below) to every identity. A descriptor's comment counts
+Every realm serves the same secrets (SECRETS below) to every identity - but bob (OTHER_PERSON), who may not
+use alice_lake (NOT_FOR_OTHER_PERSON). A descriptor's comment counts
 how often its material was fetched ("fetched N") - the only window a sqllogictest has into caching.
 
     fake_service.py --port-file PATH     # binds a free port and writes it to PATH
@@ -53,6 +54,8 @@ DEVICES = {}   # device code -> pending polls left before approval
 PERSON = {"subject": "alice", "roles": ["role:analysts", "group:sales"], "create": ["team_a_*"]}
 # specs/025: who logs in when the IdP is asked to pick the account (prompt=select_account) - another person
 OTHER_PERSON = {"subject": "bob", "roles": ["role:analysts"], "create": []}
+# ...who may not use alice_lake: a kept catalog that takes up bob's login must not serve it (specs/025)
+NOT_FOR_OTHER_PERSON = {"alice_lake"}
 SERVICE = {"subject": "client:etl", "roles": ["role:etl"], "create": True}
 CLIENTS = {"etl": "s3cr3t"}
 STATIC_TOKENS = {"static-token": {"subject": "client:static", "roles": [], "create": False}}
@@ -83,6 +86,11 @@ SECRETS = {
         "type": "s3", "scope": ["s3://lake"], "permissions": ["use"],
         "params": {"key_id": "AKIA-LAKE", "secret": {"type": "VARCHAR", "value": "hunter2"}, "region": "eu-west-1"},
         "redact_keys": ["secret"],
+    },
+    # specs/025: alice's own, which bob may not use (NOT_FOR_OTHER_PERSON) - login.test's alone
+    "alice_lake": {
+        "type": "s3", "scope": ["s3://alice-lake"], "owner": "role:other", "permissions": ["use"],
+        "params": {"key_id": "AKIA-ALICE"}, "redact_keys": [],
     },
     "lake_team_a": {
         "type": "s3", "scope": ["s3://lake/team-a"], "permissions": ["use"],
@@ -136,6 +144,7 @@ SECRETS = {
     },
 }
 FETCHED = {}  # secret name -> material fetches
+FAIL_REFRESH = [0]  # specs/025: how many refresh grants still fail with a transient error (/_fail_refresh)
 WRITES = {}  # secret name -> PUT / DELETE / PATCH the service received for it
 
 # --- acting for acl sessions (specs/008) ---------------------------------------------------------------
@@ -379,11 +388,13 @@ class Handler(BaseHTTPRequestHandler):
         return ok
 
     def do_HEAD(self):
-        if urllib.parse.urlparse(self.path).path in ("/_stats", "/_forget", "/_page_login"):
+        if urllib.parse.urlparse(self.path).path in ("/_stats", "/_forget", "/_page_login", "/_fail_refresh"):
             # httpfs asks HEAD first: the size of what GET will answer (the stats are read under the lock there)
             with LOCK:
                 if self.path == "/_page_login":
                     size = len(json.dumps(PAGE_LOGIN_SHAPE).encode())
+                elif self.path == "/_fail_refresh":
+                    size = len(json.dumps({"armed": True}).encode())
                 else:
                     size = len(json.dumps(dict(IDP_STATS) if self.path == "/_stats" else {"forgotten": True}).encode())
             self.send_response(200)
@@ -433,6 +444,11 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 IDP_STATS["gh_audience"] = query.get("audience", "")
             self.send(200, {"count": 1, "value": "github-jwt"})
+            return
+        if url.path == "/_fail_refresh":  # specs/025: the IdP's next refresh fails, as an outage would (503)
+            with LOCK:
+                FAIL_REFRESH[0] += 1
+            self.send(200, {"armed": True})
             return
         if url.path == "/_forget":  # specs/012: the IdP forgets every refresh token (a session ended there)
             with LOCK:
@@ -534,15 +550,17 @@ class Handler(BaseHTTPRequestHandler):
             token = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
             with LOCK:
                 known = token in TOKENS or token in STATIC_TOKENS
+                caller = TOKENS[token]["identity"]["subject"] if token in TOKENS else ""
             if not known:
                 self.problem(401, "unauthenticated", "token missing, invalid or expired")
                 return
+            hidden = NOT_FOR_OTHER_PERSON if caller == OTHER_PERSON["subject"] else set()
             if realm == "nolist" or (realm == "broken" and rest != "/v1/secrets"):
                 self.problem(503, "service_unavailable", "the store is down")
                 return
             if rest == "/v1/secrets":
                 with LOCK:
-                    self.send(200, [descriptor(n, s) for n, s in SECRETS.items()])
+                    self.send(200, [descriptor(n, s) for n, s in SECRETS.items() if n not in hidden])
                 return
             if rest.endswith("/grants"):
                 sec = SECRETS.get(urllib.parse.unquote(rest[len("/v1/secrets/"):-len("/grants")]))
@@ -553,7 +571,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send(200, list(sec.get("grants", {}).values()))
                 return
             name = urllib.parse.unquote(rest[len("/v1/secrets/"):])
-            sec = SECRETS.get(name)
+            sec = SECRETS.get(name) if name not in hidden else None
             if sec is None:
                 self.problem(404, "not_found", "no secret %s" % name)
                 return
@@ -963,7 +981,10 @@ class Handler(BaseHTTPRequestHandler):
                 IDP_STATS["refresh"] += 1
                 IDP_STATS["refresh_scope"] = form.get("scope", "")
                 identity = REFRESH.get(form.get("refresh_token"))
-                if identity is None or realm == "idp-revoking":
+                if FAIL_REFRESH[0] > 0:
+                    FAIL_REFRESH[0] -= 1
+                    self.send(503, {"error": "temporarily_unavailable", "error_description": "the IdP is down"})
+                elif identity is None or realm == "idp-revoking":
                     self.send(400, {"error": "invalid_grant", "error_description": "refresh token revoked"})
                 else:
                     self.send(200, issue(identity, False, renewed=True))  # no rotation: keep the old one

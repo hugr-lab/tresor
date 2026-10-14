@@ -11,6 +11,7 @@
 #include "tresor_credentials.hpp"
 #include "tresor_remember.hpp"
 
+#include <atomic>
 #include <functional>
 
 namespace duckdb {
@@ -63,13 +64,26 @@ public:
 	string LoginName() const {
 		return flow == LoginFlow::CLIENT_CREDENTIALS ? credential.LoginName() : LoginFlowName(flow);
 	}
-	//! Who logged in, as the service named it at the login's whoami (`subject:<issuer>|<sub>`); set once,
-	//! before the session is shared.
-	const string &Subject() const {
+	//! Who logged in, as the service named it at the login's whoami (`subject:<issuer>|<sub>`). Set by the ATTACH,
+	//! and again when a kept catalog takes up another person's login (specs/025): a copy, read under the lock.
+	string Subject() const {
+		lock_guard<mutex> guard(lock);
 		return subject;
 	}
 	void SetSubject(string subject_p) {
+		lock_guard<mutex> guard(lock);
 		subject = std::move(subject_p);
+	}
+	//! The attached catalog's name, for what a logged-off call tells the person to run (specs/025).
+	void SetCatalogName(string name) {
+		lock_guard<mutex> guard(lock);
+		catalog_name = std::move(name);
+	}
+	//! Logged off (tresor_logoff, specs/025) and no new login taken up yet: nothing held for the previous login may
+	//! be served.
+	bool LoggedOff() const {
+		lock_guard<mutex> guard(lock);
+		return logged_off;
 	}
 
 	//! A call to the service's API (`path` is relative to `api`, starting with '/'). A token about to
@@ -108,15 +122,21 @@ public:
 	LoginKey Key() const;
 	//! tresor_logoff: the login is over here too - the tokens go. The refresh token, for revocation, is handed out
 	//! once (empty when there is none). A catalog kept (`detach := false`, specs/025) takes up the next login
-	//! remembered under its key; until then a call says how to log in.
+	//! remembered under its key; until then a call says how to log in. on_logged_off is told (outside the lock).
 	string LogOff();
 	//! Told when a kept catalog took up a new login (specs/025): the subject before and now - another person means
 	//! everything held for the previous one goes. Set once, before the session is shared.
 	void OnResumed(std::function<void(const string &before, const string &now)> callback) {
 		on_resumed = std::move(callback);
 	}
-	//! How a kept catalog waits for a login in progress for its key (tresor_login's, specs/025). Set once.
-	void OnPendingLogin(std::function<void(const LoginKey &key)> wait) {
+	//! Told when the login was logged off (specs/025): nothing held for it may be served from now on. Set once,
+	//! before the session is shared.
+	void OnLoggedOff(std::function<void()> callback) {
+		on_logged_off = std::move(callback);
+	}
+	//! How a kept catalog waits for a login in progress for its key (tresor_login's, specs/025): never under the
+	//! session's lock, until the login ends or `stop` says so (a DETACH). Set once, before the session is shared.
+	void OnPendingLogin(std::function<void(const LoginKey &key, const std::function<bool()> &stop)> wait) {
 		wait_pending = std::move(wait);
 	}
 
@@ -124,27 +144,33 @@ private:
 	//! A usable access token, renewing it when it has less than a minute left; `force` renews anyway
 	//! (after a 401). Called with the lock held.
 	string AccessToken(bool force);
-	//! After a logoff: a login remembered under this session's key since, taken up (specs/025). With the lock held.
+	//! After a logoff: a login remembered under this session's key since, taken up (specs/025) - its refresh token,
+	//! renewed by AccessToken before anything else. With the lock held.
 	bool TakeUpLogin();
-	//! After a login was taken up: whoami names who it is (another person: on_resumed empties the catalog).
-	void TakeUpWhoami(const string &token);
+	//! After a login was taken up and renewed: whoami names who it is (another person: on_resumed empties the
+	//! catalog). `token` is the access token to call with - renewed here after a 401.
+	void TakeUpWhoami(string &token);
 
 	ServiceInfo info;
 	LoginFlow flow;
 	string subject;
+	string catalog_name;
 	oidc::Transport transport;
-	mutex lock;
+	mutable mutex lock;
 	oidc::TokenSet tokens;
 	int64_t issued_at = 0;        // when `tokens` arrived: the renewal margin is at most half their life
 	ServiceCredential credential; // a service's login: what re-mints it (a secret, or paths - never read content)
 	bool closed = false;
+	std::atomic<bool> closing {false};       // Close: a wait for a login in progress (outside the lock) stops
 	bool logged_out = false;                 // the IdP ended the login (invalid_grant): only a new ATTACH helps
 	weak_ptr<RememberedLogins> remember;     // specs/012: where a rotated refresh token goes
-	bool logged_off = false;                 // tresor_logoff ended it: a new login may be taken up (specs/025)
+	bool logged_off = false;                 // tresor_logoff ended it, until a new login is taken up (specs/025)
+	bool taken_up = false;                   // a stored login was taken up: renewed by the next AccessToken
 	weak_ptr<RememberedLogins> resume_store; // where a new login would be remembered
-	bool resumed = false;                    // a new login was taken up: the next call asks whoami
+	bool resumed = false;                    // a new login was taken up and renewed: the next call asks whoami
 	std::function<void(const string &before, const string &now)> on_resumed;
-	std::function<void(const LoginKey &key)> wait_pending;
+	std::function<void()> on_logged_off;
+	std::function<void(const LoginKey &key, const std::function<bool()> &stop)> wait_pending;
 	KeychainMode remember_mode = KeychainMode::OFF; // the mode it was remembered in: stored only while it holds
 	string remember_subject;                        // whose login it is: another person's stored since is not adopted
 };

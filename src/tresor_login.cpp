@@ -672,6 +672,9 @@ PersonLoginStatus StartPersonLogin(ClientContext &context, const AttachRequest &
 	auto mode = store->Mode();
 	bool storable = remember && store->Usable(why);
 	auto registry = PendingLogins::Get(*context.db);
+	auto interrupted = [&context] {
+		return context.IsInterrupted();
+	};
 	auto report = [&](PendingLogin &login) {
 		lock_guard<mutex> guard(login.lock);
 		out.flow = login.flow;
@@ -691,18 +694,23 @@ PersonLoginStatus StartPersonLogin(ClientContext &context, const AttachRequest &
 			break;
 		}
 	};
-	if (auto existing = registry->Find(out.key)) {
+	// a login for the key already: its status (another call's options do not change it - tresor_logoff ends it)
+	auto status_of = [&](const shared_ptr<PendingLogin> &existing) {
+		existing->WaitBeyond(PendingLogin::State::STARTING, NowSeconds() + 30, interrupted);
 		report(*existing);
 		bool kept;
 		{
 			lock_guard<mutex> guard(existing->lock);
-			kept = existing->keep_tokens && existing->state == PendingLogin::State::DONE;
+			kept = existing->keep_tokens && existing->state == PendingLogin::State::DONE && !existing->consumed;
 		}
 		// a failure is told once; a login that reached the store is the store's now - only kept tokens wait here
 		if (out.status != "pending" && !kept) {
-			registry->Remove(out.key);
+			registry->Remove(existing);
 		}
 		return out;
+	};
+	if (auto existing = registry->Find(out.key)) {
+		return status_of(existing);
 	}
 	if (storable) {
 		lock_guard<mutex> chain(store->KeyLock(out.key));
@@ -728,97 +736,118 @@ PersonLoginStatus StartPersonLogin(ClientContext &context, const AttachRequest &
 	login->service = request.host;
 	login->flow = LoginFlowName(flow);
 	login->keep_tokens = !storable;
+	login->remember = remember;
+	// registered before anything starts: two calls at once start one login, the other reports it
+	if (auto existing = registry->FindOrAdd(login)) {
+		return status_of(existing);
+	}
 	auto deadline = NowSeconds() + request.timeout_seconds;
 	auto host = request.host;
 	weak_ptr<RememberedLogins> weak_store = store;
 	std::function<oidc::TokenSet()> run;
-	if (flow == LoginFlow::DEVICE) {
-		// the device's half here: its code is what the person needs, and what this call answers
-		auto begun = oidc::DeviceBegin(info.endpoints, info.client_id, info.scope, extra);
-		if (!begun.Ok()) {
-			throw IOException("tresor: the device login to %s could not start: %s", host, begun.error);
-		}
-		login->url = begun.verification_uri_complete.empty() ? begun.verification_uri : begun.verification_uri_complete;
-		login->user_code = begun.user_code;
-		login->expires_at = MinValue<int64_t>(deadline, NowSeconds() + begun.expires_in);
-		login->state = PendingLogin::State::PENDING;
-		Printer::Print(OutputStream::STREAM_STDERR, "tresor: to log in to " + host + ", visit " +
-		                                                begun.verification_uri + " and enter the code " +
-		                                                begun.user_code);
-		auto endpoints = info.endpoints;
-		auto client_id = info.client_id;
-		auto device_code = begun.device_code;
-		auto interval = begun.interval;
-		auto until = login->expires_at;
-		auto raw = login.get();
-		run = [endpoints, client_id, device_code, interval, until, raw]() {
-			return oidc::DevicePoll(endpoints, client_id, device_code, interval, until,
-			                        [raw] { return raw->cancelled.load(); });
-		};
-	} else {
-		auto endpoints = info.endpoints;
-		auto client_id = info.client_id;
-		auto scope = info.scope;
-		auto raw = login.get();
-		run = [endpoints, client_id, scope, extra, deadline, raw, host]() {
-			return oidc::AuthorizationCodeLogin(
-			    endpoints, client_id, scope,
-			    [raw, host, deadline](const std::string &url) {
-				    {
-					    lock_guard<mutex> guard(raw->lock);
-					    raw->url = url;
-					    raw->expires_at = deadline;
-					    if (raw->state == PendingLogin::State::STARTING) {
-						    raw->state = PendingLogin::State::PENDING;
-					    }
-				    }
-				    raw->changed.notify_all();
-				    Printer::Print(OutputStream::STREAM_STDERR,
-				                   "tresor: log in to " + host + " in your browser - if it did not open, visit:\n  " +
-				                       url);
-				    OpenBrowser(url);
-			    },
-			    deadline, [raw] { return raw->cancelled.load(); }, extra);
-		};
-	}
-	auto shared = login;
-	login->thread = std::thread([shared, run, transport, weak_store, mode]() {
-		oidc::TransportScope thread_http(transport);
-		auto tokens = run();
-		{
-			lock_guard<mutex> guard(shared->lock);
-			if (shared->state == PendingLogin::State::FAILED) {
-				// a logoff ended it meanwhile: whatever arrived is not kept
-			} else if (!tokens.Ok()) {
-				shared->state = PendingLogin::State::FAILED;
-				shared->error = tokens.error_code == "cancelled" ? "cancelled" : tokens.error;
-			} else {
-				auto store = weak_store.lock();
-				if (!shared->keep_tokens && store && !tokens.refresh_token.empty()) {
-					// remembered as an ATTACH's login is, under a placeholder subject until a whoami names the person
-					lock_guard<mutex> chain(store->KeyLock(shared->key));
-					store->Store(shared->key, BACKGROUND_LOGIN_SUBJECT, tokens.refresh_token, mode);
-				} else {
-					shared->keep_tokens = true; // no store, or no refresh token: for the next ATTACH only
-					shared->tokens = tokens;
-				}
-				shared->state = PendingLogin::State::DONE;
+	try {
+		if (flow == LoginFlow::DEVICE) {
+			// the device's half here: its code is what the person needs, and what this call answers
+			auto begun = oidc::DeviceBegin(info.endpoints, info.client_id, info.scope, extra);
+			if (!begun.Ok()) {
+				throw IOException("tresor: the device login to %s could not start: %s", host, begun.error);
 			}
-			std::fill(tokens.refresh_token.begin(), tokens.refresh_token.end(), '\0');
-			std::fill(tokens.access_token.begin(), tokens.access_token.end(), '\0');
+			{
+				lock_guard<mutex> guard(login->lock);
+				login->url =
+				    begun.verification_uri_complete.empty() ? begun.verification_uri : begun.verification_uri_complete;
+				login->user_code = begun.user_code;
+				login->expires_at = MinValue<int64_t>(deadline, NowSeconds() + begun.expires_in);
+				if (login->state == PendingLogin::State::STARTING) {
+					login->state = PendingLogin::State::PENDING;
+				}
+			}
+			login->changed.notify_all();
+			Printer::Print(OutputStream::STREAM_STDERR, "tresor: to log in to " + host + ", visit " +
+			                                                begun.verification_uri + " and enter the code " +
+			                                                begun.user_code);
+			auto endpoints = info.endpoints;
+			auto client_id = info.client_id;
+			auto device_code = begun.device_code;
+			auto interval = begun.interval;
+			auto until = MinValue<int64_t>(deadline, NowSeconds() + begun.expires_in);
+			auto raw = login.get();
+			run = [endpoints, client_id, device_code, interval, until, raw]() {
+				return oidc::DevicePoll(endpoints, client_id, device_code, interval, until,
+				                        [raw] { return raw->cancelled.load(); });
+			};
+		} else {
+			auto endpoints = info.endpoints;
+			auto client_id = info.client_id;
+			auto scope = info.scope;
+			auto raw = login.get();
+			run = [endpoints, client_id, scope, extra, deadline, raw, host]() {
+				return oidc::AuthorizationCodeLogin(
+				    endpoints, client_id, scope,
+				    [raw, host, deadline](const std::string &url) {
+					    {
+						    lock_guard<mutex> guard(raw->lock);
+						    raw->url = url;
+						    raw->expires_at = deadline;
+						    if (raw->state == PendingLogin::State::STARTING) {
+							    raw->state = PendingLogin::State::PENDING;
+						    }
+					    }
+					    raw->changed.notify_all();
+					    Printer::Print(OutputStream::STREAM_STDERR,
+					                   "tresor: log in to " + host +
+					                       " in your browser - if it did not open, visit:\n  " + url);
+					    OpenBrowser(url);
+				    },
+				    deadline, [raw] { return raw->cancelled.load(); }, extra);
+			};
 		}
-		shared->changed.notify_all();
-	});
-	registry->Add(login);
-	// what the person needs is known once the browser's receiver listens (the device's code is known already)
-	auto interrupted = [&context] {
-		return context.IsInterrupted();
-	};
+		auto shared = login;
+		std::thread thread([shared, run, transport, weak_store, mode]() {
+			oidc::TransportScope thread_http(transport);
+			auto tokens = run();
+			{
+				lock_guard<mutex> guard(shared->lock);
+				if (shared->state == PendingLogin::State::FAILED) {
+					// a logoff ended it meanwhile: whatever arrived is not kept
+				} else if (!tokens.Ok()) {
+					shared->state = PendingLogin::State::FAILED;
+					shared->error = tokens.error_code == "cancelled" ? "cancelled" : tokens.error;
+				} else {
+					auto store = weak_store.lock();
+					if (!shared->keep_tokens && store && !tokens.refresh_token.empty()) {
+						// remembered as an ATTACH's login is, under a placeholder subject until a whoami names the
+						// person
+						lock_guard<mutex> chain(store->KeyLock(shared->key));
+						store->Store(shared->key, BACKGROUND_LOGIN_SUBJECT, tokens.refresh_token, mode);
+					} else {
+						shared->keep_tokens = true; // no store, or no refresh token: for the next ATTACH only
+						shared->tokens = tokens;
+					}
+					shared->state = PendingLogin::State::DONE;
+				}
+				std::fill(tokens.refresh_token.begin(), tokens.refresh_token.end(), '\0');
+				std::fill(tokens.access_token.begin(), tokens.access_token.end(), '\0');
+			}
+			shared->changed.notify_all();
+		});
+		lock_guard<mutex> guard(login->lock);
+		login->thread = std::move(thread);
+	} catch (std::exception &ex) {
+		// it never started: told by this call's error, and forgotten
+		{
+			lock_guard<mutex> guard(login->lock);
+			login->state = PendingLogin::State::FAILED;
+			login->error = ex.what();
+		}
+		login->changed.notify_all();
+		registry->Remove(login);
+		throw;
+	}
+	// what the person needs is known once the browser's receiver listens (the device's code is known already). A
+	// failure is reported here, and kept for the ATTACH (or the next call) waiting for this login to say it too
 	login->WaitBeyond(PendingLogin::State::STARTING, NowSeconds() + 30, interrupted);
 	report(*login);
-	if (out.status.rfind("failed", 0) == 0) {
-		registry->Remove(out.key);
-	}
 	return out;
 }
 
@@ -1023,11 +1052,16 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 				string failed;
 				{
 					lock_guard<mutex> guard(pending->lock);
-					if (state == PendingLogin::State::DONE && pending->keep_tokens) {
+					if (state == PendingLogin::State::DONE && pending->keep_tokens && !pending->consumed &&
+					    (!pending->tokens.access_token.empty() || !pending->tokens.refresh_token.empty())) {
+						// kept for one ATTACH: this one (another ATTACH at once logs in by itself)
 						tokens = std::move(pending->tokens);
 						pending->tokens = oidc::TokenSet();
+						pending->consumed = true;
 						flow = pending->flow == "device" ? LoginFlow::DEVICE : LoginFlow::BROWSER;
 						taken = true;
+						// remember := false: not remembered by this ATTACH either
+						remember = remember && pending->remember;
 					} else if (state == PendingLogin::State::FAILED) {
 						failed = pending->error;
 					}
@@ -1037,7 +1071,7 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 					                            "within LOGIN_TIMEOUT",
 					                            request.host);
 				}
-				registry->Remove(pending_key); // used: done, kept, or failed
+				registry->Remove(pending); // used: done, kept, or failed - this one, never a newer login
 				if (!failed.empty()) {
 					throw InvalidInputException("tresor: the login to %s that tresor_login started failed: %s",
 					                            request.host, failed);

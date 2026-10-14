@@ -93,9 +93,10 @@ public:
 	bool VariableOf(const Caller &caller, const string &name, string &value, optional_ptr<ClientContext> context);
 	//! After a variable's write: its cached values go, for every caller.
 	void InvalidateVariable(const string &name);
-	//! Another person took up the catalog's login (specs/025): everything held for the previous one goes - the
-	//! list, the material, the variables - and a refresh started before does not land.
-	void ResetCaches();
+	//! `which`'s login was logged off, or a kept catalog took up a new one (specs/025): everything held for the
+	//! previous login goes - the list, the material, the variables - and a list fetched before does not land, nor is
+	//! it answered (only if `which` is still the session served).
+	void ResetCaches(const TresorSession &which);
 	//! Fresh material for a listed secret, bypassing the cache (the tresor provider: httpfs's REFRESH auto).
 	unique_ptr<const BaseSecret> RefreshMaterial(const string &name, optional_ptr<CatalogTransaction> transaction);
 
@@ -155,6 +156,11 @@ private:
 	shared_ptr<View> node;
 	unordered_map<string, shared_ptr<View>> acl_views;
 	uint64_t generation = 0; // bumped by every write: a refresh started before it does not land
+	uint64_t epoch = 0;      // bumped by ResetCaches: what was fetched before is not even answered (specs/025)
+
+	//! Is `view` still the caller's here (not orphaned by ResetCaches, a grant's rejection, a DETACH)? With the
+	//! lock held.
+	bool Serves(const Caller &caller, const View &view) const;
 };
 
 //! The tresor storage registered under `name` in this instance, if any (never registers one).

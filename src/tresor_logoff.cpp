@@ -43,6 +43,10 @@ bool IsPerson(LoginFlow flow) {
 	return flow == LoginFlow::BROWSER || flow == LoginFlow::DEVICE || flow == LoginFlow::REMEMBERED;
 }
 
+bool SameKey(const tresor::LoginKey &a, const tresor::LoginKey &b) {
+	return a.issuer == b.issuer && a.client_id == b.client_id && a.service == b.service;
+}
+
 //! The attached tresor catalogs: name and session.
 vector<std::pair<string, shared_ptr<TresorSession>>> Attached(ClientContext &context) {
 	vector<std::pair<string, shared_ptr<TresorSession>>> out;
@@ -169,6 +173,9 @@ Row Forget(ClientContext &context, const tresor::LoginKey &key,
 	for (auto &entry : attached) {
 		auto &session = *entry.second;
 		if (!session.Remembers(key)) {
+			if (IsPerson(session.Flow()) && session.LoggedOff() && SameKey(session.Key(), key)) {
+				row.catalogs.push_back(entry.first); // kept over an earlier logoff, still logged off: detached too
+			}
 			continue; // REMEMBER false, or another service's: not this login
 		}
 		if (service.empty()) {
@@ -285,12 +292,14 @@ void LogoffScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 		}
 		auto pending = tresor::PendingLogins::Get(*context.db);
 		for (auto &key : keys) {
+			// a login tresor_login started for it ends too (specs/025) - first: once failed, what its thread receives
+			// is discarded, so nothing reaches the store after the removal below
+			pending->Cancel(key, "logged off");
 			state.rows.push_back(Forget(context, key, attached));
-			pending->Cancel(key, "logged off"); // a login tresor_login started for it ends too (specs/025)
 		}
 		if (data.detach) {
-			// the catalogs on a login that is over go (specs/025); one DuckDB will not detach in this statement stays,
-			// as with detach := false, and asks for a new login
+			// the catalogs on a login that is over go (specs/025); one DuckDB will not detach in this statement (the
+			// connection's default database, after USE) stays, as with detach := false, and asks for a new login
 			auto &manager = DatabaseManager::Get(context);
 			for (auto &row : state.rows) {
 				for (auto &name : row.catalogs) {

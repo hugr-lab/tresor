@@ -18,14 +18,16 @@ TresorCatalog::TresorCatalog(AttachedDatabase &db, shared_ptr<TresorSession> ses
                              vector<Descriptor> initial_p, unique_ptr<ActorOptions> acting_p)
     : DuckCatalog(db), session(std::move(session_p)), storage(storage_p), initial(std::move(initial_p)),
       acting(std::move(acting_p)) {
-	// a catalog kept over a logoff takes up the next login (specs/025): another person empties it first
+	// a catalog kept over a logoff serves nothing of that login, and takes up the next one (specs/025): emptied at
+	// the logoff, and again when the new login is known (whoever it is)
 	auto &store = storage;
+	auto &which = *session;
 	auto name = db.GetName().GetIdentifierName();
 	auto host = session->Info().host;
-	session->OnResumed([&store, name, host](const string &before, const string &now) {
-		if (before != now) {
-			store.ResetCaches();
-		}
+	session->SetCatalogName(name);
+	session->OnLoggedOff([&store, &which]() { store.ResetCaches(which); });
+	session->OnResumed([&store, &which, name, host](const string &before, const string &now) {
+		store.ResetCaches(which);
 		Audited audited(store.AuditOf(), "login", nullptr);
 		audited.event.service = name;
 		audited.event.host = host;
@@ -33,7 +35,8 @@ TresorCatalog::TresorCatalog(AttachedDatabase &db, shared_ptr<TresorSession> ses
 		audited.Detail(before == now ? "resumed" : "resumed_other").Ok();
 	});
 	auto &instance = db.GetDatabase();
-	session->OnPendingLogin([&instance](const LoginKey &key) {
+	// outside the session's lock (TresorSession::Call): a logoff cancels the login, a DETACH stops the wait
+	session->OnPendingLogin([&instance](const LoginKey &key, const std::function<bool()> &stop) {
 		auto pending = PendingLogins::Get(instance)->Find(key);
 		if (!pending) {
 			return;
@@ -42,8 +45,8 @@ TresorCatalog::TresorCatalog(AttachedDatabase &db, shared_ptr<TresorSession> ses
 		    std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
 		        .count() +
 		    AttachRequest().timeout_seconds;
-		pending->WaitBeyond(PendingLogin::State::STARTING, deadline, nullptr);
-		pending->WaitBeyond(PendingLogin::State::PENDING, deadline, nullptr);
+		pending->WaitBeyond(PendingLogin::State::STARTING, deadline, stop);
+		pending->WaitBeyond(PendingLogin::State::PENDING, deadline, stop);
 	});
 }
 
