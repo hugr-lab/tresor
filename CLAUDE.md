@@ -37,6 +37,8 @@ ATTACH prefix works).
 
 ```text
 src/                        # the extension: the tresor ATTACH type, tresor_version(); tresor_actor = acting for acl sessions
+tresor_sources.cmake        # what tresor compiles and links (TRESOR_SOURCES, tresor_configure_targets) - for
+                            #   CMakeLists.txt and for an extension that builds tresor in (TRESOR_EMBEDDED, specs/024)
 duckdb-ext-common/          # submodule: shared contracts + hook bases; tresor OWNS hooks/ (it is the
                             #   first consumer) and contracts/tresor_*.hpp there (charter R6)
 server/                     # the reference duckdb-secrets/1 server (Go module) + the Keycloak test realm
@@ -45,6 +47,7 @@ web/                        # @hugr-lab/tresor-web: attachTresor for a page's Du
 test/sql/                   # sqllogictests; attach/ needs the fake service
 test/fake/                  # fake duckdb-secrets service + IdP (Python stdlib) and the fake browser
 test/extension/acl_stub/    # test-only extension: duckdb-acl's side of acl_connection.hpp (specs/008)
+test/extension/tresor_embedder/  # test-only extension that builds tresor in, as hugr-node does (specs/024)
 test/acl/actor.sql          # the actor against real duckdb-acl (test_keycloak.sh, TRESOR_ACL_EXTENSION)
 test/keycloak/browser.py    # fills Keycloak's login form: the person's browser in the Keycloak tests
 scripts/ci/                 # smoke_load.sh, test_attach.sh, assert_ran.sh, check_docs_links.py
@@ -58,8 +61,8 @@ design/                     # LOCAL, gitignored research
 git submodule update --init --recursive
 make vcpkg-setup                            # once (or VCPKG_TOOLCHAIN_PATH=<an existing vcpkg>/scripts/buildsystems/vcpkg.cmake)
 TRESOR_TEST_HTTPFS=1 GEN=ninja make         # release: duckdb (2.0) + tresor (+ httpfs for the tests)
-build/release/test/unittest 'test/sql/*'    # sqllogictests (test/sql/attach/* skip without TRESOR_TEST_PORT)
-scripts/ci/test_attach.sh                   # attach/login tests against test/fake/fake_service.py
+TRESOR_TEST_HTTPFS=1 build/release/test/unittest 'test/sql/*'   # sqllogictests (attach/* skip without TRESOR_TEST_PORT)
+TRESOR_TEST_HTTPFS=1 scripts/ci/test_attach.sh                  # attach/login tests against test/fake/fake_service.py
 TRESOR_HTTP_CLIENT=duckdb scripts/ci/test_attach.sh   # the same on DuckDB's HTTP client (httpfs), as wasm has
 scripts/ci/test_keycloak.sh                 # server/ + Keycloak (docker): test/sql/conformance, test/sql/reference_server
 (cd server && GOWORK=off go test ./...)     # the reference server (GOWORK=off: a parent go.work may exist locally)
@@ -84,7 +87,10 @@ the duckdb pin): the s3/gcs/r2/aws types and the real `REFRESH auto` path (specs
 distribution build never compiles it; tresor itself does not depend on it. Without it `refresh.test`
 skips (`require httpfs`), which CI forbids. The same flag links **acl_stub**
 (`test/extension/acl_stub`, specs/008): duckdb-acl's side of `acl_connection.hpp` (`acl_stub_open`,
-`acl_stub_close`, `SET acl_stub_session`) for the actor tests. Real duckdb-acl: `scripts/ci/acl_checkout.sh
+`acl_stub_close`, `SET acl_stub_session`) for the actor tests, and builds (never links) **tresor_embedder**
+(`test/extension/tresor_embedder`, specs/024): tresor built into another extension through `tresor_sources.cmake`
+and `LoadTresorCore`, as hugr-node's `hugr_node` does - `test/sql/embedded.test` and `test/sql/attach/embedded.test`,
+which `require-env TRESOR_TEST_HTTPFS` (set it when running the suites too). Real duckdb-acl: `scripts/ci/acl_checkout.sh
 _acl`, then build with `TRESOR_TEST_ACL_DIR=$PWD/_acl ACL_NO_FLIGHT=1 ACL_NO_QUACK_EMBED=1` (acl not linked,
 lean, against our duckdb); `test_keycloak.sh` then also runs `test/acl/actor.sql`. CI does both. Tests that need a service
 `require-env TRESOR_TEST_PORT` and run through `scripts/ci/test_attach.sh` (the fake speaks http on

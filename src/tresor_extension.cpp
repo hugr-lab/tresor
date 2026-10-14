@@ -1,4 +1,6 @@
+#ifndef TRESOR_EMBEDDED // specs/024: an extension that builds tresor in is the one main
 #define DUCKDB_EXTENSION_MAIN
+#endif
 
 #include "tresor_extension.hpp"
 #include "tresor_catalog.hpp"
@@ -28,7 +30,7 @@ namespace duckdb {
 namespace {
 
 void TresorVersionFun(DataChunk &args, ExpressionState &state, Vector &result) {
-	result.Reference(Value(TresorExtension().Version()), count_t(args.size()));
+	result.Reference(Value(TresorVersion()), count_t(args.size()));
 }
 
 // ATTACH (specs/002): discovery and the login run here, before any catalog exists - a failed login
@@ -117,6 +119,21 @@ void LoadInternal(ExtensionLoader &loader) {
 
 } // namespace
 
+void LoadTresorCore(ExtensionLoader &loader) {
+	LoadInternal(loader);
+}
+
+std::string TresorVersion() {
+#if defined(EXT_VERSION_TRESOR)
+	return EXT_VERSION_TRESOR;
+#elif defined(TRESOR_VERSION)
+	return TRESOR_VERSION; // built into another extension: tresor's own (tresor_sources.cmake)
+#else
+	return "";
+#endif
+}
+
+#ifndef TRESOR_EMBEDDED
 void TresorExtension::Load(ExtensionLoader &loader) {
 	LoadInternal(loader);
 }
@@ -125,18 +142,17 @@ std::string TresorExtension::Name() {
 }
 
 std::string TresorExtension::Version() const {
-#ifdef EXT_VERSION_TRESOR
-	return EXT_VERSION_TRESOR;
-#else
-	return "";
-#endif
+	return TresorVersion();
 }
+#endif
 
 } // namespace duckdb
 
+#ifndef TRESOR_EMBEDDED
 extern "C" {
 
 DUCKDB_CPP_EXTENSION_ENTRY(tresor, loader) {
 	duckdb::LoadInternal(loader);
 }
 }
+#endif

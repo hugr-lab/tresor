@@ -155,21 +155,21 @@ jobs:
         run: |
           set -o pipefail   # a failing script must fail the step, whatever the summary line says
           build/release/test/unittest 'test/sql/*' 2>&1 | tee suite.log
-          scripts/ci/assert_ran.sh suite.log 3 20
+          scripts/ci/assert_ran.sh suite.log 3 20 'require-env TRESOR_TEST_HTTPFS'
 
       # the attach tests against the fake service + IdP (specs/002); none of them may skip here
       - name: Attach suites
         run: |
           set -o pipefail   # a failing script must fail the step, whatever the summary line says
           scripts/ci/test_attach.sh 2>&1 | tee attach.log
-          scripts/ci/assert_ran.sh attach.log 10 600 'require-env TRESOR_TEST_PORT|require httpfs|require acl_stub'
+          scripts/ci/assert_ran.sh attach.log 10 600 'require-env TRESOR_TEST_PORT|require-env TRESOR_TEST_HTTPFS|require httpfs|require acl_stub'
 
       # the same tests on DuckDB's HTTP client, as a wasm build has only that one (specs/020)
       - name: Attach suites on DuckDB's HTTP client
         run: |
           set -o pipefail
           TRESOR_HTTP_CLIENT=duckdb scripts/ci/test_attach.sh 2>&1 | tee attach-duckdb.log
-          scripts/ci/assert_ran.sh attach-duckdb.log 10 600 'require-env TRESOR_TEST_PORT|require httpfs|require acl_stub'
+          scripts/ci/assert_ran.sh attach-duckdb.log 10 600 'require-env TRESOR_TEST_PORT|require-env TRESOR_TEST_HTTPFS|require httpfs|require acl_stub'
 
       # the reference server next to a real Keycloak (specs/003): the conformance suite, a real
       # browser login (PKCE, Keycloak's redirect checks) and a real client-credentials grant
@@ -253,14 +253,14 @@ jobs:
         run: |
           set -o pipefail   # a failing script must fail the step, whatever the summary line says
           build/release/test/unittest 'test/sql/*' 2>&1 | tee suite.log
-          scripts/ci/assert_ran.sh suite.log 3 20
+          scripts/ci/assert_ran.sh suite.log 3 20 'require-env TRESOR_TEST_HTTPFS'
 
       # the attach tests against the fake service + IdP (specs/002); none of them may skip here
       - name: Attach suites
         run: |
           set -o pipefail   # a failing script must fail the step, whatever the summary line says
           scripts/ci/test_attach.sh 2>&1 | tee attach.log
-          scripts/ci/assert_ran.sh attach.log 10 600 'require-env TRESOR_TEST_PORT|require httpfs|require acl_stub'
+          scripts/ci/assert_ran.sh attach.log 10 600 'require-env TRESOR_TEST_PORT|require-env TRESOR_TEST_HTTPFS|require httpfs|require acl_stub'
 
       - name: Upload extension artifact
         uses: actions/upload-artifact@v7

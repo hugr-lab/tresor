@@ -46,6 +46,15 @@ if(DEFINED ENV{TRESOR_TEST_HTTPFS} AND "$ENV{TRESOR_TEST_HTTPFS}" STREQUAL "1")
     duckdb_extension_statically_link(acl_stub)
 endif()
 
+# tresor_embedder, for the tests only (specs/024): an extension that builds tresor into itself through
+# tresor_sources.cmake and LoadTresorCore, as hugr-node's hugr_node does. Same opt-in; never linked (like tresor,
+# it is loaded by build path - test/sql/embedded.test), never in a distribution build.
+if(DEFINED ENV{TRESOR_TEST_HTTPFS} AND "$ENV{TRESOR_TEST_HTTPFS}" STREQUAL "1")
+    duckdb_extension_load(tresor_embedder
+        SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/test/extension/tresor_embedder
+    )
+endif()
+
 # duckdb-acl itself, for the actor's end-to-end test only (specs/008, test/acl/actor.sql): built here, against
 # this tree's duckdb, so it loads into the test build exactly (acl's own distribution artifacts are built at
 # its branch's head, not at the pinned commit). TRESOR_TEST_ACL_DIR is a checkout of duckdb-acl at the commit

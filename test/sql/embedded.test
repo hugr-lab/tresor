@@ -1,0 +1,56 @@
+# name: test/sql/embedded.test
+# description: tresor built into another extension - tresor_sources.cmake, LoadTresorCore, TRESOR_EMBEDDED (specs/024)
+# group: [sql]
+
+# tresor_embedder is built beside acl_stub (extension_config.cmake), only with TRESOR_TEST_HTTPFS=1
+require-env TRESOR_TEST_HTTPFS
+
+# nothing may load tresor itself: everything below is the embedder's copy
+statement ok
+SET autoload_known_extensions = false;
+
+statement ok
+SET autoinstall_known_extensions = false;
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor_embedder/tresor_embedder.duckdb_extension';
+
+# the embedder's own part, registered after LoadTresorCore
+query I
+SELECT tresor_embedder_probe();
+----
+embedder
+
+# tresor's version, not the embedder's (duckdb defines EXT_VERSION_<NAME> only for the extension it builds)
+query I
+SELECT tresor_version() <> '';
+----
+true
+
+query I
+SELECT count(*) FROM duckdb_extensions() WHERE extension_name = 'tresor' AND loaded;
+----
+0
+
+# the ATTACH type is there, both spellings, and reaches tresor's discovery
+statement error
+ATTACH 'tresor:secrets.example.invalid' AS corp;
+----
+<REGEX>:.*tresor: discovery of secrets.example.invalid failed.*
+
+statement error
+ATTACH 'secrets.example.invalid:8443/v1' AS corp (TYPE tresor);
+----
+<REGEX>:.*tresor: discovery of secrets.example.invalid:8443/v1 failed.*
+
+# the secret type, and tresor's settings
+statement ok
+CREATE SECRET held (TYPE tresor, SCOPE 'tresor:elsewhere', FLOW 'token', TOKEN 'static-token');
+
+query I
+SELECT type FROM duckdb_secrets() WHERE name = 'held';
+----
+tresor
+
+statement ok
+SET tresor_keychain = 'off';
