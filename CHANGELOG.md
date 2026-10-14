@@ -44,6 +44,9 @@ The first release, with DuckDB 2.0.
   (DuckDB UI, notebooks, IDEs) and completes in the background, an ATTACH waiting for it; `tresor_logoff`
   detaches the catalogs on the login (`detach := false` keeps them, taking up the next login); `prompt` to switch
   identity.
+- **Pipelines checked live** (specs/027): a managed identity, a managed identity as an app registration's
+  federated credential (its v1 token's `aud`, the app id of AzureADTokenExchange, now accepted) and an AKS pod's
+  projected token on Azure; a Kubernetes token with Keycloak 26.7+ on kind; the `tresor-live` image.
 - **Audit and traces**: every login, lookup, write and grant as a typed event, for DuckDB's log and
   for OpenTelemetry through acl-otel (`tresor_audit_level`, TRSA 1) (specs/011).
 - **The protocol `duckdb-secrets/1`** (draft until this release), a reference server in Go and a

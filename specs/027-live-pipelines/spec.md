@@ -1,6 +1,6 @@
 # Spec 027: live checks of a pipeline's login - Kubernetes, Keycloak, Entra
 
-- **Status**: accepted (Keycloak checked locally; the Azure checks pending)
+- **Status**: implemented (checks 1-3 on Azure and 4 on kind passed, 2026-10-14)
 - **Date**: 2026-10-14
 - **Author**: hugr lab
 - **Asked by**: the owner: prove the flows of `website/docs/pipelines.md` live, not only against the fake
@@ -130,11 +130,23 @@ service's login never touches an OS credential store.
 
 | # | Check | Where | Result |
 | --- | --- | --- | --- |
-| 1 | `managed_identity` | Azure Container Apps job | pending |
-| 2 | `federated` via the managed identity | Azure Container Apps job | pending |
-| 3 | `federated`, projected token, Entra | AKS | pending |
+| 1 | `managed_identity` | Azure Container Apps job | passed 2026-10-14: `login=managed_identity`, `role:nodes`, `client:<identity>` |
+| 2 | `federated` via the managed identity | Azure Container Apps job | passed 2026-10-14 after a fix (below): `login=federated`, `role:nodes`, `client:<acl-node>` |
+| 3 | `federated`, projected token, Entra | AKS | passed 2026-10-14: `login=federated`, `role:nodes`, `client:<acl-node>` |
 | 4 | `federated`, Kubernetes token, Keycloak 26.8.1 | kind (local) | passed 2026-10-14 |
-| 4b | the same, Keycloak in AKS with AKS's issuer | AKS | pending (optional) |
+| 4b | the same, Keycloak in AKS with AKS's issuer | AKS | not run: a Keycloak issuer for the stand's service needs https with a public certificate (ingress, cert-manager, DNS) - kind covers it |
+
+The stand (tresor-server's session, `scripts/dev/logins_live.sh` there): tresor-server on Azure Container Apps
+in northeurope, a user-assigned identity, a one-node AKS with workload identity, about an hour, removed with the
+tenant's federated credentials and role assignment after the run. Image
+`ghcr.io/hugr-lab/tresor-live@sha256:544a533bb4f43b916aef01b3359b47d57188f9ee7e8e9af9fd7d164c719ca399`.
+
+**Found: a managed identity's federation token is a v1 token.** Asked for `api://AzureADTokenExchange`, Container
+Apps' identity endpoint answered a token whose `aud` is that application's app id,
+`fb60f99c-7a34-4190-8149-302f77469936` - the same first-party application in every tenant - and tresor, which
+sent the token only when `aud` named `api://AzureADTokenExchange`, refused it (check 2 failed on the first image).
+Entra takes such a token as the assertion. tresor now accepts either form, for that audience only
+(`src/tresor_credentials.cpp`; `service_identities.test` with the fake identity endpoint's v1 token).
 
 ## Follow-ups
 

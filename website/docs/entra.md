@@ -36,9 +36,9 @@ Checked live against an Entra tenant on 2026-09-30 (`scripts/dev/entra_live.sh`,
   granted, and no longer once revoked; the node finding the secret granted to its role.
 
 A federated credential from GitHub Actions was checked live on 2026-10-07
-(`.github/workflows/entra-live.yml`, [below](#7-check-it)). Not yet checked live: On-Behalf-Of for a duckdb-acl
-node, a Kubernetes federated credential, and a managed identity (it needs an Azure host). They are
-tested against the fake service and Keycloak, in CI.
+(`.github/workflows/entra-live.yml`, [below](#7-check-it)), On-Behalf-Of for a duckdb-acl node on 2026-10-06,
+and a managed identity, a managed identity as the node's federated credential and an AKS pod's projected
+token on 2026-10-14 (an Azure stand, specs/027).
 :::
 
 ## 1. The service's API
@@ -214,8 +214,9 @@ tokens. For every session it trades the user's token for one meant for the servi
     the platform for a token for `api://AzureADTokenExchange` and signs in as the application with it.
     Add `IDENTITY_CLIENT_ID` for a user-assigned identity. In a sovereign cloud, set
     `ASSERTION_AUDIENCE` to its federation audience (e.g. `api://AzureADTokenExchangeUSGov`).
-  - Not yet checked against a live tenant (it needs an Azure host). On-Behalf-Of itself is checked
-    live (`ENTRA_OBO=1` below).
+  - Checked live on Azure Container Apps (specs/027). The identity endpoint answers a v1 token whose
+    `aud` is the app id of `AzureADTokenExchange` (`fb60f99c-…`) rather than the URI; tresor accepts
+    either for that audience.
 - **duckdb-acl from its spec 101 on** (6be5bd0): earlier ones read the issuer's discovery by ranged
   reads, and Entra answers `HEAD` with another (HTML) page, so every session is refused (`The size
   reported by HEAD … but the full GET downloaded …`). On such a node,

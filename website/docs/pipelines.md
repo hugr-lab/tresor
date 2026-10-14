@@ -31,8 +31,9 @@ Best first. Use the first row that fits where the job runs.
 | [A token already held](#a-token-already-held) | `FLOW 'token'` | a token, which expires |
 
 Each flow is tested against the fake service in CI, and a key login against Keycloak. Checked live
-against Entra: a key, a client secret, and GitHub Actions' token; a Kubernetes federated credential
-and a managed identity are not yet ([Entra's note](./entra.md)).
+against Entra: a key, a client secret, GitHub Actions' token, a managed identity (on Azure Container
+Apps), a managed identity as an app registration's federated credential, and an AKS pod's projected
+token; a Kubernetes token with Keycloak on kind (specs/027).
 
 Every recipe below has the same shape: a `tresor` secret whose `SCOPE` names the service, then
 `ATTACH`. The ATTACH finds the secret by its scope; `ATTACH … (SECRET name)` names it instead.
