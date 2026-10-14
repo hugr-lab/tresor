@@ -73,7 +73,7 @@ jobs:
           mkdir -p _image/live
           cp build/release/duckdb _image/duckdb
           cp build/release/extension/tresor/tresor.duckdb_extension _image/
-          cp scripts/live/*.sh scripts/live/*.sql _image/live/
+          cp scripts/live/check.sh scripts/live/run.sh scripts/live/*.sql _image/live/
           echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
 
       - name: Build the image
