@@ -19,7 +19,7 @@ A docs page, "Pipelines", with a recipe per executor, best first:
 | --- | --- | --- |
 | Kubernetes (AKS, EKS, GKE, any) | `federated`, the projected service-account token (`ASSERTION_FILE`) | none |
 | GitHub Actions | `federated`, `ASSERTION_SOURCE 'github_actions'` (checked live, specs/013) | none |
-| Azure (VM, App Service, Container Apps, AKS) | `managed_identity`, or `federated` through it | none |
+| Azure (VM, App Service, Functions, Container Apps; on AKS, workload identity: the Kubernetes row) | `managed_identity`, or `federated` through it | none |
 | A VM or a worker with no platform identity | `client_credentials` with a private key (`private_key_jwt`) | a key file (0600) |
 | Last resort | `client_credentials` with a client secret | a shared secret |
 | A token already held | `FLOW 'token'` | a token, which expires |
@@ -50,4 +50,5 @@ login), and `ASSERTION_SOURCE 'gcp_metadata'` (GCE's identity token) - each its 
   `install <name> from <repo>` with the repo pasted unquoted), then `secrets` (`CREATE OR REPLACE SECRET <name>
   (type tresor, <key> '<value>', …, scope '…')`, temporary), then `attach` (`ATTACH IF NOT EXISTS '<path>' AS
   <alias> (SECRET <name>, …)`, a `true` option as a bare keyword). That SQL, as dbt-duckdb renders it, logged in
-  against the fake service (`client:etl`, `client_credentials`).
+  against the fake service (`client:etl`, `client_credentials`): the profile's shape; the page's
+  profile shows `federated`, whose options are the tested ones.

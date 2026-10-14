@@ -30,14 +30,22 @@ Best first. Use the first row that fits where the job runs.
 | [Last resort](#a-client-secret) | `client_credentials` with a client secret | a shared secret |
 | [A token already held](#a-token-already-held) | `FLOW 'token'` | a token, which expires |
 
+Each flow is tested against the fake service in CI, and a key login against Keycloak. Checked live
+against Entra: a key, a client secret, and GitHub Actions' token; a Kubernetes federated credential
+and a managed identity are not yet ([Entra's note](./entra.md)).
+
 Every recipe below has the same shape: a `tresor` secret whose `SCOPE` names the service, then
 `ATTACH`. The ATTACH finds the secret by its scope; `ATTACH … (SECRET name)` names it instead.
 
-- Every flow but `token` names the `ISSUER` its credential belongs to: the credential only ever goes
-  to that identity provider, whatever the service's discovery says.
-- The secret holds **paths**, never a key or a token. The files are read when a login needs them.
+- Every flow but `token` names its `ISSUER`. It binds the login to that identity provider: the
+  service's discovery must list it, and never sends the credential anywhere else.
+- Except for `CLIENT_SECRET` and `TOKEN`, the secret holds **paths**, never a key or a token. The
+  files are read when a login needs them.
+- The files are subject to DuckDB's sandbox: with `enable_external_access = false`, a login reads
+  only files under `allowed_directories` / `allowed_paths`, and any other key, certificate or token
+  file is refused at ATTACH.
 - Keep the secret temporary (plain `CREATE SECRET`). A `PERSISTENT` one is written to DuckDB's secret
-  directory, a `CLIENT_SECRET` in it included.
+  directory, a `CLIENT_SECRET` or a `TOKEN` in it included.
 - With Entra ID, `client_credentials` and `federated` need `OAUTH_SCOPE 'api://<the API>/.default'`
   ([Microsoft Entra ID](./entra.md#6-duckdb)). The recipes below show it where Entra is the issuer.
 
@@ -50,10 +58,12 @@ Mount the token with the audience the identity provider's federation expects:
 `api://AzureADTokenExchange` for Entra, the provider's own value otherwise.
 
 ```yaml
+# the pod's spec (in a Job or a CronJob: spec.template.spec / spec.jobTemplate.spec.template.spec)
 spec:
   serviceAccountName: etl
   containers:
     - name: job
+      image: …
       volumeMounts:
         - name: tresor-token
           mountPath: /var/run/secrets/tresor
@@ -164,15 +174,13 @@ CREATE SECRET etl (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'clien
 ATTACH 'tresor:secrets.corp.example' AS corp;
 ```
 
-- **File modes.** The key may be read by its owner and, read-only, by its group: `600`, `640` or
-  `440`. tresor refuses a key others may read, or a group may write. In Kubernetes, a Secret volume
-  with `defaultMode: 0400` (a pod's `fsGroup` makes it 0440) passes. Windows has no such check: the
-  file's ACL decides.
+- **File modes.** The key may be read by its owner and, read-only, by its group: `600`, `400`, `640`
+  or `440`. tresor refuses a key others have any access to, or its group may write or execute. In
+  Kubernetes, a Secret volume with `defaultMode: 0400` (a pod's `fsGroup` makes it 0440) passes; the
+  default `0644` is refused. Windows has no such check: the file's ACL decides.
 - Keys are RSA (2048 bits or more, RS256) or P-256 (ES256), unencrypted PEM. Entra's certificate
   credentials are RSA.
 - The key and certificate are read again at every renewal: a rotated key is picked up.
-- Files are subject to DuckDB's sandbox: with `enable_external_access = false` (outside
-  `allowed_directories`), a login reads none.
 
 ## A client secret
 
@@ -200,7 +208,8 @@ ATTACH 'tresor:secrets.corp.example' AS corp;
 
 It is never renewed. When it expires, or the service refuses it, calls fail with "the token of the
 tresor secret for … has expired or was refused": replace the secret and ATTACH again. Use it for
-short jobs, or when the runner renews the token itself.
+short jobs. A token the runner renews is not picked up: each time, the job replaces the secret and
+ATTACHes again.
 
 ## dbt
 
@@ -239,7 +248,9 @@ lake:
   (SECRET corp_login)`.
 - The secret must be created before the ATTACH, so tresor must be loaded by `extensions`: DuckDB
   knows the `tresor` secret type only once the extension is loaded.
-- `alias` names the catalog: the path has no file name for dbt-duckdb to take one from.
+- `alias` names the catalog (`AS corp`); without it DuckDB names the catalog after the path.
+- tresor is built for DuckDB 2.0, and a loadable extension must match its host exactly: the `duckdb`
+  Python package dbt-duckdb runs on must be the DuckDB 2.0 build tresor was built for.
 - Any flow works the same way: its options are the secret's keys, in lower case. A client secret
   comes from the environment, never the file: `client_secret: "{{ env_var('ETL_CLIENT_SECRET') }}"`.
 - A build of your own is unsigned: `config_options: {allow_unsigned_extensions: true}`.
@@ -276,22 +287,25 @@ throttle token requests. Start workers in waves, or keep them long-lived.
    the credential the recipe uses: a federated credential, a certificate or a registered key, or a
    secret.
    - Entra: [a node](./entra.md#3-a-node), and its application permission on the API.
-   - Keycloak: a client with service accounts and an audience mapper for the service's audience;
-     `client-jwt` authentication for a key ([reference server](./reference-server.md#identity-provider-setup-keycloak)).
-     A key login against Keycloak is checked in CI. Keycloak's own federated client authentication
+   - Keycloak: a client with service accounts and an audience mapper for the service's audience
+     ([reference server](./reference-server.md#identity-provider-setup-keycloak)); for a key, the
+     client authenticator "Signed JWT" (`client-jwt`) with the job's certificate or key, as the test
+     realm's `keynode` client (`server/testdata/keycloak/realm-tresor.json`). A key login against
+     Keycloak is checked in CI. Keycloak's own federated client authentication
      is not checked here.
 2. **A role on the API** for the client (an app role, a realm role), which the token carries. An
    administrator grants that role `use` on the secrets the job reads. Grants go to roles and groups,
    never to one client.
 3. **The service tells a job from a person** by a claim (the reference server's `service` rule:
-   `client_id` for Keycloak, `idtyp` for Entra), and names it `client:<client id>`.
+   `client_id` for Keycloak, `idtyp` for Entra), and gives it the principal `client:<client id>`
+   (in whoami's `roles`).
 4. **The service lists the flow** in its discovery's `service_flows`
    ([protocol](./protocol.md#discovery)). When the list is present, tresor attempts no flow outside
    it: a key login needs `private_key_jwt`, a federated one `federated`, a managed identity
    `managed_identity`, a client secret `client_credentials`.
 
 ```sql
-FROM corp.whoami();   -- subject client:etl, roles [role:etl], login federated (or private_key_jwt, …)
+FROM corp.whoami();   -- roles [role:etl, client:etl], login federated (or private_key_jwt, …)
 ```
 
 ## No person's login on a schedule

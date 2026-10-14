@@ -36,7 +36,7 @@ Checked live against an Entra tenant on 2026-09-30 (`scripts/dev/entra_live.sh`,
   granted, and no longer once revoked; the node finding the secret granted to its role.
 
 A federated credential from GitHub Actions was checked live on 2026-10-07
-(`.github/workflows/entra-live.yml`, step 7). Not yet checked live: On-Behalf-Of for a duckdb-acl
+(`.github/workflows/entra-live.yml`, [below](#7-check-it)). Not yet checked live: On-Behalf-Of for a duckdb-acl
 node, a Kubernetes federated credential, and a managed identity (it needs an Azure host). They are
 tested against the fake service and Keycloak, in CI.
 :::
