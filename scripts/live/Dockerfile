@@ -3,6 +3,8 @@
 # binaries it built; the context is a staging directory holding duckdb, tresor.duckdb_extension and live/.
 # The extension is unsigned: the CLI runs with -unsigned.
 FROM ubuntu:24.04
+LABEL org.opencontainers.image.source=https://github.com/hugr-lab/tresor \
+	org.opencontainers.image.description="tresor live checks (specs/027): the DuckDB CLI, tresor, /live"
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends ca-certificates \
 	&& rm -rf /var/lib/apt/lists/*

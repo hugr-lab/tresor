@@ -6,7 +6,8 @@
 # what a projected volume gets); scripts/live/run.sh k8s_keycloak logs in with it. A token of another service
 # account must be refused, and so must the right token under another client id. Needs docker, kind, kubectl and go; nothing is printed of any token.
 #
-#   KIND=<kind binary>  KEYCLOAK_VERSION (default 26.8.1)  KEEP_KIND=1 leaves the cluster
+#   KIND=<kind binary>  KEYCLOAK_VERSION (default 26.8.1; 26.7 or later - before, Keycloak wants client_id = the
+#   token's sub)  KEEP_KIND=1 leaves the cluster
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 kind="${KIND:-kind}"
@@ -36,6 +37,8 @@ k=(kubectl --context "$ctx")
 	--from-file=realm-federated.json="$root/server/testdata/keycloak/realm-federated.json" --dry-run=client -o yaml |
 	"${k[@]}" apply -f - >/dev/null
 sed "s/KEYCLOAK_VERSION/$kc_version/" "$root/scripts/live/keycloak-kind.yaml" | "${k[@]}" apply -f - >/dev/null
+# a fresh pod imports the realm as it is now (start-dev keeps its database in the pod)
+"${k[@]}" -n keycloak rollout restart deploy/keycloak >/dev/null
 echo "keycloak_kind: Keycloak $kc_version starting in $ctx"
 "${k[@]}" -n keycloak rollout status deploy/keycloak --timeout=600s
 "${k[@]}" -n keycloak port-forward deploy/keycloak "$kc_port:8080" >"$work/forward.log" 2>&1 &
@@ -59,6 +62,11 @@ YAML
 "$work/ref-server" -config "$work/server.yaml" >"$work/server.log" 2>&1 &
 server_pid=$!
 for _ in $(seq 50); do curl -sf "http://127.0.0.1:$server_port/.well-known/duckdb-secrets" >/dev/null && break; sleep 0.2; done
+curl -sf "http://127.0.0.1:$server_port/.well-known/duckdb-secrets" >/dev/null || {
+	sed -E 's/eyJ[A-Za-z0-9._-]*/<token>/g' "$work/server.log" | tail -20 >&2
+	echo "keycloak_kind: the reference server did not come up" >&2
+	exit 1
+}
 
 # what a projected volume holds: a TokenRequest token for the service account, its audience the realm
 mint() { # $1 the service account, $2 the file
@@ -79,8 +87,12 @@ if TRESOR_ASSERTION_FILE="$work/other" "$root/scripts/live/run.sh" k8s_keycloak 
 	cat "$work/other.log"
 	echo "keycloak_kind: FAILED - tresor-logins/default logged in as k8s-node" >&2
 	failed=1
+elif grep -q 'federated login .* failed: invalid_client' "$work/other.log"; then
+	grep -E 'federated login' "$work/other.log" | sed 's/^/  /'
 else
-	grep -E 'federated login|FAILED' "$work/other.log" | sed 's/^/  /'
+	cat "$work/other.log"
+	echo "keycloak_kind: FAILED - not refused as invalid_client" >&2
+	failed=1
 fi
 echo "keycloak_kind: the right token under another CLIENT_ID must be refused (Keycloak matches client_id)"
 if TRESOR_ASSERTION_FILE="$work/token" TRESOR_CLIENT_ID=not-k8s-node "$root/scripts/live/run.sh" k8s_keycloak \
@@ -88,8 +100,12 @@ if TRESOR_ASSERTION_FILE="$work/token" TRESOR_CLIENT_ID=not-k8s-node "$root/scri
 	cat "$work/wrong.log"
 	echo "keycloak_kind: FAILED - CLIENT_ID not-k8s-node logged in" >&2
 	failed=1
+elif grep -q 'federated login .* failed: invalid_client' "$work/wrong.log"; then
+	grep -E 'federated login' "$work/wrong.log" | sed 's/^/  /'
 else
-	grep -E 'federated login|FAILED' "$work/wrong.log" | sed 's/^/  /'
+	cat "$work/wrong.log"
+	echo "keycloak_kind: FAILED - not refused as invalid_client" >&2
+	failed=1
 fi
 if [ "$failed" = 1 ]; then
 	echo "keycloak_kind: Keycloak's log (federated client auth):" >&2

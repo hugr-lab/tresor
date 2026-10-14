@@ -34,7 +34,8 @@ A check passes when whoami says the expected `login` (`managed_identity` or `fed
   ATTACH path is `tresor:` plus the address without `https://`), `TRESOR_ISSUER`, `TRESOR_AUDIENCE`,
   `TRESOR_API_URI` (`OAUTH_SCOPE '<uri>/.default'`), `TRESOR_ACL_CLIENT_ID`, `TRESOR_MI_CLIENT_ID` (mi, fed),
   `TRESOR_ASSERTION_FILE` (aks, kc). Prints `login=… roles=…` and `listed=<n>` (the secrets the identity may see),
-  masks anything shaped like a JWT.
+  masks anything shaped like a JWT. It judges by `login` and `role:nodes` only (not the `client:<id>`
+  principal, which `run.sh` checks too), and its `set -u` refuses a missing variable before the usage.
 - `<check>.sql` + `run.sh <check>`: the same flows as SQL scripts that take everything through `getenv()`
   (`managed_identity`, `mi_federated`, `k8s_entra`, `k8s_keycloak`), for a developer's build or the image
   (`TRESOR_DUCKDB`, `TRESOR_EXTENSION`). Each asserts in SQL (`error()`), prints `login=… subject=… roles=…`
@@ -61,24 +62,30 @@ extra tag). tresor's OpenSSL is vcpkg's, whose compiled-in certificate directory
 A dispatch needs the workflow on the default branch: the PR's branch carried a temporary `push` trigger to
 build the first images (`spec027-test`), removed before merge.
 
-### Keycloak federated client authentication (verified in Keycloak's source and docs, 26.4-26.8)
+### Keycloak federated client authentication (Keycloak's source and docs, tags 26.4.0-26.8.1)
 
-- 26.4: `client-auth-federated` (preview): an identity provider (OIDC, SPIFFE) authenticates clients by
-  assertions it issued. 26.5: the **Kubernetes** identity provider (`kubernetes-service-accounts`, preview).
-  26.6: both `Type.DEFAULT` (`common/.../Profile.java`), on without a flag; SPIFFE stays preview.
+- `common/.../Profile.java`: 26.4 `client-auth-federated` preview (an identity provider - OIDC, SPIFFE -
+  authenticates clients by assertions it issued), `kubernetes-service-accounts` experimental; 26.5 both preview;
+  26.6 both `Type.DEFAULT`, on without a flag (SPIFFE stays preview).
+- **26.7 or later.** Up to 26.6.x, `AbstractJWTClientValidator` refuses a `client_id` parameter that differs from
+  the assertion's `sub` ("client_id parameter does not match sub claim"); from 26.7.0 it compares the parameter
+  with the client it found ("does not match authenticated client"). tresor always sends `client_id`
+  (`AddClientAuth`), so on 26.4-26.6 a client named anything but `system:serviceaccount:<ns>:<name>` is refused.
+  Checked: 26.8.1 passes, 26.6.0 refuses (`keycloak_kind.sh`, below).
 - The client's authenticator is `federated-jwt` ("Signed JWT - Federated") with the client attributes
   `jwt.credential.issuer` (the identity provider's alias) and `jwt.credential.sub` (the token's `sub`,
   `system:serviceaccount:<namespace>:<name>`). The client is looked up by the assertion's issuer (the
   provider) and subject (`DefaultClientAssertionStrategy`); a `client_id` parameter, when sent, must name the
   same client (`AbstractJWTClientValidator`: "client_id parameter does not match authenticated client").
 - The assertion's audience must be the realm's issuer URL, as Keycloak names itself from the request, and the
-  only one (`FederatedJWTClientValidator`); a Kubernetes token may live at most 3600 s
-  (`KubernetesIdentityProvider`) and may be reused.
+  only one (`FederatedJWTClientValidator`). A Kubernetes token is taken only within 3600 s of its `iat`
+  (`KubernetesIdentityProvider`'s default; per provider from 26.6), and may be reused.
 - The provider loads the cluster's keys from `<issuer>/.well-known/openid-configuration`, with Keycloak's own
   service-account token when its `iss` is the provider's issuer, and trusts the cluster CA automatically
   (`--truststore-kubernetes-enabled`, default true). An in-cluster issuer
   (`https://kubernetes.default.svc.cluster.local`) therefore needs Keycloak inside that cluster; a public one
-  (AKS's OIDC issuer) works anywhere.
+  (AKS's OIDC issuer) works anywhere. 26.8 adds an *Issuer discovery URL* (the issuer read from a discovery
+  document) as an alternative to the exact issuer.
 - A realm created with the feature on has `federated-jwt` in its clients flow; an imported realm without flows
   gets it (checked: `realm-federated.json` names no flows).
 

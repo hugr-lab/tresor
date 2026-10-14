@@ -2,7 +2,7 @@ name: Live image
 
 # ghcr.io/hugr-lab/tresor-live (specs/027): the DuckDB CLI at the duckdb submodule's pin and tresor at this commit,
 # with scripts/live at /live - what the live checks of a pipeline's login run on Azure and Kubernetes
-# (/live/check.sh mi|fed|aks). Built like CI's Linux job, from CI's caches (restore only), and pushed with the
+# (/live/check.sh mi|fed|aks|kc). Built like CI's Linux job, from CI's caches (restore only), and pushed with the
 # workflow's own token, tagged with the short sha. By hand: Actions → Live image → Run workflow (main).
 
 on:
@@ -91,11 +91,14 @@ jobs:
           echo "$out"
           echo "$out" | grep -q 'discovery of github.com'
           if echo "$out" | grep -q 'https request failed'; then exit 1; fi
-          # the stand's script refuses to run without its environment, and says so
+          # the stand's script does not run without its environment (set -u: the shell refuses)
           if docker run --rm "$IMAGE:$SHORT_SHA" /live/check.sh; then exit 1; fi
 
       - name: Log in to ghcr.io
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
 
       - name: Push
         env:

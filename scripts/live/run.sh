@@ -57,7 +57,8 @@ echo "live $check: running"
 out="$("$duckdb" -no-agent -unsigned -no-init -bail -list -noheader \
 	-cmd "SET autoinstall_known_extensions = false; LOAD '$ext';" -f "$here/$check.sql" :memory: 2>&1)"
 rc=$?
-out="$(printf '%s\n' "$out" | sed -E 's/eyJ[A-Za-z0-9._-]*/<token>/g; s/\x1b\[[0-9;]*m//g')"
+esc="$(printf '\033')"
+out="$(printf '%s\n' "$out" | sed -E "s/eyJ[A-Za-z0-9._-]*/<token>/g; s/${esc}\[[0-9;]*m//g")"
 if [ -n "${IDENTITY_HEADER:-}" ]; then
 	out="${out//"$IDENTITY_HEADER"/<identity-header>}"
 fi

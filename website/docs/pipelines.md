@@ -98,17 +98,19 @@ ATTACH 'tresor:secrets.corp.example' AS corp;
 
 ### With Keycloak
 
-Keycloak 26.6 and later authenticate a client with a Kubernetes service-account token: a
-**Kubernetes identity provider** trusts the cluster's issuer, and the client's authenticator is
-**Signed JWT - Federated** (`federated-jwt`). Both features (`client-auth-federated`,
-`kubernetes-service-accounts`) are on by default since 26.6. In 26.5 they are preview, so start
-Keycloak with `--features=client-auth-federated,kubernetes-service-accounts`.
+Keycloak authenticates a client with a Kubernetes service-account token: a **Kubernetes identity
+provider** trusts the cluster's issuer, and the client's authenticator is **Signed JWT -
+Federated** (`federated-jwt`). Use **Keycloak 26.7 or later**. Both features
+(`client-auth-federated`, `kubernetes-service-accounts`) are on by default since 26.6, but before
+26.7 Keycloak requires a `client_id` parameter to equal the token's subject. tresor always sends
+`CLIENT_ID`, so an older Keycloak refuses a client named anything else.
 
 1. **Identity providers → Add provider → Kubernetes**. Set *Kubernetes Issuer URL* to the `iss`
    of the cluster's tokens, exactly. A cluster's internal issuer is
    `https://kubernetes.default.svc.cluster.local`, and Keycloak must then run in that cluster. A
    managed cluster's public OIDC issuer, such as AKS's
-   `https://<region>.oic.prod-aks.azure.com/<tenant id>/<uuid>/`, works from anywhere.
+   `https://<region>.oic.prod-aks.azure.com/<tenant id>/<uuid>/`, works from anywhere. From 26.8,
+   an *Issuer discovery URL* can be given instead, and Keycloak reads the issuer from it.
 2. **The job's client**: a confidential client with service accounts. Under *Credentials*, set
    *Client Authenticator* to *Signed JWT - Federated*, *Identity provider* to the provider's
    alias, and *Federated subject* to `system:serviceaccount:<namespace>:<service account>`. Give
@@ -116,8 +118,9 @@ Keycloak with `--features=client-auth-federated,kubernetes-service-accounts`.
    A realm created with the feature on already has *Signed JWT - Federated* in its client
    authentication flow. An older realm needs it added to a copy of the flow.
 3. **The pod's token**: the audience is the realm's issuer URL, as Keycloak names itself
-   (`https://<keycloak>/realms/<realm>`), and its only audience. Keycloak takes tokens that live
-   at most an hour, so set `expirationSeconds` to 3600 or less.
+   (`https://<keycloak>/realms/<realm>`), and its only audience. By default Keycloak takes a
+   Kubernetes token only within an hour of its issue time, so set `expirationSeconds` to 3600
+   or less. The kubelet replaces the file well before then.
 
 ```sql
 CREATE SECRET etl (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'federated',
@@ -128,8 +131,8 @@ ATTACH 'tresor:secrets.corp.example' AS corp;
 
 Keycloak finds the client by the token's issuer and subject. tresor also sends `CLIENT_ID`, and
 Keycloak refuses the login when the two do not name the same client. The test realm
-`server/testdata/keycloak/realm-federated.json` is this setup, checked against Keycloak 26.8 in
-a kind cluster (`scripts/live/keycloak_kind.sh`).
+`server/testdata/keycloak/realm-federated.json` is this setup, checked against Keycloak 26.8.1
+in a kind cluster (`scripts/live/keycloak_kind.sh`).
 
 ## GitHub Actions
 
