@@ -45,3 +45,5 @@ The first release, with DuckDB 2.0.
 - **The protocol `duckdb-secrets/1`** (draft until this release), a reference server in Go and a
   conformance suite (specs/003, 016).
 - **Docs**, Microsoft Entra ID included: <https://hugr-lab.github.io/tresor/>.
+- **Pipelines** in the docs: a job logs in as a service identity, a recipe per executor (Kubernetes,
+  GitHub Actions, Azure, a key, a client secret, a token) and dbt-duckdb's profile (specs/026).

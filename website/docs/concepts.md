@@ -43,6 +43,9 @@ Two kinds of callers, and one rule each:
 Nobody but an administrator can put a secret where your lookups find it, so nobody can plant one on
 your paths.
 
+A scheduled job is a caller of its own: it logs in as a service, with a role, never with a person's
+login ([Pipelines](./pipelines.md)).
+
 ## Acting for users
 
 A server (a DuckDB node behind a gateway, a data platform) runs statements **for** its users. It
