@@ -131,6 +131,20 @@ void ServiceCredential::CheckAccess(ClientContext &context) const {
 	}
 }
 
+//! Is a managed identity's token for the federation audience asked for? Azure's identity endpoints answer a v1 token
+//! for `api://AzureADTokenExchange` whose `aud` is that application's app id instead - the same first-party app in
+//! every tenant (checked live on Container Apps, specs/027), and Entra takes it as the assertion. Either form, for
+//! that audience only.
+static bool MeantForFederation(const vector<string> &audiences, const string &asked) {
+	if (std::find(audiences.begin(), audiences.end(), asked) != audiences.end()) {
+		return true;
+	}
+	static constexpr const char *TOKEN_EXCHANGE = "api://AzureADTokenExchange";
+	static constexpr const char *TOKEN_EXCHANGE_APP_ID = "fb60f99c-7a34-4190-8149-302f77469936";
+	return asked == TOKEN_EXCHANGE &&
+	       std::find(audiences.begin(), audiences.end(), TOKEN_EXCHANGE_APP_ID) != audiences.end();
+}
+
 bool ServiceCredential::Auth(oidc::ClientAuth &auth, string &why) const {
 	WipeAuth(auth);
 	auth.client_id = client_id;
@@ -183,7 +197,7 @@ bool ServiceCredential::Auth(oidc::ClientAuth &auth, string &why) const {
 		}
 		bool is_jwt = false;
 		auto audiences = JwtAudiences(token.access_token, is_jwt);
-		if (!is_jwt || std::find(audiences.begin(), audiences.end(), assertion_audience) == audiences.end()) {
+		if (!is_jwt || !MeantForFederation(audiences, assertion_audience)) {
 			tresor::Wipe(token.access_token);
 			why = "the managed identity's token is not meant for " + assertion_audience + " - not sent";
 			return false;

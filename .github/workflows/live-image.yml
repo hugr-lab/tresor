@@ -6,6 +6,8 @@ name: Live image
 # workflow's own token, tagged with the short sha. By hand: Actions → Live image → Run workflow (main).
 
 on:
+  push:
+    branches: [mi-aud-fix]   # temporary: the fixed image for the Azure stand, removed before merge
   workflow_dispatch:
     inputs:
       tag:

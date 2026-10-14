@@ -430,7 +430,11 @@ class Handler(BaseHTTPRequestHandler):
                 IDP_STATS["mi_resource"] = resource
                 IDP_STATS["mi_client_id"] = query.get("client_id", "")
                 # a user-assigned identity called "mismatch" gets a token for another audience: never sent on
-                token = jwt_shaped("other" if query.get("client_id") == "mismatch" else resource)
+                aud = "other" if query.get("client_id") == "mismatch" else resource
+                if query.get("client_id") == "v1" and resource == "api://AzureADTokenExchange":
+                    # Azure's identity endpoints answer a v1 token: aud is the app id of AzureADTokenExchange
+                    aud = "fb60f99c-7a34-4190-8149-302f77469936"
+                token = jwt_shaped(aud)
                 if resource == "api://AzureADTokenExchange":
                     MI_ASSERTIONS.add(token)  # specs/015: what the IdP takes as minode's client assertion
                 TOKENS[token] = {"identity": service_identity("mi"), "uses": 0, "renewed": False}
