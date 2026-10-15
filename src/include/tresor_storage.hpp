@@ -46,7 +46,7 @@ vector<Descriptor> FetchDescriptors(const Caller &caller);
 //! (TresorCatalog::Initialize) and deactivated when that catalog goes (DETACH, or a rolled-back ATTACH).
 class TresorSecretStorage : public SecretStorage {
 public:
-	TresorSecretStorage(const string &name, int64_t offset, weak_ptr<TresorAudit> audit);
+	TresorSecretStorage(DatabaseInstance &db, const string &name, int64_t offset, weak_ptr<TresorAudit> audit);
 
 	//! Serve this session, starting from the list the ATTACH fetched; `actor` (may be null) acts for
 	//! duckdb-acl's sessions (specs/008).
@@ -148,6 +148,7 @@ private:
 	bool FirstRefusal(const string &acl_session);
 	Caller CallerOf(optional_ptr<CatalogTransaction> transaction);
 
+	DatabaseInstance &db;                // the instance whose secret manager owns this storage
 	weak_ptr<TresorAudit> audit;         // the instance's: it goes with the ObjectCache, before this storage
 	mutex lock;                          // the state below, and every view's list and materials
 	unordered_set<string> refusals_told; // acl sessions whose lookup refusal was audited (once each)

@@ -46,6 +46,16 @@ if(DEFINED ENV{TRESOR_TEST_HTTPFS} AND "$ENV{TRESOR_TEST_HTTPFS}" STREQUAL "1")
     duckdb_extension_statically_link(acl_stub)
 endif()
 
+# typed_secret_stub, for the tests only (specs/032): secret types of an extension's own classes, cast to them as
+# bigquery casts to BigquerySecret - what tresor serves must be of the class the type's deserializer makes. Same
+# opt-in as httpfs; never in a distribution build.
+if(DEFINED ENV{TRESOR_TEST_HTTPFS} AND "$ENV{TRESOR_TEST_HTTPFS}" STREQUAL "1")
+    duckdb_extension_load(typed_secret_stub
+        SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/test/extension/typed_secret_stub
+    )
+    duckdb_extension_statically_link(typed_secret_stub)
+endif()
+
 # tresor_embedder, for the tests only (specs/024): an extension that builds tresor into itself through
 # tresor_sources.cmake and LoadTresorCore, as hugr-node's hugr_node does. Same opt-in; never linked (like tresor,
 # it is loaded by build path - test/sql/embedded.test), never in a distribution build.

@@ -5,6 +5,9 @@
 #include "acl_connection.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/serializer/binary_deserializer.hpp"
+#include "duckdb/common/serializer/binary_serializer.hpp"
+#include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -315,6 +318,50 @@ string ProblemType(const string &body) {
 	return Str(doc.Root(), "type");
 }
 
+//! The served secret as its type's own class (specs/032): an extension that registers a type with a deserializer
+//! of its own (bigquery: BigquerySecret) casts what a lookup finds to that class. The key-value secret is read back
+//! through that deserializer, as a persistent secret is read from disk - in memory only, the buffer wiped. A type
+//! not registered (its extension not loaded), or one whose deserializer cannot read a key-value secret, is served as
+//! built.
+unique_ptr<const BaseSecret> AsRegisteredType(DatabaseInstance &db, unique_ptr<const KeyValueSecret> secret) {
+	secret_deserializer_t deserialize = nullptr;
+	for (auto &type : SecretManager::Get(db).AllSecretTypes()) {
+		if (type.name == secret->GetType()) {
+			deserialize = type.deserializer;
+			break;
+		}
+	}
+	if (!deserialize) {
+		return std::move(secret);
+	}
+	MemoryStream stream;
+	unique_ptr<const BaseSecret> typed;
+	try {
+		BinarySerializer serializer(stream);
+		serializer.Begin();
+		secret->Serialize(serializer);
+		serializer.End();
+		stream.Rewind();
+		BinaryDeserializer deserializer(stream);
+		deserializer.Begin();
+		// what SecretManager::DeserializeSecret reads before it hands the rest to the type
+		deserializer.ReadProperty<Identifier>(100, "type");
+		deserializer.ReadProperty<Identifier>(101, "provider");
+		deserializer.ReadProperty<Identifier>(102, "name");
+		deserializer.ReadList(103, "scope", [&](Deserializer::List &list, idx_t i) { list.ReadElement<string>(); });
+		typed = deserialize(
+		    deserializer, BaseSecret(secret->GetScope(), secret->GetType(), secret->GetProvider(), secret->GetName()));
+		deserializer.End();
+	} catch (std::exception &) {
+		typed = nullptr; // a layout of its own: the key-value secret, as before
+	}
+	std::fill(stream.GetData(), stream.GetData() + stream.GetCapacity(), data_t(0));
+	if (!typed) {
+		return std::move(secret);
+	}
+	return typed;
+}
+
 } // namespace
 
 Value ProtocolValue(const string &secret, const string &key, const string &type, yyjson_val *value,
@@ -468,8 +515,9 @@ vector<Descriptor> FetchDescriptors(const Caller &caller) {
 	return out;
 }
 
-TresorSecretStorage::TresorSecretStorage(const string &name, int64_t offset, weak_ptr<TresorAudit> audit_p)
-    : SecretStorage(name, offset), audit(std::move(audit_p)) {
+TresorSecretStorage::TresorSecretStorage(DatabaseInstance &db_p, const string &name, int64_t offset,
+                                         weak_ptr<TresorAudit> audit_p)
+    : SecretStorage(name, offset), db(db_p), audit(std::move(audit_p)) {
 	persistent = true; // the secrets live in the service
 }
 
@@ -843,6 +891,7 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &calle
 			secret->redact_keys.insert(Identifier(redact));
 		}
 	}
+	auto served = AsRegisteredType(db, std::move(secret));
 	// how long this material may be served: a static secret a few minutes (or until its version changes),
 	// a dynamic one until shortly before it expires - with a margin of at most half its life, so a
 	// short-lived credential is not minted anew for every file of a scan
@@ -860,7 +909,7 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &calle
 	audited.Ok();
 	lock_guard<mutex> guard(lock);
 	if (!Serves(caller, view)) {
-		return std::move(secret); // detached or emptied meanwhile: served once, never cached
+		return served; // detached or emptied meanwhile: served once, never cached
 	}
 	// expired entries go now: material is kept for a bounded time, not until DETACH
 	for (auto it = view.materials.begin(); it != view.materials.end();) {
@@ -870,10 +919,10 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &calle
 		Material material;
 		material.version = d.version;
 		material.valid_until = valid_until;
-		material.secret = secret->Clone();
+		material.secret = served->Clone();
 		view.materials[d.name] = std::move(material);
 	}
-	return std::move(secret);
+	return served;
 }
 
 SecretEntry TresorSecretStorage::EntryOf(unique_ptr<const BaseSecret> secret) {
@@ -1284,7 +1333,8 @@ TresorSecretStorage &StorageFor(ClientContext &context, const string &name) {
 	// the offset must be unique among the instance's storages (duckdb's tie-break rule) and stay below 100,
 	// where it would start to outweigh one character of scope: skip the taken ones
 	while (registry->next_offset < 100) {
-		auto storage = make_uniq<TresorSecretStorage>(name, registry->next_offset++, TresorAudit::Get(*context.db));
+		auto storage =
+		    make_uniq<TresorSecretStorage>(*context.db, name, registry->next_offset++, TresorAudit::Get(*context.db));
 		auto &ref = *storage;
 		try {
 			manager.LoadSecretStorage(std::move(storage));
