@@ -3,6 +3,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -26,6 +27,9 @@ type Caller struct {
 	Principals []string // subject:, role:, group:, client:
 	Service    bool     // a client-credentials token (the issuer's service rule): Principals carries client:
 	ExpiresAt  time.Time
+	// Claims are the verified token's claims (read-only): what a `mint+claim://` parameter serves
+	// (specs/029). Never the token itself.
+	Claims map[string]any
 	// Actor is set when a server acts for this user through a delegation grant (specs/007): its client:
 	// principal. The rest of the Caller is the user's, as taken at the grant's exchange.
 	Actor       string
@@ -163,8 +167,15 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (*Caller, error) {
 	if !slices.Contains(token.Audience, is.cfg.Audience) {
 		return nil, fmt.Errorf("%w: aud %v does not contain %q", ErrUnauthenticated, token.Audience, is.cfg.Audience)
 	}
+	var payload json.RawMessage
+	if err := token.Claims(&payload); err != nil {
+		return nil, fmt.Errorf("%w: claims: %v", ErrUnauthenticated, err)
+	}
+	// numbers kept as their text: a 64-bit id served by mint+claim:// must not pass through a float (specs/029)
 	var claims map[string]any
-	if err := token.Claims(&claims); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	dec.UseNumber()
+	if err := dec.Decode(&claims); err != nil {
 		return nil, fmt.Errorf("%w: claims: %v", ErrUnauthenticated, err)
 	}
 	if token.Subject == "" {
@@ -176,7 +187,7 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (*Caller, error) {
 // callerFrom maps claims to principals: identity is iss+sub, never an email or a username. A service
 // is recognised only by the issuer's configured rule: no claim marks one by convention.
 func callerFrom(cfg config.Issuer, iss, sub string, exp time.Time, claims map[string]any) *Caller {
-	c := &Caller{Issuer: iss, Subject: sub, ExpiresAt: exp}
+	c := &Caller{Issuer: iss, Subject: sub, ExpiresAt: exp, Claims: claims}
 	c.Principals = append(c.Principals, "subject:"+iss+"|"+sub)
 	for _, r := range stringsAt(claims, cfg.RolesClaim) {
 		c.Principals = append(c.Principals, "role:"+r)

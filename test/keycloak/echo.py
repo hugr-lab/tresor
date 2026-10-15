@@ -2,7 +2,8 @@
 """An http API that answers who called it (specs/010): the `aud` and the user of the bearer token it received.
 
 The token is not verified - Keycloak minted it; the test only reads whom it was minted for. Never prints the
-token itself.
+token itself. A path ending in /claim answers `claim=<the bearer value>` instead: a claim the service generated
+into a secret (specs/029, mint+claim://) - never a token; a JWT there is answered `claim=<a token!>`.
 
     echo.py --port-file PATH
 """
@@ -18,6 +19,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def answer(self, head):
         auth = self.headers.get("Authorization", "")
+        if self.path.split("?")[0].endswith("/claim"):
+            value = auth[len("Bearer "):] if auth.startswith("Bearer ") else "none"
+            self.reply(head, "claim=%s" % ("<a token!>" if value.count(".") == 2 else value))
+            return
         claims = {}
         if auth.startswith("Bearer "):
             try:
@@ -27,7 +32,10 @@ class Handler(BaseHTTPRequestHandler):
                 claims = {}
         aud = claims.get("aud")
         aud = ",".join(sorted(a for a in aud if a != "account")) if isinstance(aud, list) else (aud or "none")
-        body = ("aud=%s user=%s" % (aud, claims.get("preferred_username", "none"))).encode()
+        self.reply(head, "aud=%s user=%s" % (aud, claims.get("preferred_username", "none")))
+
+    def reply(self, head, text):
+        body = text.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", str(len(body)))

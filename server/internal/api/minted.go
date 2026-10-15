@@ -1,8 +1,9 @@
 package api
 
-// Secrets minted for the caller (specs/010): `provider: token_exchange`, an `audience` (and a `scope`); the
-// material is a token for the caller at the identity provider - the caller's own when it reads directly, the
-// grant's user's under a delegation grant (never the server's). Tokens are never logged nor put in an error.
+// Tokens minted for the caller (specs/010, 029): a `mint+exchange://` parameter (generated.go), or the alias
+// `provider: token_exchange` with an `audience` (and a `scope`); the value is a token for the caller at the
+// identity provider - the caller's own when it reads directly, the grant's user's under a delegation grant
+// (never the server's). Tokens are never logged nor put in an error.
 
 import (
 	"context"
@@ -19,7 +20,6 @@ import (
 	"github.com/hugr-lab/tresor/server/internal/auth"
 	"github.com/hugr-lab/tresor/server/internal/config"
 	"github.com/hugr-lab/tresor/server/internal/mint"
-	"github.com/hugr-lab/tresor/server/internal/store"
 )
 
 const (
@@ -30,12 +30,11 @@ const (
 	refreshTimeout        = 15 * time.Second
 )
 
-// tokenParam is where a minted token goes, per secret type; a type not listed cannot be minted.
+// tokenParam is where the token_exchange alias puts its token, per secret type; any other type names its
+// generated parameter itself (mint+exchange://).
 var tokenParam = map[string]string{"http": "bearer_token", "quack": "token"}
 
 var errNoExchange = errors.New("this service cannot mint tokens for the caller's issuer (no exchange client)")
-
-func isMinted(sec *store.Secret) bool { return sec.Provider == tokenExchangeProvider }
 
 // mintTarget is a minted secret's audience and scope, from its params.
 func mintTarget(params map[string]json.RawMessage) (audience, scope string) {
@@ -62,6 +61,9 @@ func (s *Server) validMinted(typ string, params map[string]json.RawMessage) erro
 	}
 	if raw, has := params["scope"]; has && scope == "" && string(raw) != `""` {
 		return fmt.Errorf("a %s secret's scope is a string", tokenExchangeProvider)
+	}
+	if strings.HasPrefix(audience, generatorPrefix) || strings.HasPrefix(scope, generatorPrefix) {
+		return fmt.Errorf("a %s secret's audience and scope are its own, never generated", tokenExchangeProvider)
 	}
 	for _, is := range s.cfg.Issuers {
 		if audience == is.Audience {
@@ -190,9 +192,14 @@ func (s *Server) mintAtGrant(ctx context.Context, gr *grant, subject string, act
 	}
 	targets := map[string][2]string{}
 	for _, sec := range s.store.List() {
-		if isMinted(sec) && usable(sec, actor.Principals) {
-			audience, scope := mintTarget(sec.Params)
-			targets[mintKey(audience, scope)] = [2]string{audience, scope}
+		if !usable(sec, actor.Principals) {
+			continue
+		}
+		gens, _ := generatorsOf(sec.Type, sec.Provider, sec.Params)
+		for _, gen := range gens {
+			if gen.kind == "exchange" {
+				targets[mintKey(gen.audience, gen.scope)] = [2]string{gen.audience, gen.scope}
+			}
 		}
 	}
 	if len(targets) == 0 {
@@ -237,9 +244,8 @@ func isRefusal(err error) bool {
 	return errors.As(err, &e) && !e.Transient()
 }
 
-// mintedToken is the token a minted secret's material carries for this request's caller, or the problem.
-func (s *Server) mintedToken(r *http.Request, c *auth.Caller, sec *store.Secret) (*mint.Token, *mintProblem) {
-	audience, scope := mintTarget(sec.Params)
+// mintedToken is the token for this request's effective caller at an audience (and scope), or the problem.
+func (s *Server) mintedToken(r *http.Request, c *auth.Caller, audience, scope string) (*mint.Token, *mintProblem) {
 	key := mintKey(audience, scope)
 	now := s.now()
 	fresh := func(t *mint.Token) bool { return t != nil && t.Expiry.Sub(now) > mintMargin }

@@ -272,7 +272,7 @@ policy:
   - a node is `client:<its client id>`, and has `role:nodes` from its app role.
 - **One tenant per issuer entry.** The server matches `iss` exactly. A multi-tenant API needs an
   entry per tenant; `/common` and `/organizations` are never an issuer.
-- **Secrets that carry the caller's own token** (`token_exchange`,
+- **Secrets that carry the caller's own token** (`mint+exchange://`,
   [concepts](./concepts.md#a-token-for-the-caller)) do not work with Entra in the reference server
   yet. It mints them with RFC 8693 token exchange; Entra's equivalent is On-Behalf-Of.
 

@@ -3,7 +3,8 @@
 # group: [reference_server]
 
 # set by scripts/ci/test_keycloak.sh: the echo API answers whom a bearer token was minted for; kc_echo is a
-# token_exchange secret scoped to it, which the node's role and the analysts may use
+# token_exchange secret scoped to it (specs/029: served with the consumer's provider, config), which the node's
+# role and the analysts may use
 require-env TRESOR_KC_HOST
 
 require-env TRESOR_KC_ISSUER
@@ -29,7 +30,7 @@ ATTACH 'tresor:{TRESOR_KC_HOST}' AS node (INSECURE_HTTP true, SECRET node, ACT_F
 query II
 SELECT dynamic, provider FROM node.secrets() WHERE name = 'kc_echo';
 ----
-true	token_exchange
+true	config
 
 # the node reading as itself: a token of its own
 query I

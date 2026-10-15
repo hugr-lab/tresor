@@ -138,6 +138,20 @@ SECRETS = {
         "permissions": ["use", "update", "delete", "annotate", "grant"],
         "params": {"bearer_token": "m"}, "redact_keys": ["bearer_token"],
     },
+    # specs/029: dynamic secrets of any type - a parameter the service generates on each read, the secret's
+    # provider the consumer's (never the service's mechanism), the generated key added to redact_keys
+    "dyn_http": {
+        "type": "http", "provider": "config", "scope": ["https://dyn-http.example"], "owner": "role:other",
+        "permissions": ["use"], "dynamic": True, "lifetime": 600, "generate": {"bearer_token": "GEN-HTTP"},
+        "params": {"extra_http_headers": {"type": "MAP(VARCHAR, VARCHAR)", "value": {"X-Tenant": "sales"}}},
+        "redact_keys": [],
+    },
+    "dyn_access": {
+        "type": "mssql", "provider": "access_token", "scope": ["mssql://dyn-access"], "owner": "role:other",
+        "permissions": ["use"], "dynamic": True, "lifetime": 600,
+        "generate": {"access_token": "GEN-AAD", "user": "GEN-USER"},  # user: no name-based redaction covers it
+        "params": {"host": "sql.corp.example"}, "redact_keys": [],
+    },
     "bad_value": {
         "type": "mssql", "scope": ["mssql://bad"], "permissions": ["use"],
         "params": {"port": {"type": "INTEGER", "value": "not-a-number"}}, "redact_keys": [],
@@ -591,6 +605,12 @@ class Handler(BaseHTTPRequestHandler):
                         "key_id": "DYN-S3-%d" % FETCHED[name], "secret": {"type": "VARCHAR", "value": "s"},
                         "region": "us-east-1", "endpoint": "127.0.0.1:%d" % self.server.server_address[1],
                         "url_style": "path", "use_ssl": {"type": "BOOLEAN", "value": False}})
+                    body["expires_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                       time.gmtime(time.time() + sec["lifetime"]))
+                elif sec.get("generate"):
+                    for key, prefix in sec["generate"].items():
+                        body["params"][key] = "%s-%d" % (prefix, FETCHED[name])
+                    body["redact_keys"] = list(sec["redact_keys"]) + list(sec["generate"])
                     body["expires_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ",
                                                        time.gmtime(time.time() + sec["lifetime"]))
                 elif sec.get("dynamic"):
