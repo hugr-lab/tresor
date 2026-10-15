@@ -75,5 +75,5 @@ The module's own test proves the bundle sits beside the system's roots (spec 016
 
 ## Follow-ups
 
-- The duckdb-ext-common tag after its PR #15 merges; then the submodule moves from the PR's commit to the tag,
-  and `CLAUDE.md`'s pin row names it (not done here: the tag does not exist yet).
+- The duckdb-ext-common tag after its PR #15 merges - done: v0.13.0 (79467c2), pinned, and `CLAUDE.md`'s pin row
+  names it. duckdb-acl moves to it too (the contract stamps are unchanged, so `acl_checkout.sh` passes meanwhile).
