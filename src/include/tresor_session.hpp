@@ -9,6 +9,7 @@
 #include "duckdb/common/unordered_map.hpp"
 #include "oidc_core.hpp"
 #include "tresor_credentials.hpp"
+#include "tresor_http.hpp"
 #include "tresor_remember.hpp"
 
 #include <atomic>
@@ -106,10 +107,10 @@ public:
 	//! The token itself never leaves the session.
 	vector<string> OwnAudiences(bool &is_jwt);
 
-	//! The HTTP client of this session's requests and renewals (specs/020): empty for the built-in one. Set once,
-	//! before the session is shared.
-	void SetTransport(oidc::Transport transport_p) {
-		transport = std::move(transport_p);
+	//! The HTTP client of this session's requests and renewals (specs/020) and the built-in client's CA bundle
+	//! (specs/030), as the ATTACH found them. Set once, before the session is shared.
+	void SetHttpClient(HttpClient client) {
+		http_client = std::move(client);
 	}
 
 	//! DETACH: drop the tokens. Calls after this fail.
@@ -169,7 +170,7 @@ private:
 	LoginFlow flow;
 	string subject;
 	string catalog_name;
-	oidc::Transport transport;
+	HttpClient http_client;
 	mutable mutex lock;
 	oidc::TokenSet tokens;
 	int64_t issued_at = 0;        // when `tokens` arrived: the renewal margin is at most half their life

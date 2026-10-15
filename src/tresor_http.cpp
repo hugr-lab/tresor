@@ -207,5 +207,20 @@ oidc::Transport TransportFor(ClientContext &context) {
 	return DuckDBTransport(*context.db);
 }
 
+string CaBundleFor(ClientContext &context) {
+	Value value;
+	if (!context.TryGetCurrentSetting(Identifier("ca_cert_file"), value) || value.IsNull()) {
+		return string(); // httpfs is not loaded, or the setting is not set
+	}
+	return value.ToString();
+}
+
+HttpClient HttpClientFor(ClientContext &context) {
+	HttpClient client;
+	client.transport = TransportFor(context);
+	client.ca_bundle = CaBundleFor(context);
+	return client;
+}
+
 } // namespace tresor
 } // namespace duckdb

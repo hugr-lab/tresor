@@ -50,6 +50,8 @@ The first release, with DuckDB 2.0.
 - **Pipelines checked live** (specs/027): a managed identity, a managed identity as an app registration's
   federated credential (its v1 token's `aud`, the app id of AzureADTokenExchange, now accepted) and an AKS pod's
   projected token on Azure; a Kubernetes token with Keycloak 26.7+ on kind; the `tresor-live` image.
+- **A private CA** (specs/030): DuckDB's `ca_cert_file` is trusted by tresor's built-in client too, beside the
+  system's roots - for the ATTACH, a session's calls and renewals, `tresor_login` and `tresor_logoff`.
 - **Audit and traces**: every login, lookup, write and grant as a typed event, for DuckDB's log and
   for OpenTelemetry through acl-otel (`tresor_audit_level`, TRSA 1) (specs/011).
 - **The protocol `duckdb-secrets/1`** (draft until this release), a reference server in Go and a

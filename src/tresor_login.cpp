@@ -651,8 +651,8 @@ PersonLoginStatus StartPersonLogin(ClientContext &context, const AttachRequest &
 #ifdef __EMSCRIPTEN__
 	throw InvalidInputException("tresor_login: in a browser the page logs in, and hands it over with tresor_web_login");
 #endif
-	auto transport = TransportFor(context);
-	oidc::TransportScope http(transport);
+	auto client = HttpClientFor(context);
+	HttpScope http(client);
 	ServiceInfo info;
 	info.host = request.host;
 	info.insecure_http = request.insecure_http;
@@ -812,8 +812,8 @@ PersonLoginStatus StartPersonLogin(ClientContext &context, const AttachRequest &
 		auto shared = login;
 		std::thread thread;
 		if (run) {
-			thread = std::thread([shared, run, transport, weak_store, mode]() {
-				oidc::TransportScope thread_http(transport);
+			thread = std::thread([shared, run, client, weak_store, mode]() {
+				HttpScope thread_http(client);
 				auto tokens = run();
 				{
 					lock_guard<mutex> guard(shared->lock);
@@ -901,7 +901,7 @@ LoginKey HandOverLogin(ClientContext &context, const AttachRequest &request, con
 		throw InvalidInputException("tresor_web_login: no refresh token - a login without one ends with its access "
 		                            "token; ask the identity provider for offline_access");
 	}
-	oidc::TransportScope http(TransportFor(context));
+	HttpScope http(HttpClientFor(context));
 	string discovery;
 	auto discovered = Discover(request, discovery);
 	auto &issuer = ChooseIssuer(request, discovered, request.issuer);
@@ -922,8 +922,8 @@ LoginKey HandOverLogin(ClientContext &context, const AttachRequest &request, con
 
 shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &request) {
 	// every request of the login - discovery, the IdP's flows, the first whoami - on the client the setting names
-	auto transport = TransportFor(context);
-	oidc::TransportScope http(transport);
+	auto client = HttpClientFor(context);
+	HttpScope http(client);
 	ServiceInfo info;
 	info.host = request.host;
 	info.insecure_http = request.insecure_http;
@@ -1124,7 +1124,7 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 	}
 
 	auto session = make_shared_ptr<TresorSession>(std::move(info), flow, std::move(tokens), std::move(credential));
-	session->SetTransport(transport); // and every one after, renewals included
+	session->SetHttpClient(client); // and every one after, renewals included
 	// the login is proven only when the service accepts it: fail closed at ATTACH, not at first use
 	auto whoami = session->Call("GET", "/v1/whoami");
 	if (whoami.status != 200) {

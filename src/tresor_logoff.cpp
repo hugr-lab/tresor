@@ -254,7 +254,8 @@ void LogoffScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 				return unusable;
 			};
 		}
-		tresor::oidc::TransportScope http(transport);
+		// and the built-in client's CA bundle (specs/030): DuckDB's ca_cert_file as it is now
+		tresor::HttpScope http(tresor::HttpClient {transport, tresor::CaBundleFor(context)});
 		auto &data = input.bind_data->Cast<LogoffBindData>();
 		auto attached = Attached(context);
 		vector<tresor::LoginKey> keys;

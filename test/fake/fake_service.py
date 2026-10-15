@@ -4,7 +4,9 @@
 Enough of both for the attach tests: the service's discovery and whoami, the IdP's discovery,
 /authorize (auto-approves: 302 to the redirect_uri with a code and the state, PKCE checked at the
 exchange), /token (authorization_code, refresh_token, client_credentials, the device code) and
-/device. Plain http on 127.0.0.1 - the client allows that only with INSECURE_HTTP.
+/device. Plain http on 127.0.0.1 - the client allows that only with INSECURE_HTTP. With --tls-cert/--tls-key the
+same service and IdP also answer https on a second port (--tls-port-file): a certificate from a private CA the
+test run made, for the CA bundle tests (specs/030).
 
 The service lives under a *realm* - the base path of the ATTACH - which picks its behaviour, since
 a sqllogictest can only steer the fake through what it attaches:
@@ -29,6 +31,7 @@ use alice_lake (NOT_FOR_OTHER_PERSON). A descriptor's comment counts
 how often its material was fetched ("fetched N") - the only window a sqllogictest has into caching.
 
     fake_service.py --port-file PATH     # binds a free port and writes it to PATH
+        [--tls-port-file PATH --tls-cert CERT --tls-key KEY]   # and an https one
 """
 
 import argparse
@@ -37,6 +40,7 @@ import hashlib
 import json
 import os
 import secrets
+import ssl
 import subprocess
 import tempfile
 import threading
@@ -326,7 +330,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def base(self):
-        return "http://127.0.0.1:%d" % self.server.server_address[1]
+        return "%s://127.0.0.1:%d" % (getattr(self.server, "scheme", "http"), self.server.server_address[1])
 
     def send(self, status, body, content_type="application/json", headers=None):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
@@ -1059,7 +1063,23 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port-file", required=True)
+    parser.add_argument("--tls-port-file")
+    parser.add_argument("--tls-cert")
+    parser.add_argument("--tls-key")
     args = parser.parse_args()
+    if args.tls_port_file:
+        # the same handler over https (specs/030): its base URLs say https, so every endpoint it names does too
+        tls = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        tls.scheme = "https"
+        tls.handle_error = lambda request, address: None  # a refused certificate is what some tests mean to see
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(args.tls_cert, args.tls_key)
+        # the handshake on the handler's thread, not the accept loop's: a client that refuses the certificate
+        # must not hold the listener up
+        tls.socket = context.wrap_socket(tls.socket, server_side=True, do_handshake_on_connect=False)
+        threading.Thread(target=tls.serve_forever, daemon=True).start()
+        with open(args.tls_port_file, "w") as f:
+            f.write(str(tls.server_address[1]))
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     with open(args.port_file, "w") as f:
         f.write(str(server.server_address[1]))

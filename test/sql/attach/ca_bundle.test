@@ -1,0 +1,155 @@
+# name: test/sql/attach/ca_bundle.test
+# description: a service and an IdP behind a private CA - DuckDB's ca_cert_file is tresor's trust, on either client: the ATTACH, a session's calls, tresor_login's background login, tresor_logoff (specs/030)
+# group: [attach]
+
+require-env TRESOR_TEST_PORT
+
+require-env TRESOR_TEST_TLS_PORT
+
+require-env TRESOR_TEST_CA
+
+require-env TRESOR_TEST_KEYS
+
+# ca_cert_file is httpfs's setting
+require httpfs
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+SET tresor_keychain = 'memory';
+
+statement ok
+CREATE MACRO idp(what) AS (SELECT regexp_extract(content, '"' || what || '": ([^,}]*)', 1) FROM read_text('http://127.0.0.1:{TRESOR_TEST_PORT}/_stats'));
+
+# a service's login over https, with no INSECURE_HTTP: discovery, the IdP's token and whoami all verify a certificate
+statement ok
+CREATE SECRET tls_login (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_TLS_PORT}', FLOW 'client_credentials',
+    CLIENT_ID 'etl', CLIENT_SECRET 's3cr3t', ISSUER 'https://127.0.0.1:{TRESOR_TEST_TLS_PORT}/idp');
+
+# --- on the client the run names (TRESOR_HTTP_CLIENT) -------------------------------------------------------------
+
+# the system's roots alone do not know the private CA
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_TLS_PORT}' AS corp;
+----
+<REGEX>:.*(SSL|certificate|verif).*
+
+statement ok
+SET GLOBAL ca_cert_file = '{TRESOR_TEST_CA}';
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_TLS_PORT}' AS corp;
+
+query II
+SELECT subject, login FROM corp.whoami();
+----
+client:etl	client_credentials
+
+statement ok
+DETACH corp;
+
+# another CA's certificate is no trust for this one
+statement ok
+SET GLOBAL ca_cert_file = '{TRESOR_TEST_KEYS}/keynode.crt';
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_TLS_PORT}' AS corp;
+----
+<REGEX>:.*(SSL|certificate|verif).*
+
+statement ok
+RESET GLOBAL ca_cert_file;
+
+# --- the built-in client ------------------------------------------------------------------------------------------
+
+statement ok
+SET tresor_http_client = 'builtin';
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_TLS_PORT}' AS corp;
+----
+SSL server verification failed
+
+# a bundle that cannot be read fails the login - it never falls back to the system's roots alone
+statement ok
+SET GLOBAL ca_cert_file = '{TRESOR_TEST_KEYS}/no-such-ca.pem';
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_TLS_PORT}' AS corp;
+----
+no-such-ca.pem cannot be read
+
+# nor one without a certificate in it: a public key
+statement ok
+SET GLOBAL ca_cert_file = '{TRESOR_TEST_KEYS}/keynode.pub';
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_TLS_PORT}' AS corp;
+----
+holds no PEM certificate
+
+statement ok
+SET GLOBAL ca_cert_file = '{TRESOR_TEST_CA}';
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_TLS_PORT}' AS corp;
+
+# a session keeps the bundle of its ATTACH, as its client: its calls go on after the setting changes
+statement ok
+RESET GLOBAL ca_cert_file;
+
+query I
+SELECT subject FROM corp.whoami();
+----
+client:etl
+
+# ...while a new login takes the setting as it is now
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_TLS_PORT}' AS corp2;
+----
+SSL server verification failed
+
+statement ok
+DETACH corp;
+
+statement ok
+DROP SECRET tls_login;
+
+# --- a person's login: tresor_login's background thread, then tresor_logoff's revocation, over https ---------------
+
+statement ok
+RESET tresor_http_client;
+
+statement ok
+SET GLOBAL ca_cert_file = '{TRESOR_TEST_CA}';
+
+statement ok
+CREATE TABLE seen AS SELECT idp('revoked_tokens')::INT AS revoked;
+
+query III
+SELECT flow, status, url LIKE 'https://127.0.0.1:%/activate' FROM tresor_login('tresor:127.0.0.1:{TRESOR_TEST_TLS_PORT}', login := 'device');
+----
+device	pending	true
+
+# the ATTACH waits for the device poll the background thread runs - over https, with the bundle it was started with
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_TLS_PORT}' AS corp;
+
+query I
+SELECT subject LIKE '%alice' FROM corp.whoami();
+----
+true
+
+query III
+SELECT removed, revoked, detached FROM tresor_logoff('corp');
+----
+true	true	1
+
+query I
+SELECT idp('revoked_tokens')::INT > revoked FROM seen;
+----
+true
+
+statement ok
+RESET GLOBAL ca_cert_file;
