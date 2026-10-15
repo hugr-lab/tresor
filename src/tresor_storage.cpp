@@ -318,31 +318,52 @@ string ProblemType(const string &body) {
 	return Str(doc.Root(), "type");
 }
 
-//! The served secret as its type's own class (specs/032): an extension that registers a type with a deserializer
-//! of its own (bigquery: BigquerySecret) casts what a lookup finds to that class. The key-value secret is read back
-//! through that deserializer, as a persistent secret is read from disk - in memory only, the buffer wiped. A type
-//! not registered (its extension not loaded), or one whose deserializer cannot read a key-value secret, is served as
-//! built.
-unique_ptr<const BaseSecret> AsRegisteredType(DatabaseInstance &db, unique_ptr<const KeyValueSecret> secret) {
-	secret_deserializer_t deserialize = nullptr;
-	for (auto &type : SecretManager::Get(db).AllSecretTypes()) {
-		if (type.name == secret->GetType()) {
-			deserialize = type.deserializer;
-			break;
+//! A buffer of material: zeroed whenever it is freed, a growth's old buffer too.
+void WipeAndFree(PrivateAllocatorData *, data_ptr_t pointer, idx_t size) {
+	std::fill(pointer, pointer + size, data_t(0));
+	Allocator::DefaultFree(nullptr, pointer, size);
+}
+
+data_ptr_t WipeAndReallocate(PrivateAllocatorData *, data_ptr_t pointer, idx_t old_size, idx_t size) {
+	auto grown = Allocator::DefaultAllocate(nullptr, size);
+	if (grown) {
+		memcpy(grown, pointer, MinValue(old_size, size));
+		WipeAndFree(nullptr, pointer, old_size);
+	}
+	return grown;
+}
+
+//! The deserializer the extension registered for `type`; null when none is registered (the extension not loaded).
+//! Never autoloads.
+secret_deserializer_t DeserializerOf(DatabaseInstance &db, const Identifier &type) {
+	for (auto &registered : SecretManager::Get(db).AllSecretTypes()) {
+		if (registered.name == type) {
+			return registered.deserializer;
 		}
 	}
-	if (!deserialize) {
-		return std::move(secret);
+	return nullptr;
+}
+
+//! The served secret as its type's own class (specs/032): an extension that registers a type with a deserializer
+//! of its own (bigquery: BigquerySecret) casts what a lookup finds to that class. The key-value secret is read back
+//! through that deserializer, as DuckDB reads a secret its type serialized itself - in memory only, every buffer
+//! wiped. One whose deserializer cannot read a key-value secret (a layout of its own) is served as built.
+unique_ptr<const BaseSecret> AsType(secret_deserializer_t deserialize, unique_ptr<const BaseSecret> secret) {
+	auto key_value = dynamic_cast<const KeyValueSecret *>(secret.get());
+	if (!deserialize || !key_value) {
+		return secret;
 	}
-	MemoryStream stream;
+	Allocator wiping(Allocator::DefaultAllocate, WipeAndFree, WipeAndReallocate, nullptr);
+	MemoryStream stream(wiping);
 	unique_ptr<const BaseSecret> typed;
 	try {
 		BinarySerializer serializer(stream);
 		serializer.Begin();
-		secret->Serialize(serializer);
+		key_value->Serialize(serializer);
 		serializer.End();
-		stream.Rewind();
-		BinaryDeserializer deserializer(stream);
+		// read exactly what was written, never the buffer's tail
+		MemoryStream written(stream.GetData(), stream.GetPosition());
+		BinaryDeserializer deserializer(written);
 		deserializer.Begin();
 		// what SecretManager::DeserializeSecret reads before it hands the rest to the type
 		deserializer.ReadProperty<Identifier>(100, "type");
@@ -352,16 +373,15 @@ unique_ptr<const BaseSecret> AsRegisteredType(DatabaseInstance &db, unique_ptr<c
 		typed = deserialize(
 		    deserializer, BaseSecret(secret->GetScope(), secret->GetType(), secret->GetProvider(), secret->GetName()));
 		deserializer.End();
+	} catch (std::bad_alloc &) {
+		throw;
+	} catch (InternalException &) {
+		throw;
 	} catch (std::exception &) {
 		typed = nullptr; // a layout of its own: the key-value secret, as before
 	}
-	std::fill(stream.GetData(), stream.GetData() + stream.GetCapacity(), data_t(0));
-	if (!typed) {
-		return std::move(secret);
-	}
-	return typed;
+	return typed ? std::move(typed) : std::move(secret);
 }
-
 } // namespace
 
 Value ProtocolValue(const string &secret, const string &key, const string &type, yyjson_val *value,
@@ -795,6 +815,7 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &calle
 	auto now = NowSeconds();
 	optional_ptr<ClientContext> context = transaction ? transaction->context : nullptr;
 	unique_ptr<const BaseSecret> hit;
+	bool typed = false;
 	// logged off, or a view emptied by another login since the lookup took it (specs/025): nothing from the cache
 	auto logged_off = caller.session->LoggedOff();
 	if (!logged_off) {
@@ -802,7 +823,12 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &calle
 		auto cached = Serves(caller, view) ? view.materials.find(d.name) : view.materials.end();
 		if (cached != view.materials.end() && cached->second.version == d.version && cached->second.valid_until > now) {
 			hit = cached->second.secret->Clone();
+			typed = cached->second.typed;
 		}
+	}
+	if (hit && !typed) {
+		// cached before its type's extension was loaded: of that class from now on (specs/032)
+		hit = AsType(DeserializerOf(db, hit->GetType()), std::move(hit));
 	}
 	if (hit) {
 		// served from memory: counted (outside the storage's lock), not emitted - a scan asks once per file
@@ -891,7 +917,8 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &calle
 			secret->redact_keys.insert(Identifier(redact));
 		}
 	}
-	auto served = AsRegisteredType(db, std::move(secret));
+	auto deserialize = DeserializerOf(db, secret->GetType());
+	auto served = AsType(deserialize, std::move(secret));
 	// how long this material may be served: a static secret a few minutes (or until its version changes),
 	// a dynamic one until shortly before it expires - with a margin of at most half its life, so a
 	// short-lived credential is not minted anew for every file of a scan
@@ -920,6 +947,7 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &calle
 		material.version = d.version;
 		material.valid_until = valid_until;
 		material.secret = served->Clone();
+		material.typed = deserialize != nullptr;
 		view.materials[d.name] = std::move(material);
 	}
 	return served;

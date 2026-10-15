@@ -120,6 +120,7 @@ private:
 		int64_t refreshed_at = 0; // minted by a refresh (RefreshMaterial): parallel refreshes share it
 		int64_t valid_until = 0;
 		unique_ptr<const BaseSecret> secret;
+		bool typed = false; // its type was registered when fetched: already of the type's class (specs/032)
 	};
 	//! What one caller sees: the node, or one acl session (never shared between them).
 	struct View {

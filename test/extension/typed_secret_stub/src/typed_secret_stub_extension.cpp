@@ -20,10 +20,10 @@ class StubSecret : public KeyValueSecret {
 public:
 	StubSecret(const vector<string> &scope, const Identifier &type, const Identifier &provider, const Identifier &name)
 	    : KeyValueSecret(scope, type, provider, name) {
-		redact_keys = {Identifier("token")};
+		redact_keys = {Identifier("token"), Identifier("project_key")};
 	}
 	explicit StubSecret(const BaseSecret &base) : KeyValueSecret(base) {
-		redact_keys = {Identifier("token")};
+		redact_keys = {Identifier("token"), Identifier("project_key")};
 	}
 	unique_ptr<const BaseSecret> Clone() const override {
 		return make_uniq<StubSecret>(*this);
@@ -65,6 +65,7 @@ void RegisterStubType(ExtensionLoader &loader, const char *name, secret_deserial
 	CreateSecretFunction function = {name, Identifier("config"), create};
 	function.named_parameters[Identifier("project")] = LogicalType::VARCHAR;
 	function.named_parameters[Identifier("token")] = LogicalType::VARCHAR;
+	function.named_parameters[Identifier("project_key")] = LogicalType::VARCHAR;
 	loader.RegisterFunction(function);
 }
 

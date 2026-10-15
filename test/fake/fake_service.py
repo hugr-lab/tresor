@@ -156,6 +156,19 @@ SECRETS = {
         "generate": {"access_token": "GEN-AAD", "user": "GEN-USER"},  # user: no name-based redaction covers it
         "params": {"host": "sql.corp.example"}, "redact_keys": [],
     },
+    # specs/032: of a type an extension registers with a class of its own (typed_secret_stub) - its class redacts
+    # project_key, which the service does not; typed values go through the type's deserializer
+    "typed_seed": {
+        "type": "typed_stub", "scope": ["stub://seed"], "owner": "role:other", "permissions": ["use"],
+        "params": {
+            "project": "seed-project",
+            "project_key": {"type": "VARCHAR", "value": "pk-seed"},
+            "big": {"type": "HUGEINT", "value": 123456789012345678901234567890},
+            "limits": {"type": "STRUCT(max_rows BIGINT, ratio DOUBLE)", "value": {"max_rows": 1000, "ratio": 0.5}},
+            "replicas": {"type": "VARCHAR[]", "value": ["a", "b"]},
+        },
+        "redact_keys": [],
+    },
     "bad_value": {
         "type": "mssql", "scope": ["mssql://bad"], "permissions": ["use"],
         "params": {"port": {"type": "INTEGER", "value": "not-a-number"}}, "redact_keys": [],
