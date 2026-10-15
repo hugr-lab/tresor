@@ -31,8 +31,9 @@ A production service is being designed separately:
 - Delegation: grant exchange, the `Delegation` header, and actor policy (tresor specs/009: under a
   grant a server uses its own grants for the user, and passes management through only for admins).
 
-Dynamic secrets are implemented for one kind: a token for the caller (`token_exchange`, below). Issuers must be https unless they are on loopback: their signing keys are
-fetched from them.
+Dynamic secrets: any parameter of any secret type may be generated per caller, a token for them or a
+claim of their token ([generated parameters](#generated-parameters), below). Issuers must be https
+unless they are on loopback: their signing keys are fetched from them.
 
 ## Run it
 
@@ -109,10 +110,56 @@ No credentials mode is involved: the page sends a bearer token, never a cookie.
     `verbs` list it;
   - everything else is `403 actor_not_allowed`.
 
-## A token for the caller (`token_exchange`)
+## Generated parameters
 
-An administrator stores a secret without a token: `provider: token_exchange` and the downstream
-`audience` (and `scope`), for an `http` (`bearer_token`) or `quack` (`token`) secret:
+The protocol lets a service generate a parameter on each read ([dynamic
+secrets](./protocol.md#dynamic-secrets)) and leaves how it is written to the service. The reference
+server and [tresor-server](https://github.com/hugr-lab/tresor-server) share one syntax, so a store
+moves between them.
+
+An administrator writes a **generator** as the whole value of a `VARCHAR` parameter (a JSON string)
+of a secret of any type, with the provider the consuming extension knows:
+
+```json
+{"type": "mssql", "provider": "access_token", "scope": ["mssql://sql.corp.example"],
+ "params": {"host": "sql.corp.example", "access_token": "mint+exchange://https://database.windows.net/?scope=user_impersonation"}}
+```
+
+| Value | Generates | Reference server |
+| --- | --- | --- |
+| `mint+exchange://<audience>[?scope=<scope>]` | a token for the caller at the identity provider, for `<audience>` (RFC 8693, [below](#a-token-for-the-caller)) | yes |
+| `mint+claim://<claim>` | the text of a claim of the caller's verified token: a string as it is, a number or a boolean as its JSON text | yes |
+| `mint+login://…` | tresor-server's own (see its documentation) | no |
+| `mint+rule://…` | tresor-server's own (see its documentation) | no |
+
+- **The audience** is everything up to the first `?`, percent-decoded (`%3F` for a `?` in it). The
+  query is `scope=<scope>` and nothing else, form-encoded (`read+write` is `read write`).
+- **The claim** is a top-level claim, named exactly. A claim that is missing, empty, a list or an
+  object is refused at the read (`403 mint_refused`). The served value is the claim, never the token
+  it came from.
+- **For whom.** For the effective user: the direct caller, or under a delegation grant the grant's
+  user, never the server.
+- **What is served.** The secret is `dynamic`; the descriptor's `provider` is the stored one; each
+  generated key is added to `redact_keys`; `expires_at` is the earliest expiry: a minted token's, a
+  claim's token's (under a grant, the grant's).
+- **Failures:** `403 mint_refused` for a lasting refusal, `503` for an outage, never an empty value.
+- **Only administrators write a generator**, as they write any secret. At PUT a generator must be
+  well formed and of a known kind, and an exchange for this service's own audience is refused; the
+  refusal names the parameter, never its value.
+- **A literal beginning with `mint+`** is written with the `+` doubled: a stored `mint++x` is
+  served as `mint+x`, and `mint+++x` as `mint++x`. Exactly one `+` after `mint` is a generator;
+  two or more are a literal, with one dropped. The prefix is lowercase: `MINT+x` is a literal as it is.
+- **Whole values only, here.** tresor-server also generates a part of a string (`${…}` inside a
+  value, including values inside `MAP`, `STRUCT` and `LIST`); a literal `${` there is written `$${`.
+  The reference server reads no `${…}`: it serves such a value as written. A typed value
+  (`{"type": …, "value": …}`) is always a literal here.
+
+## A token for the caller
+
+`mint+exchange://<audience>` mints a token for the caller. The older form still works as an alias: a
+secret with `provider: token_exchange` and the downstream `audience` (and `scope`) parameters, for
+an `http` (`bearer_token`) or `quack` (`token`) secret, is served as if that parameter were
+`mint+exchange://<audience>?scope=<scope>` (and with `provider` `token_exchange`, as stored):
 
 ```json
 {"type": "quack", "provider": "token_exchange", "scope": ["quack:corp.duck"], "params": {"audience": "acl-node"}}
@@ -131,7 +178,7 @@ its own client), and serves it as a dynamic secret:
   token for this service until that token expires (minutes), and mints from it later, as it does
   for a secret granted to the server after the session opened.
 - **A minted token is checked:** its `aud` must name the audience asked for, and never this service
-  itself. At PUT, an `audience` equal to this service's own is refused.
+  itself. At PUT, an audience equal to this service's own is refused.
 - **Refresh tokens are dropped, not revoked at the IdP** (RFC 7009), when a grant ends. They stay
   valid at the IdP until the user's SSO session ends, and renewing keeps that session from going
   idle.

@@ -1,6 +1,7 @@
 # Spec 010: a token for the caller — secrets the service mints per caller, a session's user included
 
-- **Status**: implemented
+- **Status**: implemented; generalised by [029](../029-dynamic-params/spec.md) (`mint+exchange://` on any
+  parameter of any type; `provider: token_exchange` stays an alias)
 - **Date**: 2026-09-24
 - **Author**: VGSML (with Claude)
 

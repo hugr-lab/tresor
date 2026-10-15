@@ -1,0 +1,61 @@
+# name: test/sql/attach/dynamic_params.test
+# description: Dynamic secrets of any type - a generated parameter reaches DuckDB under the consumer's provider, redacted (specs/029)
+# group: [attach]
+
+require-env TRESOR_TEST_PORT
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+CREATE SECRET etl_login (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'client_credentials',
+    CLIENT_ID 'etl', CLIENT_SECRET 's3cr3t', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+
+# the descriptor: dynamic, with the provider the service stored - the consumer's, not the service's mechanism
+query IIII
+SELECT name, type, provider, dynamic FROM corp.secrets() WHERE name IN ('dyn_http', 'dyn_access') ORDER BY name;
+----
+dyn_access	mssql	access_token	true
+dyn_http	http	config	true
+
+# in DuckDB's lookup with that provider: only an S3-family dynamic secret is tresor's (httpfs's REFRESH auto)
+query III
+SELECT name, type, provider FROM duckdb_secrets() WHERE storage = 'corp' AND name IN ('dyn_http', 'dyn_access')
+ORDER BY name;
+----
+dyn_access	mssql	access_token
+dyn_http	http	config
+
+query I
+SELECT name FROM which_secret('https://dyn-http.example/api', 'http');
+----
+dyn_http
+
+# the material: the generated key is redacted (the service lists it in redact_keys), the rest is as stored
+query II
+SELECT tresor_secret_param('dyn_http', 'bearer_token'), tresor_secret_param('dyn_http', 'extra_http_headers');
+----
+VARCHAR <redacted>	MAP(VARCHAR, VARCHAR) {X-Tenant=sales}
+
+query II
+SELECT tresor_secret_param('dyn_access', 'access_token'), tresor_secret_param('dyn_access', 'host');
+----
+VARCHAR <redacted>	VARCHAR sql.corp.example
+
+# a generated key no client would redact by its name: the service's redact_keys alone redact it
+query I
+SELECT tresor_secret_param('dyn_access', 'user');
+----
+VARCHAR <redacted>
+
+# the generated value never shows: neither in duckdb_secrets() nor redacted or not
+query I
+SELECT count(*) FROM duckdb_secrets(redact := false) WHERE storage = 'corp' AND secret_string LIKE '%GEN-%';
+----
+0
+
+statement ok
+DETACH corp;

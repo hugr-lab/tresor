@@ -406,7 +406,7 @@ func (s *Server) discovery(w http.ResponseWriter, r *http.Request) {
 		"api":      strings.TrimRight(s.cfg.PublicURL, "/"),
 		"issuers":  issuers,
 		"capabilities": map[string]bool{
-			"write": true, "annotate": true, "dynamic": false, "delegation": true, "variables": true,
+			"write": true, "annotate": true, "dynamic": true, "delegation": true, "variables": true,
 		},
 	})
 }
@@ -458,7 +458,7 @@ func descriptor(sec *store.Secret, verbs []string) map[string]any {
 		"created_at":  sec.CreatedAt.UTC().Format(time.RFC3339),
 		"updated_at":  sec.UpdatedAt.UTC().Format(time.RFC3339),
 		"version":     strconv.FormatInt(sec.Version, 10),
-		"dynamic":     isMinted(sec), // a token minted per caller (specs/010)
+		"dynamic":     isDynamic(sec), // a parameter generated per caller (specs/010, 029)
 		"permissions": verbs,
 	}
 }
@@ -489,35 +489,18 @@ func (s *Server) getSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body := descriptor(sec, verbs)
-	params := sec.Params
-	if params == nil {
-		params = map[string]json.RawMessage{}
-	}
-	redact := sec.RedactKeys
-	if redact == nil {
-		redact = []string{}
+	// generated parameters (specs/010, 029): made for the effective caller - the caller's own, or under a
+	// grant the grant's user's
+	params, redact, expires, refusal := s.material(r, c, sec)
+	if refusal != nil {
+		problem(w, refusal.status, refusal.kind, refusal.detail)
+		return
 	}
 	body["params"] = params
 	body["redact_keys"] = redact
 	body["expires_at"] = nil
-	if isMinted(sec) {
-		// a token for the caller (specs/010): the caller's own, or under a grant the grant's user's
-		token, refusal := s.mintedToken(r, c, sec)
-		if refusal != nil {
-			problem(w, refusal.status, refusal.kind, refusal.detail)
-			return
-		}
-		param := tokenParam[strings.ToLower(sec.Type)]
-		minted := make(map[string]json.RawMessage, len(params)+1)
-		for k, v := range params {
-			minted[k] = v
-		}
-		minted[param], _ = json.Marshal(token.Access)
-		body["params"] = minted
-		body["redact_keys"] = append(slices.Clone(redact), param)
-		if !token.Expiry.IsZero() {
-			body["expires_at"] = token.Expiry.UTC().Format(time.RFC3339)
-		}
+	if !expires.IsZero() {
+		body["expires_at"] = expires.UTC().Format(time.RFC3339)
 	}
 	w.Header().Set("ETag", strconv.Quote(strconv.FormatInt(sec.Version, 10)))
 	w.Header().Set("Cache-Control", "no-store")
@@ -614,6 +597,11 @@ func (s *Server) putSecret(w http.ResponseWriter, r *http.Request) {
 			problem(w, http.StatusUnprocessableEntity, "invalid_secret", err.Error())
 			return
 		}
+	}
+	// generated parameters (specs/029): well formed; only administrators write any secret at all
+	if err := s.validGenerators(body.Type, body.Provider, body.Params); err != nil {
+		problem(w, http.StatusUnprocessableEntity, "invalid_secret", err.Error())
+		return
 	}
 	now := s.now()
 	s.upsert(w, r, name, func() *store.Secret {

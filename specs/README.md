@@ -46,3 +46,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | [026](026-pipelines/spec.md) | pipelines - a service identity, never a person's login; the docs page per executor, dbt-duckdb | implemented |
 | [027](027-live-pipelines/spec.md) | live checks of a pipeline's login - Kubernetes, Keycloak, Entra; the `tresor-live` image | implemented |
 | [028](028-repin-f702a1f/spec.md) | re-pin duckdb to f702a1f - with duckdb-acl | implemented |
+| [029](029-dynamic-params/spec.md) | dynamic parameters - any type, any parameter generated per caller; the services' `mint+` syntax (exchange, claim) | implemented |

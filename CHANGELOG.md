@@ -27,7 +27,10 @@ The first release, with DuckDB 2.0.
 - **Writes and grants**: `CREATE / DROP PERSISTENT SECRET … IN corp`, `annotate_secret`, `grants`,
   `grant_secret`, `revoke_secret`. Administrators manage; roles use (specs/005, 009).
 - **Dynamic secrets**: a token minted for the caller, and httpfs's `REFRESH auto` through the
-  `tresor` provider (specs/006, 010).
+  `tresor` provider (specs/006, 010). Any parameter of any secret type may be generated per caller, the
+  descriptor carrying the consumer's provider and every generated key in `redact_keys`; the reference server
+  generates `mint+exchange://<audience>` (a token) and `mint+claim://<claim>` (a claim of the caller's token),
+  `provider: token_exchange` staying an alias (specs/029).
 - **Acting for duckdb-acl's sessions**:
   - `ACT_FOR_SESSIONS` at ATTACH, or `corp.act_for_sessions()` later;
   - a session's user token exchanged (RFC 8693 or Entra On-Behalf-Of) for a delegation grant,

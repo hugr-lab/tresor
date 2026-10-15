@@ -1,0 +1,145 @@
+# name: test/sql/conformance/generators.test
+# description: duckdb-secrets/1 conformance - generated parameters in the services' shared syntax, mint+exchange:// and mint+claim:// (specs/029)
+# group: [conformance]
+
+# generators are optional, and their syntax is no part of the protocol: set TRESOR_CONFORMANCE_GENERATORS for a
+# service that implements the shared mint+ syntax (scripts/ci/test_keycloak.sh does for the reference server).
+# TRESOR_CONFORMANCE_ECHO is an http API like test/keycloak/echo.py (whom a bearer token was minted for; under a
+# path ending /claim, the bearer value itself); TRESOR_CONFORMANCE_EXCHANGE_AUDIENCE an audience the service may
+# exchange the conformance client's token for; TRESOR_CONFORMANCE_CLAIM a claim of that client's token and
+# TRESOR_CONFORMANCE_CLAIM_VALUE its value. The client is an administrator holding at least one role.
+require-env TRESOR_CONFORMANCE_GENERATORS
+
+require-env TRESOR_CONFORMANCE_ECHO
+
+require-env TRESOR_CONFORMANCE_EXCHANGE_AUDIENCE
+
+require-env TRESOR_CONFORMANCE_CLAIM
+
+require-env TRESOR_CONFORMANCE_CLAIM_VALUE
+
+require-env TRESOR_CONFORMANCE_HOST
+
+require-env TRESOR_CONFORMANCE_INSECURE
+
+require-env TRESOR_CONFORMANCE_ISSUER
+
+require-env TRESOR_CONFORMANCE_CLIENT_ID
+
+require-env TRESOR_CONFORMANCE_CLIENT_SECRET
+
+require httpfs
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+CREATE SECRET conformance_login (TYPE tresor, SCOPE 'tresor:{TRESOR_CONFORMANCE_HOST}',
+    FLOW 'client_credentials', CLIENT_ID '{TRESOR_CONFORMANCE_CLIENT_ID}',
+    CLIENT_SECRET '{TRESOR_CONFORMANCE_CLIENT_SECRET}', ISSUER '{TRESOR_CONFORMANCE_ISSUER}');
+
+statement ok
+ATTACH 'tresor:{TRESOR_CONFORMANCE_HOST}' AS svc (INSECURE_HTTP {TRESOR_CONFORMANCE_INSECURE});
+
+statement ok
+DROP PERSISTENT SECRET IF EXISTS conformance_gen_exchange FROM svc;
+
+statement ok
+DROP PERSISTENT SECRET IF EXISTS conformance_gen_claim FROM svc;
+
+statement ok
+DROP PERSISTENT SECRET IF EXISTS conformance_gen_missing FROM svc;
+
+statement ok
+DROP PERSISTENT SECRET IF EXISTS conformance_gen_literal FROM svc;
+
+# an administrator writes generators as values of any VARCHAR parameter, through DuckDB's own CREATE SECRET
+statement ok
+CREATE PERSISTENT SECRET conformance_gen_exchange IN svc (TYPE http,
+    SCOPE 'http://{TRESOR_CONFORMANCE_ECHO}/conformance/exchange',
+    BEARER_TOKEN 'mint+exchange://{TRESOR_CONFORMANCE_EXCHANGE_AUDIENCE}');
+
+statement ok
+CREATE PERSISTENT SECRET conformance_gen_claim IN svc (TYPE http,
+    SCOPE 'http://{TRESOR_CONFORMANCE_ECHO}/conformance/claim',
+    BEARER_TOKEN 'mint+claim://{TRESOR_CONFORMANCE_CLAIM}');
+
+statement ok
+CREATE PERSISTENT SECRET conformance_gen_missing IN svc (TYPE http,
+    SCOPE 'http://{TRESOR_CONFORMANCE_ECHO}/conformance/missing',
+    BEARER_TOKEN 'mint+claim://conformance_no_such_claim');
+
+# the escape: a literal beginning with mint+ is written with the + doubled
+statement ok
+CREATE PERSISTENT SECRET conformance_gen_literal IN svc (TYPE http, SCOPE 'http://conformance-literal.invalid',
+    HTTP_PROXY 'mint++literal');
+
+# a generated parameter makes a secret dynamic; the provider is the one written - the consumer's
+query III
+SELECT name, provider, dynamic FROM svc.secrets() WHERE name LIKE 'conformance_gen_%' ORDER BY name;
+----
+conformance_gen_claim	config	true
+conformance_gen_exchange	config	true
+conformance_gen_literal	config	false
+conformance_gen_missing	config	true
+
+# use comes from a grant to one of the caller's roles
+statement ok
+SET VARIABLE conformance_role = (SELECT list_filter(roles, lambda r: r LIKE 'role:%')[1] FROM svc.whoami());
+
+statement ok
+SELECT * FROM svc.grant_secret('conformance_gen_exchange', getvariable('conformance_role'), ['use']);
+
+statement ok
+SELECT * FROM svc.grant_secret('conformance_gen_claim', getvariable('conformance_role'), ['use']);
+
+statement ok
+SELECT * FROM svc.grant_secret('conformance_gen_missing', getvariable('conformance_role'), ['use']);
+
+statement ok
+SELECT * FROM svc.grant_secret('conformance_gen_literal', getvariable('conformance_role'), ['use']);
+
+# exchange: a token for the caller, for the audience
+query I
+SELECT trim(content) LIKE 'aud={TRESOR_CONFORMANCE_EXCHANGE_AUDIENCE} user=%'
+FROM read_text('http://{TRESOR_CONFORMANCE_ECHO}/conformance/exchange/who');
+----
+true
+
+# claim: the claim's value - never the caller's token
+query I
+SELECT trim(content) FROM read_text('http://{TRESOR_CONFORMANCE_ECHO}/conformance/claim');
+----
+claim={TRESOR_CONFORMANCE_CLAIM_VALUE}
+
+# a generated value is redacted
+query I
+SELECT tresor_secret_param('conformance_gen_claim', 'bearer_token');
+----
+VARCHAR <redacted>
+
+# a claim the caller's token does not carry: refused, never an empty value
+statement error
+SELECT tresor_secret_param('conformance_gen_missing', 'bearer_token');
+----
+mint_refused
+
+query I
+SELECT tresor_secret_param('conformance_gen_literal', 'http_proxy');
+----
+VARCHAR mint+literal
+
+statement ok
+DROP PERSISTENT SECRET conformance_gen_exchange FROM svc;
+
+statement ok
+DROP PERSISTENT SECRET conformance_gen_claim FROM svc;
+
+statement ok
+DROP PERSISTENT SECRET conformance_gen_missing FROM svc;
+
+statement ok
+DROP PERSISTENT SECRET conformance_gen_literal FROM svc;
+
+statement ok
+DETACH svc;
