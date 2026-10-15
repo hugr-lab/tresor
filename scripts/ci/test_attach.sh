@@ -25,12 +25,31 @@ printf 'eyJhbGciOiJub25lIn0.eyJzdWIiOiJmZWRub2RlIn0.c2ln\n' >"$keys/fed.token"
 cp "$keys/keynode.pem" "$keys/keynode-group.pem"
 chmod 640 "$keys/keynode-group.pem"
 export TRESOR_TEST_KEYS="$keys"
-python3 "$root/test/fake/fake_service.py" --port-file "$work/port" &
+# the CA bundle tests (specs/030): a private CA made for this run, and the fake's https listener's certificate from it
+cat >"$keys/ca.ext" <<'EXT'
+basicConstraints = critical, CA:TRUE
+keyUsage = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+EXT
+cat >"$keys/tls.ext" <<'EXT'
+basicConstraints = CA:FALSE
+extendedKeyUsage = serverAuth
+subjectAltName = IP:127.0.0.1, DNS:localhost
+EXT
+openssl req -new -newkey rsa:2048 -nodes -keyout "$keys/ca.key" -subj /CN=tresor-test-ca -out "$keys/ca.csr" 2>/dev/null
+openssl x509 -req -in "$keys/ca.csr" -signkey "$keys/ca.key" -extfile "$keys/ca.ext" -days 1 -out "$keys/ca.pem" 2>/dev/null
+openssl req -new -newkey rsa:2048 -nodes -keyout "$keys/tls.key" -subj /CN=127.0.0.1 -out "$keys/tls.csr" 2>/dev/null
+openssl x509 -req -in "$keys/tls.csr" -CA "$keys/ca.pem" -CAkey "$keys/ca.key" -set_serial 2 -extfile "$keys/tls.ext" \
+	-days 1 -out "$keys/tls.crt" 2>/dev/null
+export TRESOR_TEST_CA="$keys/ca.pem"
+python3 "$root/test/fake/fake_service.py" --port-file "$work/port" --tls-port-file "$work/tls_port" \
+	--tls-cert "$keys/tls.crt" --tls-key "$keys/tls.key" &
 fake=$!
 trap 'kill $fake 2>/dev/null || true; rm -rf "$work"' EXIT
 for _ in $(seq 50); do [ -s "$work/port" ] && break; sleep 0.1; done
 [ -s "$work/port" ] || { echo "test_attach: the fake service did not start" >&2; exit 1; }
 export TRESOR_TEST_PORT="$(cat "$work/port")"
+export TRESOR_TEST_TLS_PORT="$(cat "$work/tls_port")" # written before the plain port
 export BROWSER="$root/test/fake/browser.sh"
 # the Azure App Service identity endpoint and GitHub Actions' token service, both the fake's (specs/013)
 export IDENTITY_ENDPOINT="http://127.0.0.1:$TRESOR_TEST_PORT/msi/token" IDENTITY_HEADER=test-mi

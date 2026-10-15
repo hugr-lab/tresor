@@ -26,5 +26,29 @@ oidc::Transport TransportFor(ClientContext &context);
 //! `ca_cert_file` when set); DuckDB's `http_proxy` is not used - as by the built-in client. A failure is an error.
 oidc::Transport DuckDBTransport(DatabaseInstance &db);
 
+//! The CA bundle of the built-in client for this context (specs/030): DuckDB's `ca_cert_file`, trusted beside the
+//! system's roots. It is httpfs's setting: without httpfs loaded there is none, and the system's roots alone count.
+//! DuckDB's own client reads the same setting, so the one setting covers tresor's trust on either client.
+string CaBundleFor(ClientContext &context);
+
+//! What carries tresor's requests: the transport `tresor_http_client` names and the built-in client's CA bundle,
+//! both taken from a context once - a session keeps them for its renewals and calls, a login's thread for its own.
+struct HttpClient {
+	oidc::Transport transport;
+	string ca_bundle;
+};
+HttpClient HttpClientFor(ClientContext &context);
+
+//! Both in force on the calling thread while this lives (the OIDC core's two scopes): a local variable only.
+class HttpScope {
+public:
+	explicit HttpScope(const HttpClient &client) : transport(client.transport), trust(client.ca_bundle) {
+	}
+
+private:
+	oidc::TransportScope transport;
+	oidc::CaBundleScope trust;
+};
+
 } // namespace tresor
 } // namespace duckdb
