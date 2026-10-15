@@ -29,6 +29,13 @@ the **material is fetched only when a secret matches**, and cached until it expi
 service marks *dynamic* are generated per request with an expiry — short-lived credentials — and S3
 secrets among them are refreshed through httpfs's own `REFRESH auto` when they run out.
 
+A secret is served as its extension made it: a type the extension registered with a class of its own
+(BigQuery's) reaches it in that class, as one read from a persistent secret file would. Such
+extensions usually renew their tokens themselves — for BigQuery, keep a service account key
+(`service_account_json`), a workload identity federation config (`external_account_json`) or an
+authorized user (`refresh_token`, `client_id`, `client_secret`) in the service, not a bare
+`access_token`.
+
 ## What your role may do
 
 Two kinds of callers, and one rule each:

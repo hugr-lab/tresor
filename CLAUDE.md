@@ -48,6 +48,7 @@ test/sql/                   # sqllogictests; attach/ needs the fake service
 test/fake/                  # fake duckdb-secrets service + IdP (Python stdlib) and the fake browser
 test/extension/acl_stub/    # test-only extension: duckdb-acl's side of acl_connection.hpp (specs/008)
 test/extension/tresor_embedder/  # test-only extension that builds tresor in, as hugr-node does (specs/024)
+test/extension/typed_secret_stub/  # test-only extension: secret types of their own classes, as bigquery's (specs/032)
 test/acl/actor.sql          # the actor against real duckdb-acl (test_keycloak.sh, TRESOR_ACL_EXTENSION)
 test/keycloak/browser.py    # fills Keycloak's login form: the person's browser in the Keycloak tests
 scripts/ci/                 # smoke_load.sh, test_attach.sh, assert_ran.sh, check_docs_links.py

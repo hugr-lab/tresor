@@ -162,14 +162,14 @@ jobs:
         run: |
           set -o pipefail   # a failing script must fail the step, whatever the summary line says
           scripts/ci/test_attach.sh 2>&1 | tee attach.log
-          scripts/ci/assert_ran.sh attach.log 10 600 'require-env TRESOR_TEST_PORT|require-env TRESOR_TEST_TLS_PORT|require-env TRESOR_TEST_CA|require-env TRESOR_TEST_HTTPFS|require httpfs|require acl_stub'
+          scripts/ci/assert_ran.sh attach.log 10 600 'require-env TRESOR_TEST_PORT|require-env TRESOR_TEST_TLS_PORT|require-env TRESOR_TEST_CA|require-env TRESOR_TEST_HTTPFS|require httpfs|require acl_stub|require typed_secret_stub'
 
       # the same tests on DuckDB's HTTP client, as a wasm build has only that one (specs/020)
       - name: Attach suites on DuckDB's HTTP client
         run: |
           set -o pipefail
           TRESOR_HTTP_CLIENT=duckdb scripts/ci/test_attach.sh 2>&1 | tee attach-duckdb.log
-          scripts/ci/assert_ran.sh attach-duckdb.log 10 600 'require-env TRESOR_TEST_PORT|require-env TRESOR_TEST_TLS_PORT|require-env TRESOR_TEST_CA|require-env TRESOR_TEST_HTTPFS|require httpfs|require acl_stub'
+          scripts/ci/assert_ran.sh attach-duckdb.log 10 600 'require-env TRESOR_TEST_PORT|require-env TRESOR_TEST_TLS_PORT|require-env TRESOR_TEST_CA|require-env TRESOR_TEST_HTTPFS|require httpfs|require acl_stub|require typed_secret_stub'
 
       # the reference server next to a real Keycloak (specs/003): the conformance suite, a real
       # browser login (PKCE, Keycloak's redirect checks) and a real client-credentials grant
@@ -260,7 +260,7 @@ jobs:
         run: |
           set -o pipefail   # a failing script must fail the step, whatever the summary line says
           scripts/ci/test_attach.sh 2>&1 | tee attach.log
-          scripts/ci/assert_ran.sh attach.log 10 600 'require-env TRESOR_TEST_PORT|require-env TRESOR_TEST_TLS_PORT|require-env TRESOR_TEST_CA|require-env TRESOR_TEST_HTTPFS|require httpfs|require acl_stub'
+          scripts/ci/assert_ran.sh attach.log 10 600 'require-env TRESOR_TEST_PORT|require-env TRESOR_TEST_TLS_PORT|require-env TRESOR_TEST_CA|require-env TRESOR_TEST_HTTPFS|require httpfs|require acl_stub|require typed_secret_stub'
 
       - name: Upload extension artifact
         uses: actions/upload-artifact@v7
