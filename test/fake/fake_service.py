@@ -230,25 +230,29 @@ def consumer_secrets(port):
                         "redact_keys": ["client_secret"]},
         # expires_in as iceberg reads it, an INTEGER: past it, iceberg logs in itself with the client's credentials
         "c_ice_short": {"type": "iceberg", "scope": ["iceberg://short"],
-                        "params": dict(ice, token="ICE-SHORT", expires_in={"type": "INTEGER", "value": 1}, **oauth),
+                        "params": dict(ice, token="ICE-SHORT", expires_in={"type": "INTEGER", "value": 4}, **oauth),
                         "redact_keys": ["token", "client_secret"]},
         # ... and as a string, as a generated value always is: iceberg ignores it - the token is never renewed
         "c_ice_short_text": {"type": "iceberg", "scope": ["iceberg://short-text"],
-                             "params": dict(ice, token="ICE-SHORT-TEXT", expires_in="1", **oauth),
+                             "params": dict(ice, token="ICE-SHORT-TEXT", expires_in="4", **oauth),
                              "redact_keys": ["token", "client_secret"]},
     }
 
 
 def sigv4_valid(method, path, query, headers, auth):
     """A SigV4 Authorization header checked as S3 would: the canonical request rebuilt from what arrived, signed with
-    the secret of the key it names."""
+    the secret of the key it names, for the served region (us-east-1) and service s3 only, with host and x-amz-date
+    among the signed headers. The canonical query is the query as it arrived (raw): right for the query-less GET and
+    HEAD of an object read - canonicalise it (sorted, encoded pairs) before testing a listing or a multipart upload."""
     try:
         fields = dict(part.strip().split("=", 1) for part in auth[len("AWS4-HMAC-SHA256 "):].split(","))
         key_id, date, region, service, _ = fields["Credential"].split("/")
         signed = fields["SignedHeaders"].split(";")
     except (KeyError, ValueError):
         return False
-    if key_id not in S3_SECRETS:
+    if key_id not in S3_SECRETS or region != "us-east-1" or service != "s3":
+        return False
+    if "host" not in signed or "x-amz-date" not in signed:
         return False
     canonical = "\n".join([method, path, query] + ["%s:%s" % (h, (headers.get(h) or "").strip()) for h in signed] +
                           ["", fields["SignedHeaders"], headers.get("x-amz-content-sha256") or ""])
@@ -259,6 +263,7 @@ def sigv4_valid(method, path, query, headers, auth):
     for part in (date, region, service, "aws4_request"):
         key = hmac.new(key, part.encode(), hashlib.sha256).digest()
     return hmac.compare_digest(hmac.new(key, to_sign.encode(), hashlib.sha256).hexdigest(), fields.get("Signature", ""))
+
 
 FAIL_REFRESH = [0]  # specs/025: how many refresh grants still fail with a transient error (/_fail_refresh)
 WRITES = {}  # secret name -> PUT / DELETE / PATCH the service received for it
@@ -1068,6 +1073,13 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         return json.loads(self.rfile.read(length) or b"null")
 
+    def refuse_consumers_write(self, realm):
+        """consumers (specs/033) is read only: a write there would land in the other realms' SECRETS / VARIABLES."""
+        if realm != "consumers":
+            return False
+        self.problem(403, "no_verb", "the consumers realm is read only")
+        return True
+
     def refuse_delegated_write(self, realm):
         """acting: a write carrying a grant is the actor policy's refusal (as the reference server's default)."""
         if realm not in ACTING_REALMS or not self.headers.get("Delegation"):
@@ -1079,6 +1091,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         realm, rest = self.split(urllib.parse.urlparse(self.path).path)
+        if self.refuse_consumers_write(realm):
+            return
         if self.variables("PUT", realm, rest):  # specs/018
             return
         if self.refuse_delegated_write(realm):
@@ -1128,6 +1142,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         realm, rest = self.split(urllib.parse.urlparse(self.path).path)
+        if self.refuse_consumers_write(realm):
+            return
         if self.variables("DELETE", realm, rest):  # specs/018
             return
         if realm in ACTING_REALMS and rest.startswith("/v1/delegations/"):
@@ -1158,6 +1174,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PATCH(self):
         realm, rest = self.split(urllib.parse.urlparse(self.path).path)
+        if self.refuse_consumers_write(realm):
+            return
         if self.variables("PATCH", realm, rest):  # specs/018
             return
         if self.refuse_delegated_write(realm):

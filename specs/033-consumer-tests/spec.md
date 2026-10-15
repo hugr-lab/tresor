@@ -48,7 +48,10 @@ against the fake service, a fake S3 / HTTP endpoint / Iceberg REST catalog in th
 - A realm `consumers` (`ATTACH 'tresor:127.0.0.1:<port>/consumers'`) with secrets of its own (`consumer_secrets`),
   so the other realms' listings - which the attach tests count - are untouched. Their endpoints are the fake's own:
   - `/cbucket/…`, a path-style S3: rebuilds the SigV4 canonical request from what arrived and checks the signature
-    with the secret of the key named in `Credential=`; answers CSV `key_id,signature` or `403`.
+    with the secret of the key named in `Credential=`, for region `us-east-1` and service `s3` only, with `host` and
+    `x-amz-date` among the signed headers; answers CSV `key_id,signature` or `403`. The canonical query is the query
+    as it arrived (raw): right for an object's query-less GET and HEAD; to be canonicalised (sorted, encoded pairs)
+    before a listing or a multipart upload is tested.
   - `/chttp/…`, `/chttp-dyn/…`: answer CSV `auth,tenant` - the `Authorization` and `X-Tenant` headers that arrived.
   - `/cice/…`, an Iceberg REST catalog: `GET /v1/config`, `POST /v1/oauth/tokens` (client_credentials, Basic auth of
     the catalog's client; tokens `ICE-RENEWED-<n>`), `GET /v1/namespaces` - one namespace named after the bearer
@@ -60,8 +63,9 @@ against the fake service, a fake S3 / HTTP endpoint / Iceberg REST catalog in th
 
 ### Tests (`test/sql/consumers/`, run by `scripts/ci/test_attach.sh "" 'test/sql/consumers/*'`)
 
-- `httpfs.test`: an S3 read (`read_csv('s3://cbucket/who.csv')`) answered only for a valid signature by the served
-  key and secret - with the served `endpoint`, `url_style`, `use_ssl`, `region`; an http secret's `bearer_token` and
+- `httpfs.test`: an S3 read (`read_csv('s3://cbucket/who.csv')`) answered only for a signature valid for the served
+  key and secret in the served region (the fake accepts `us-east-1`/`s3` only); that the request reached the fake at
+  all, path-style over plain http, shows the served `endpoint`, `url_style` and `use_ssl` were used; an http secret's `bearer_token` and
   `extra_http_headers` on httpfs's request; a dynamic http secret's generated token (spec 029); one material fetch per
   secret; nothing after `DETACH`.
 - `postgres.test` (`require-env TRESOR_TEST_PG_PORT`): `ATTACH … (TYPE postgres, SECRET c_pg)` logs in as the served
@@ -69,17 +73,19 @@ against the fake service, a fake S3 / HTTP endpoint / Iceberg REST catalog in th
   is refused by the server; a served alias (`username`) is not libpq's name; the login stays with the attached
   database after the service is detached.
 - `iceberg.test`: an ATTACH with no options takes the uri and token of the service's unscoped iceberg secret; a named,
-  dynamic secret's generated token; `expires_in` as an INTEGER is honoured (iceberg renews the token itself, with the
+  dynamic secret's generated token; `expires_in` as an INTEGER (4 s, which iceberg counts as 2: it renews
+  `min(30, expires_in / 2)` early; the test sleeps 3 s) is honoured (iceberg renews the token itself, with the
   served client credentials), as a string it is ignored; a secret without a token is refused.
 
 ## Findings - how each consumer finds and uses a secret (at the pinned commits)
 
 ### httpfs (`abdd053`)
 
-- By **path** only: `KeyValueSecretReader` (`LookupSecret(path, type)`) per request - `s3`/`r2`/`gcs`/`aws` for
+- By **path** only: `KeyValueSecretReader` (`LookupSecret(path, type)`) when its parameters are initialized
+  (`InitializeParameters`) - per file opened, so per statement, not per HTTP request: `s3`/`r2`/`gcs`/`aws` for
   `s3://…` (and `http`, merged in unless `merge_http_secret_into_s3_request = false`), `http` (and `bearer`) for
-  `http(s)://…`. Every request looks up again: a per-user value (a dynamic secret, a session's own) is the caller's
-  on each request - this is the consumer the owner's decision means by per-request.
+  `http(s)://…`. Each statement looks up again: a per-user value (a dynamic secret, a session's own) is the caller's
+  for that statement - this is the consumer the owner's decision means by per-request.
 - Reads plain `KeyValueSecret` values (`TryGetValue`), `extra_http_headers` as a `MAP(VARCHAR, VARCHAR)` - typed values
   from the service arrive as their types (spec 004); a dynamic s3 secret refreshes through the `tresor` provider
   (spec 006, `refresh.test`).
@@ -101,7 +107,7 @@ against the fake service, a fake S3 / HTTP endpoint / Iceberg REST catalog in th
 ### iceberg (`5b9ff89`)
 
 - The catalog secret (`iceberg`): by **name** (`SECRET <name>`), else `LookupSecret("", "iceberg")` - an empty path,
-  which only a secret **without a scope** matches (score 0). A service's iceberg secret meant as the default must
+  which only a secret **without a scope**, or with a scope containing an empty string, matches (score 0). A service's iceberg secret meant as the default must
   therefore have no scope; a scoped one is reachable by name only.
 - A stored secret is used **as it is**: it must hold `token`. iceberg's own `CREATE SECRET` with client credentials
   logs in at creation and stores the token; a served secret is never logged in - without a token the ATTACH fails
@@ -115,12 +121,24 @@ against the fake service, a fake S3 / HTTP endpoint / Iceberg REST catalog in th
 - Read **once, at ATTACH**: the token and credentials live in the attached catalog's authorization; like a postgres
   login, it belongs to whoever attached.
 - Storage credentials: `GetStorageSecret` is by name, `__default_s3`/`__default_aws`, then `LookupSecret("s3://",
-  type)` (GLUE / S3 Tables only); the catalog's `http` secret is `LookupSecret(<catalog url>, "http")` (proxy
-  settings). Not tested here (no table scans: the fake catalog serves no tables).
+  type)` (GLUE / S3 Tables only). The catalog's `http` secret (proxy settings) is `GetHTTPSecret`: a named secret
+  only if it has `http_proxy`, else `LookupSecret("", "http")` (`iceberg_catalog.cpp:251`) - again an empty path,
+  so only an unscoped `http` secret. Only the table secret provider looks up by the catalog's URL
+  (`LookupSecret(<catalog url>, "http")`, `iceberg_table_secret_provider.cpp:134`). Not tested here (no table scans:
+  the fake catalog serves no tables).
 - `GetHTTPSecret` and `FromAttachOptions` `dynamic_cast` the secret to `KeyValueSecret` - what tresor serves for
   iceberg's type (its deserializer is `KeyValueSecret`'s).
 
 ## Enforcement & security
+
+- A latent leak, as for httpfs already: duckdb's newer out-of-tree flow (`DUCKDB_NEW_EXTENSION_BUILD`,
+  `scripts/sync_out_of_tree_extensions.py`, extension-ci-tools' `sync_oot_extensions`) reads the extension configs
+  without evaluating their conditionals, so it would fetch the opt-in test extensions (httpfs, and now
+  postgres_scanner, iceberg, avro) and merge their vcpkg dependencies into any build. tresor's builds and the
+  distribution workflow do not use it; if they ever do, the opt-ins must move to a config file passed only by the
+  test builds. Not restructured now.
+- The fake's `consumers` realm is read only (PUT / DELETE / PATCH answer 403): it advertises writes, but a write there
+  would land in the other realms' secrets and variables.
 
 - Test-only: the consumers are built only under `TRESOR_TEST_CONSUMERS=1`; never linked into tresor, never in a
   distribution build.
@@ -129,9 +147,17 @@ against the fake service, a fake S3 / HTTP endpoint / Iceberg REST catalog in th
 
 ## Testing
 
+- `scripts/ci/check_extension_pins.sh` (Lint, with a shallow checkout of the duckdb submodule): every `GIT_TAG` in
+  `extension_config.cmake` (httpfs, postgres_scanner, iceberg, avro) equals duckdb's in
+  `duckdb/.github/config/extensions/<name>.cmake`. `TRESOR_TEST_CONSUMERS=1` without `TRESOR_TEST_HTTPFS=1` stops the
+  configure (`FATAL_ERROR`); the platform guards are duckdb's (postgres: not MinGW, not wasm; iceberg, avro: not
+  MinGW).
 - CI job `consumers-linux` (`.github/workflows/ci.yml`, Linux only): builds with `TRESOR_TEST_HTTPFS=1
   TRESOR_TEST_CONSUMERS=1`, a Postgres service container (`postgres:17-alpine`, the login `PG_LOGIN` the fake
-  serves) on `TRESOR_TEST_PG_PORT`, runs the consumer suites and forbids their skips (`scripts/ci/assert_ran.sh`).
+  serves) on `TRESOR_TEST_PG_PORT`, runs the consumer suites and forbids their skips (`scripts/ci/assert_ran.sh`, at least 3 cases and 50
+  assertions). Its vcpkg and ccache caches are restored first and saved after the suites unless the run was cancelled
+  (`actions/cache/restore` + `save`, `!cancelled()`): a red first run keeps the ~35 minutes of dependencies it built;
+  the main job's ccache (`ccache-linux_amd64-`) is its last restore key.
 - Locally: `TRESOR_TEST_HTTPFS=1 TRESOR_TEST_CONSUMERS=1 GEN=ninja make`, a Postgres
   (`docker run -d -e POSTGRES_USER=tresor_pg -e POSTGRES_PASSWORD=pg-s3cret -p 127.0.0.1:55433:5432
   postgres:17-alpine`), then `TRESOR_TEST_CONSUMERS=1 TRESOR_TEST_PG_PORT=55433 scripts/ci/test_attach.sh ""

@@ -51,7 +51,7 @@ test/extension/tresor_embedder/  # test-only extension that builds tresor in, as
 test/extension/typed_secret_stub/  # test-only extension: secret types of their own classes, as bigquery's (specs/032)
 test/acl/actor.sql          # the actor against real duckdb-acl (test_keycloak.sh, TRESOR_ACL_EXTENSION)
 test/keycloak/browser.py    # fills Keycloak's login form: the person's browser in the Keycloak tests
-scripts/ci/                 # smoke_load.sh, test_attach.sh, assert_ran.sh, check_docs_links.py
+scripts/ci/                 # smoke_load.sh, test_attach.sh, assert_ran.sh, check_docs_links.py, check_extension_pins.sh
 specs/                      # one lightweight spec per feature (see specs/README.md)
 design/                     # LOCAL, gitignored research
 ```
@@ -66,7 +66,9 @@ TRESOR_TEST_HTTPFS=1 build/release/test/unittest 'test/sql/*'   # sqllogictests 
 TRESOR_TEST_HTTPFS=1 scripts/ci/test_attach.sh                  # attach/login tests against test/fake/fake_service.py
 TRESOR_HTTP_CLIENT=duckdb scripts/ci/test_attach.sh   # the same on DuckDB's HTTP client (httpfs), as wasm has
 TRESOR_TEST_HTTPFS=1 TRESOR_TEST_CONSUMERS=1 GEN=ninja make     # + postgres_scanner, iceberg, avro (specs/033)
-TRESOR_TEST_PG_PORT=<a Postgres, login tresor_pg/pg-s3cret> scripts/ci/test_attach.sh "" 'test/sql/consumers/*'
+docker run -d -e POSTGRES_USER=tresor_pg -e POSTGRES_PASSWORD=pg-s3cret -p 127.0.0.1:55433:5432 postgres:17-alpine
+TRESOR_TEST_CONSUMERS=1 TRESOR_TEST_PG_PORT=55433 scripts/ci/test_attach.sh "" 'test/sql/consumers/*'
+scripts/ci/check_extension_pins.sh          # httpfs/postgres_scanner/iceberg/avro GIT_TAGs = duckdb's (needs duckdb/)
 scripts/ci/test_keycloak.sh                 # server/ + Keycloak (docker): test/sql/conformance, test/sql/reference_server
 (cd server && GOWORK=off go test ./...)     # the reference server (GOWORK=off: a parent go.work may exist locally)
 scripts/ci/smoke_load.sh                    # out of tree: explicit LOAD, and ATTACH 'tresor:...' loading it alone
@@ -88,7 +90,13 @@ With `TRESOR_TEST_HTTPFS=1` (as CI builds) the test build also links **httpfs** 
 at the commit duckdb's 2.0 tree pins in `duckdb/.github/config/extensions/httpfs.cmake`; move both with
 the duckdb pin): the s3/gcs/r2/aws types and the real `REFRESH auto` path (specs/006). Opt-in, so the
 distribution build never compiles it; tresor itself does not depend on it. Without it `refresh.test`
-skips (`require httpfs`), which CI forbids. The same flag links **acl_stub**
+skips (`require httpfs`), which CI forbids. `TRESOR_TEST_CONSUMERS=1` (with `TRESOR_TEST_HTTPFS=1`, specs/033) adds
+the consumers: **postgres_scanner** (built, never linked - libpq goes into its loadable extension only; loaded by build
+path), **iceberg** and **avro** (linked), at the commits and patches duckdb's tree pins in
+`duckdb/.github/config/extensions/{postgres_scanner,iceberg,avro}.cmake` - move them with the duckdb pin too
+(`scripts/ci/check_extension_pins.sh`, in Lint, checks every `GIT_TAG` against duckdb's). Their vcpkg dependencies
+come only with the flag (the merged manifest); `test/sql/consumers/*` runs in CI's consumers job with a Postgres
+(`TRESOR_TEST_PG_PORT`, login `tresor_pg` / `pg-s3cret`). The same `TRESOR_TEST_HTTPFS` flag links **acl_stub**
 (`test/extension/acl_stub`, specs/008): duckdb-acl's side of `acl_connection.hpp` (`acl_stub_open`,
 `acl_stub_close`, `SET acl_stub_session`) for the actor tests, and builds (never links) **tresor_embedder**
 (`test/extension/tresor_embedder`, specs/024): tresor built into another extension through `tresor_sources.cmake`

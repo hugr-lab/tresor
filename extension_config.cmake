@@ -62,27 +62,37 @@ endif()
 # httpfs): their vcpkg dependencies (libpq, aws-sdk-cpp, roaring, avro-c, ...) enter the merged manifest only with
 # it, so the distribution build and the other jobs never build them. iceberg and avro are linked into the test
 # build, postgres_scanner is not (below). At the commits (and with the patches) duckdb's own 2.0 tree pins in
-# .github/config/extensions/{postgres_scanner,iceberg,avro}.cmake - move them with the duckdb pin.
+# .github/config/extensions/{postgres_scanner,iceberg,avro}.cmake - move them with the duckdb pin
+# (scripts/ci/check_extension_pins.sh checks every GIT_TAG here against duckdb's).
 if(DEFINED ENV{TRESOR_TEST_CONSUMERS} AND "$ENV{TRESOR_TEST_CONSUMERS}" STREQUAL "1")
-    duckdb_extension_load(postgres_scanner
-        GIT_URL https://github.com/duckdb/duckdb-postgres
-        GIT_TAG 9671d2c5cd5fa8e3b295ca7f130fa7590e9b4568
-        SUBMODULES database-connector
-    )
+    if(NOT (DEFINED ENV{TRESOR_TEST_HTTPFS} AND "$ENV{TRESOR_TEST_HTTPFS}" STREQUAL "1"))
+        message(FATAL_ERROR "TRESOR_TEST_CONSUMERS=1 needs TRESOR_TEST_HTTPFS=1: iceberg talks HTTP through httpfs, "
+                            "and test/sql/consumers/httpfs.test is httpfs's")
+    endif()
+    # the same platform guards as duckdb's own configs
     # never linked: its CMakeLists links libpq into the loadable extension only - tests load it by build path
-    duckdb_extension_load(avro
-        GIT_URL https://github.com/duckdb/duckdb-avro
-        GIT_TAG 758fb6063cbb6da49b2e1c16c4044cfcafefc52f
-        SUBMODULES "third_party/avro-c"
-        APPLY_PATCHES
-    )
-    duckdb_extension_statically_link(avro)
-    duckdb_extension_load(iceberg
-        GIT_URL https://github.com/duckdb/duckdb-iceberg
-        GIT_TAG 5b9ff899a17edc4289c4b3760a58c931736b4863
-        APPLY_PATCHES
-    )
-    duckdb_extension_statically_link(iceberg)
+    if(NOT MINGW AND NOT ${WASM_ENABLED})
+        duckdb_extension_load(postgres_scanner
+            GIT_URL https://github.com/duckdb/duckdb-postgres
+            GIT_TAG 9671d2c5cd5fa8e3b295ca7f130fa7590e9b4568
+            SUBMODULES database-connector
+        )
+    endif()
+    if(NOT MINGW)
+        duckdb_extension_load(avro
+            GIT_URL https://github.com/duckdb/duckdb-avro
+            GIT_TAG 758fb6063cbb6da49b2e1c16c4044cfcafefc52f
+            SUBMODULES "third_party/avro-c"
+            APPLY_PATCHES
+        )
+        duckdb_extension_statically_link(avro)
+        duckdb_extension_load(iceberg
+            GIT_URL https://github.com/duckdb/duckdb-iceberg
+            GIT_TAG 5b9ff899a17edc4289c4b3760a58c931736b4863
+            APPLY_PATCHES
+        )
+        duckdb_extension_statically_link(iceberg)
+    endif()
 endif()
 
 # tresor_embedder, for the tests only (specs/024): an extension that builds tresor into itself through

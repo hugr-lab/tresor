@@ -38,6 +38,12 @@ jobs:
           yamllint .github/workflows
       - name: No absolute internal doc links
         run: python3 scripts/ci/check_docs_links.py
+      # the test-only extensions (httpfs, postgres_scanner, iceberg, avro) at the commits duckdb's tree pins
+      # (specs/033): only the duckdb submodule, shallow
+      - name: Extension pins match duckdb's
+        run: |
+          git submodule update --init --depth 1 duckdb
+          scripts/ci/check_extension_pins.sh
       - name: gofmt (the reference server)
         run: |
           out="$(gofmt -l server)"
@@ -241,23 +247,27 @@ jobs:
       - name: Setup vcpkg
         run: make vcpkg-setup
 
-      - name: Cache vcpkg binary packages
-        uses: actions/cache@v6
+      # restore here, save after the suites even when they fail (never on cancel): a red first run must not pay the
+      # dependencies' build (aws-sdk-cpp and all, ~35 min) again
+      - name: Restore vcpkg binary packages
+        uses: actions/cache/restore@v6
         with:
           path: vcpkg_bincache
-          key: vcpkg-bincache-consumers-linux_amd64-${{ hashFiles('.gitmodules', 'vcpkg.json', 'extension_config.cmake') }}-${{ github.run_id }}
+          key: vcpkg-bincache-consumers-linux_amd64-${{ hashFiles('.gitmodules', 'vcpkg.json', 'extension_config.cmake') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             vcpkg-bincache-consumers-linux_amd64-${{ hashFiles('.gitmodules', 'vcpkg.json', 'extension_config.cmake') }}-
             vcpkg-bincache-consumers-linux_amd64-
 
+      # the last key: the main job's objects (duckdb's own), which ccache reuses where they match
       - name: Restore ccache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: .ccache
-          key: ccache-consumers-linux_amd64-${{ hashFiles('.gitmodules') }}-${{ github.sha }}
+          key: ccache-consumers-linux_amd64-${{ hashFiles('.gitmodules') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             ccache-consumers-linux_amd64-${{ hashFiles('.gitmodules') }}-
             ccache-consumers-linux_amd64-
+            ccache-linux_amd64-
 
       - name: Build
         run: |
@@ -269,7 +279,21 @@ jobs:
         run: |
           set -o pipefail   # a failing script must fail the step, whatever the summary line says
           scripts/ci/test_attach.sh "" 'test/sql/consumers/*' 2>&1 | tee consumers.log
-          scripts/ci/assert_ran.sh consumers.log 3 20 'require-env TRESOR_TEST_PORT|require-env TRESOR_TEST_PG_PORT|require-env TRESOR_TEST_CONSUMERS|require httpfs|require iceberg'
+          scripts/ci/assert_ran.sh consumers.log 3 50 'require-env TRESOR_TEST_PORT|require-env TRESOR_TEST_PG_PORT|require-env TRESOR_TEST_CONSUMERS|require httpfs|require iceberg'
+
+      - name: Save vcpkg binary packages
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v6
+        with:
+          path: vcpkg_bincache
+          key: vcpkg-bincache-consumers-linux_amd64-${{ hashFiles('.gitmodules', 'vcpkg.json', 'extension_config.cmake') }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Save ccache
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v6
+        with:
+          path: .ccache
+          key: ccache-consumers-linux_amd64-${{ hashFiles('.gitmodules') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   # Representative second platform; PRs stay on the Linux job to keep them fast
   build-test-osx:

@@ -16,9 +16,10 @@ CREATE SECRET etl_login (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}
 statement ok
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/consumers' AS corp (INSECURE_HTTP true);
 
-# s3: the fake S3 answers with the key the request was signed with, and only for a signature that holds for that
-# key's secret - so the served secret (key_id, secret, region) and its endpoint, url_style and use_ssl all reached
-# httpfs's signer
+# s3: the fake S3 answers with the key the request was signed with, and only for a SigV4 signature that holds for that
+# key's secret, in region us-east-1 for service s3, host and x-amz-date signed - so the served key_id, secret and
+# region reached httpfs's signer; the request reaching the fake at all, path-style over plain http, shows the served
+# endpoint, url_style and use_ssl were used
 query II
 SELECT key_id, signature FROM read_csv('s3://cbucket/who.csv');
 ----

@@ -40,8 +40,9 @@ SELECT schema_name FROM duckdb_schemas() WHERE database_name = 'ice_dyn' AND sch
 ----
 seen_gen_ice_1
 
-# expires_in: iceberg reads it only as an INTEGER. Served as one (1 s) with the catalog's OAuth2 client, the token
-# is renewed by iceberg itself (client_credentials at oauth2_server_uri) once it is past
+# expires_in: iceberg reads it only as an INTEGER. Served as one (4 s, which iceberg counts as 2: it renews
+# min(30, expires_in / 2) early) with the catalog's OAuth2 client, the token is renewed by iceberg itself
+# (client_credentials at oauth2_server_uri) once it is past - not before the ATTACH's own config request
 statement ok
 ATTACH 'warehouse' AS ice_short (TYPE iceberg, SECRET c_ice_short);
 
@@ -49,7 +50,7 @@ ATTACH 'warehouse' AS ice_short (TYPE iceberg, SECRET c_ice_short);
 statement ok
 ATTACH 'warehouse' AS ice_short_text (TYPE iceberg, SECRET c_ice_short_text);
 
-sleep 2 seconds
+sleep 3 seconds
 
 query I
 SELECT schema_name FROM duckdb_schemas() WHERE database_name = 'ice_short' AND schema_name LIKE 'seen_%';
