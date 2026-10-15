@@ -93,10 +93,11 @@ SELECT name, storage FROM which_secret('https://api.example/v1/items', 'http');
 ----
 myhttp	corp
 
+# typed as written; DuckDB redacts an http secret's extra headers as well as its token (duckdb #27257)
 query II
 SELECT tresor_secret_param('MyHttp', 'extra_http_headers'), tresor_secret_param('MyHttp', 'bearer_token');
 ----
-MAP(VARCHAR, VARCHAR) {X-Tenant=sales}	VARCHAR <redacted>
+MAP(VARCHAR, VARCHAR) <redacted>	VARCHAR <redacted>
 
 # a local secret wins a tie against the service (a lower tie-break offset)
 statement ok
