@@ -29,7 +29,8 @@ public IdP (Entra), so a bundle that replaced the system's roots would not do.
   without a certificate, fails the request; verification is never off.
 - **tresor** (`src/tresor_http.*`):
   - `CaBundleFor(context)`: `ca_cert_file` as the context sees it (a `SET` or a `SET GLOBAL`). It is httpfs's
-    setting: without httpfs loaded there is none, and the system's roots alone count.
+    setting: without httpfs loaded there is none, and the system's roots alone count. (DuckDB's client, below,
+    reads only the global value.)
   - `HttpClient {transport, ca_bundle}` (`HttpClientFor(context)`), and `HttpScope`, which puts both of the
     OIDC core's thread scopes in force: the transport `tresor_http_client` names (specs/020) and the bundle.
   - Installed wherever a `TransportScope` was: `Login` (the ATTACH: discovery, the IdP's flows, the first

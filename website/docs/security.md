@@ -68,11 +68,13 @@ one setting covers tresor's whole trust, on both clients (specs/030):
 - **the built-in client** (`tresor_http_client = 'builtin'`, the default) trusts the file's
   certificates **in addition to** the system's roots, so a node reaches a public identity provider
   such as Entra and a private service at once. A file that cannot be read, or holds no certificate,
-  fails the request. An attached catalog keeps the file it attached with, for its renewals and calls;
-  `tresor_login` and `tresor_logoff` read it when they run;
+  fails the request. An attached catalog keeps the file it attached with, for its renewals, calls and
+  the actor's exchanges; `tresor_login`, `tresor_web_login` and `tresor_logoff` read it when they run;
 - **DuckDB's client** (`tresor_http_client = 'duckdb'`, httpfs) uses the file **instead of** the
   system's roots, as for any other httpfs request: there the file must hold the public roots too
-  where a public endpoint is called.
+  where a public endpoint is called. It reads the global value only - set it with `SET GLOBAL`.
+
+## Logins
 
 - People log in directly with the identity provider — authorization code with PKCE and a loopback
   redirect, or a device code. The secrets service is not a login hub: other servers (a DuckDB node
