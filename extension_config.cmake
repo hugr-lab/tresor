@@ -56,6 +56,35 @@ if(DEFINED ENV{TRESOR_TEST_HTTPFS} AND "$ENV{TRESOR_TEST_HTTPFS}" STREQUAL "1")
     duckdb_extension_statically_link(typed_secret_stub)
 endif()
 
+# the consumers, for the tests only (specs/033): a secret tresor serves must reach the extension that uses it -
+# postgres_scanner's ATTACH, iceberg's REST catalog (with avro, which iceberg loads at its own load). Opt-in
+# (TRESOR_TEST_CONSUMERS=1, set by ci.yml's consumers job, beside TRESOR_TEST_HTTPFS=1 - iceberg talks HTTP through
+# httpfs): their vcpkg dependencies (libpq, aws-sdk-cpp, roaring, avro-c, ...) enter the merged manifest only with
+# it, so the distribution build and the other jobs never build them. iceberg and avro are linked into the test
+# build, postgres_scanner is not (below). At the commits (and with the patches) duckdb's own 2.0 tree pins in
+# .github/config/extensions/{postgres_scanner,iceberg,avro}.cmake - move them with the duckdb pin.
+if(DEFINED ENV{TRESOR_TEST_CONSUMERS} AND "$ENV{TRESOR_TEST_CONSUMERS}" STREQUAL "1")
+    duckdb_extension_load(postgres_scanner
+        GIT_URL https://github.com/duckdb/duckdb-postgres
+        GIT_TAG 9671d2c5cd5fa8e3b295ca7f130fa7590e9b4568
+        SUBMODULES database-connector
+    )
+    # never linked: its CMakeLists links libpq into the loadable extension only - tests load it by build path
+    duckdb_extension_load(avro
+        GIT_URL https://github.com/duckdb/duckdb-avro
+        GIT_TAG 758fb6063cbb6da49b2e1c16c4044cfcafefc52f
+        SUBMODULES "third_party/avro-c"
+        APPLY_PATCHES
+    )
+    duckdb_extension_statically_link(avro)
+    duckdb_extension_load(iceberg
+        GIT_URL https://github.com/duckdb/duckdb-iceberg
+        GIT_TAG 5b9ff899a17edc4289c4b3760a58c931736b4863
+        APPLY_PATCHES
+    )
+    duckdb_extension_statically_link(iceberg)
+endif()
+
 # tresor_embedder, for the tests only (specs/024): an extension that builds tresor into itself through
 # tresor_sources.cmake and LoadTresorCore, as hugr-node's hugr_node does. Same opt-in; never linked (like tresor,
 # it is loaded by build path - test/sql/embedded.test), never in a distribution build.

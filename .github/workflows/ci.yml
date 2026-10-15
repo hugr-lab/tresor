@@ -200,6 +200,77 @@ jobs:
           name: tresor-linux_amd64
           path: build/release/extension/tresor/tresor.duckdb_extension
 
+  # the consumers (specs/033): a secret tresor serves reaches the extension that uses it, and is used - httpfs (s3,
+  # http), postgres_scanner (a real Postgres, the service container), iceberg (the fake's REST catalog). Its own
+  # build: the consumers and their vcpkg dependencies (libpq, aws-sdk-cpp, roaring, avro-c) only with
+  # TRESOR_TEST_CONSUMERS, never in the distribution build or the job above
+  consumers-linux:
+    name: Consumers (linux_amd64)
+    runs-on: ubuntu-24.04
+    env:
+      GEN: ninja
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      TRESOR_TEST_HTTPFS: '1'       # httpfs: the s3/http consumer, and iceberg's HTTP client
+      TRESOR_TEST_CONSUMERS: '1'    # postgres_scanner, iceberg, avro (extension_config.cmake)
+      TRESOR_TEST_PG_PORT: '5432'
+      VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/vcpkg_bincache,readwrite'
+    services:
+      # the login is the one the fake service serves (test/fake/fake_service.py, PG_LOGIN)
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: tresor_pg
+          POSTGRES_PASSWORD: pg-s3cret
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tresor_pg"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache
+
+      - name: Setup vcpkg
+        run: make vcpkg-setup
+
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v6
+        with:
+          path: vcpkg_bincache
+          key: vcpkg-bincache-consumers-linux_amd64-${{ hashFiles('.gitmodules', 'vcpkg.json', 'extension_config.cmake') }}-${{ github.run_id }}
+          restore-keys: |
+            vcpkg-bincache-consumers-linux_amd64-${{ hashFiles('.gitmodules', 'vcpkg.json', 'extension_config.cmake') }}-
+            vcpkg-bincache-consumers-linux_amd64-
+
+      - name: Restore ccache
+        uses: actions/cache@v6
+        with:
+          path: .ccache
+          key: ccache-consumers-linux_amd64-${{ hashFiles('.gitmodules') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-consumers-linux_amd64-${{ hashFiles('.gitmodules') }}-
+            ccache-consumers-linux_amd64-
+
+      - name: Build
+        run: |
+          EXT_FLAGS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache" make
+          ccache -s
+
+      # against the fake service + IdP (test_attach.sh); none of them may skip here
+      - name: Consumer suites
+        run: |
+          set -o pipefail   # a failing script must fail the step, whatever the summary line says
+          scripts/ci/test_attach.sh "" 'test/sql/consumers/*' 2>&1 | tee consumers.log
+          scripts/ci/assert_ran.sh consumers.log 3 20 'require-env TRESOR_TEST_PORT|require-env TRESOR_TEST_PG_PORT|require-env TRESOR_TEST_CONSUMERS|require httpfs|require iceberg'
+
   # Representative second platform; PRs stay on the Linux job to keep them fast
   build-test-osx:
     name: Build + test (osx_arm64)

@@ -1,0 +1,73 @@
+# name: test/sql/consumers/postgres.test
+# description: A postgres secret tresor serves is the login postgres_scanner's ATTACH uses (specs/033)
+# group: [consumers]
+
+require-env TRESOR_TEST_PORT
+
+require-env TRESOR_TEST_PG_PORT
+
+# built (TRESOR_TEST_CONSUMERS=1) but never linked - libpq goes into its loadable extension only: loaded by build path
+require-env TRESOR_TEST_CONSUMERS
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/extension/postgres_scanner/postgres_scanner.duckdb_extension';
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+CREATE SECRET etl_login (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'client_credentials',
+    CLIENT_ID 'etl', CLIENT_SECRET 's3cr3t', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/consumers' AS corp (INSECURE_HTTP true);
+
+# by name: postgres_scanner asks for the secret by name only (GetSecretByName, every storage), never by path. The
+# secret holds the login (user, password); the ATTACH path the server - the secret's options come first in the
+# connection string, the path's after them
+statement ok
+ATTACH 'host=127.0.0.1 port={TRESOR_TEST_PG_PORT} dbname=postgres' AS pg (TYPE postgres, SECRET c_pg);
+
+query II
+SELECT * FROM postgres_query('pg', 'SELECT current_user::text, current_database()::text');
+----
+tresor_pg	postgres
+
+# unnamed: postgres_scanner's default is a secret by the name __default_postgres - a service's secret of that name
+# is it (here with the database too)
+statement ok
+ATTACH 'host=127.0.0.1 port={TRESOR_TEST_PG_PORT}' AS pg_default (TYPE postgres);
+
+query II
+SELECT * FROM postgres_query('pg_default', 'SELECT current_user::text, current_database()::text');
+----
+tresor_pg	postgres
+
+# the password is the served one: a wrong one is refused by the server
+statement error
+ATTACH 'host=127.0.0.1 port={TRESOR_TEST_PG_PORT} dbname=postgres' AS pg_wrong (TYPE postgres, SECRET c_pg_wrong);
+----
+<REGEX>:.*password authentication failed for user "tresor_pg".*
+
+# a served secret is not CREATE SECRET's input: its aliases (username, database, hostname) are normalized only there,
+# so a service must hold libpq's own names - this one's user never reaches libpq (which falls back to its default)
+statement error
+ATTACH 'host=127.0.0.1 port={TRESOR_TEST_PG_PORT} dbname=postgres' AS pg_alias (TYPE postgres, SECRET c_pg_alias);
+----
+<REGEX>:.*password authentication failed for user.*
+
+# an unknown name is postgres_scanner's own error
+statement error
+ATTACH 'host=127.0.0.1 port={TRESOR_TEST_PG_PORT}' AS pg_none (TYPE postgres, SECRET c_pg_missing);
+----
+Secret with name "c_pg_missing" not found
+
+# the login is read once, at ATTACH: the attached database keeps it - it belongs to whoever attached (on an acl node,
+# the instance itself), and DETACHing the service takes nothing from it
+statement ok
+DETACH corp;
+
+query I
+SELECT * FROM postgres_query('pg', 'SELECT current_user::text');
+----
+tresor_pg

@@ -44,7 +44,7 @@ duckdb-ext-common/          # submodule: shared contracts + hook bases; tresor O
 server/                     # the reference duckdb-secrets/1 server (Go module) + the Keycloak test realm
 website/                    # docs (docusaurus); docs/protocol.md is the specification
 web/                        # @hugr-lab/tresor-web: attachTresor for a page's DuckDB-wasm (specs/020)
-test/sql/                   # sqllogictests; attach/ needs the fake service
+test/sql/                   # sqllogictests; attach/ needs the fake service; consumers/ the consumer extensions (specs/033)
 test/fake/                  # fake duckdb-secrets service + IdP (Python stdlib) and the fake browser
 test/extension/acl_stub/    # test-only extension: duckdb-acl's side of acl_connection.hpp (specs/008)
 test/extension/tresor_embedder/  # test-only extension that builds tresor in, as hugr-node does (specs/024)
@@ -65,6 +65,8 @@ TRESOR_TEST_HTTPFS=1 GEN=ninja make         # release: duckdb (2.0) + tresor (+ 
 TRESOR_TEST_HTTPFS=1 build/release/test/unittest 'test/sql/*'   # sqllogictests (attach/* skip without TRESOR_TEST_PORT)
 TRESOR_TEST_HTTPFS=1 scripts/ci/test_attach.sh                  # attach/login tests against test/fake/fake_service.py
 TRESOR_HTTP_CLIENT=duckdb scripts/ci/test_attach.sh   # the same on DuckDB's HTTP client (httpfs), as wasm has
+TRESOR_TEST_HTTPFS=1 TRESOR_TEST_CONSUMERS=1 GEN=ninja make     # + postgres_scanner, iceberg, avro (specs/033)
+TRESOR_TEST_PG_PORT=<a Postgres, login tresor_pg/pg-s3cret> scripts/ci/test_attach.sh "" 'test/sql/consumers/*'
 scripts/ci/test_keycloak.sh                 # server/ + Keycloak (docker): test/sql/conformance, test/sql/reference_server
 (cd server && GOWORK=off go test ./...)     # the reference server (GOWORK=off: a parent go.work may exist locally)
 scripts/ci/smoke_load.sh                    # out of tree: explicit LOAD, and ATTACH 'tresor:...' loading it alone

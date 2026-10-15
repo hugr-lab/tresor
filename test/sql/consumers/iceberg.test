@@ -1,0 +1,96 @@
+# name: test/sql/consumers/iceberg.test
+# description: An iceberg secret tresor serves is the token iceberg's REST catalog requests carry (specs/033)
+# group: [consumers]
+
+require-env TRESOR_TEST_PORT
+
+require httpfs
+
+require iceberg
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+CREATE SECRET etl_login (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'client_credentials',
+    CLIENT_ID 'etl', CLIENT_SECRET 's3cr3t', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/consumers' AS corp (INSECURE_HTTP true);
+
+# the fake REST catalog answers one namespace, named after the bearer token the request carried; it refuses any
+# other token (401)
+
+# unnamed: iceberg looks up LookupSecret("", "iceberg"), which only a secret without a scope matches - the service's
+# unscoped one, its uri and its token: the ATTACH names neither
+statement ok
+ATTACH 'warehouse' AS ice (TYPE iceberg);
+
+query I
+SELECT schema_name FROM duckdb_schemas() WHERE database_name = 'ice' AND schema_name LIKE 'seen_%';
+----
+seen_ice_static
+
+# by name (GetSecretByName): a token generated for the caller on the service's read (specs/029)
+statement ok
+ATTACH 'warehouse' AS ice_dyn (TYPE iceberg, SECRET c_ice_dyn);
+
+query I
+SELECT schema_name FROM duckdb_schemas() WHERE database_name = 'ice_dyn' AND schema_name LIKE 'seen_%';
+----
+seen_gen_ice_1
+
+# expires_in: iceberg reads it only as an INTEGER. Served as one (1 s) with the catalog's OAuth2 client, the token
+# is renewed by iceberg itself (client_credentials at oauth2_server_uri) once it is past
+statement ok
+ATTACH 'warehouse' AS ice_short (TYPE iceberg, SECRET c_ice_short);
+
+# ... served as a string - as every generated value is - it is ignored: the token is used as if it never expired
+statement ok
+ATTACH 'warehouse' AS ice_short_text (TYPE iceberg, SECRET c_ice_short_text);
+
+sleep 2 seconds
+
+query I
+SELECT schema_name FROM duckdb_schemas() WHERE database_name = 'ice_short' AND schema_name LIKE 'seen_%';
+----
+seen_ice_renewed_1
+
+query I
+SELECT schema_name FROM duckdb_schemas() WHERE database_name = 'ice_short_text' AND schema_name LIKE 'seen_%';
+----
+seen_ice_short_text
+
+# what the catalog saw: the served short-lived token once (the ATTACH's config request, before it expired), then only
+# the renewed one; exactly one token request, iceberg's own (tresor fetched each secret's material once)
+query III
+SELECT len(regexp_extract_all(content, '"ICE-SHORT"')), content LIKE '%"ICE-RENEWED-1"%',
+    regexp_extract(content, '"iceberg_token_requests": ([0-9]+)', 1)
+FROM read_text('http://127.0.0.1:{TRESOR_TEST_PORT}/_consumers');
+----
+1	true	1
+
+query II
+SELECT name, comment FROM corp.secrets() WHERE name LIKE 'c_ice%' AND name <> 'c_ice_login' ORDER BY name;
+----
+c_ice	fetched 1
+c_ice_dyn	fetched 1
+c_ice_short	fetched 1
+c_ice_short_text	fetched 1
+
+# a stored iceberg secret is used as it is, never logged in: with the client's credentials but no token, iceberg
+# refuses it (its own CREATE SECRET logs in and stores the token) - a service holds the token, generated for the
+# caller where it must be fresh
+statement error
+ATTACH 'warehouse' AS ice_login (TYPE iceberg, SECRET c_ice_login);
+----
+Failed to retrieve OAuth2 token
+
+# detached, the service's secrets are gone from the lookup
+statement ok
+DETACH corp;
+
+statement error
+ATTACH 'warehouse' AS ice_gone (TYPE iceberg, SECRET c_ice);
+----
+No ICEBERG secret by the name of 'c_ice' could be found

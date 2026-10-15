@@ -1,0 +1,59 @@
+# name: test/sql/consumers/httpfs.test
+# description: A secret tresor serves reaches httpfs and signs or authorizes its requests - s3 and http (specs/033)
+# group: [consumers]
+
+require-env TRESOR_TEST_PORT
+
+require httpfs
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+CREATE SECRET etl_login (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'client_credentials',
+    CLIENT_ID 'etl', CLIENT_SECRET 's3cr3t', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/consumers' AS corp (INSECURE_HTTP true);
+
+# s3: the fake S3 answers with the key the request was signed with, and only for a signature that holds for that
+# key's secret - so the served secret (key_id, secret, region) and its endpoint, url_style and use_ssl all reached
+# httpfs's signer
+query II
+SELECT key_id, signature FROM read_csv('s3://cbucket/who.csv');
+----
+AKIA-CONSUMER	valid
+
+query I
+SELECT name FROM which_secret('s3://cbucket/who.csv', 's3');
+----
+c_s3
+
+# http: the bearer token and the extra header of the secret whose scope covers the URL, on httpfs's request
+query II
+SELECT auth, tenant FROM read_csv('http://127.0.0.1:{TRESOR_TEST_PORT}/chttp/who.csv');
+----
+Bearer consumer-bearer	sales-consumer
+
+# a token generated for the caller on the service's read (specs/029): the mint itself reaches the endpoint
+query I
+SELECT auth FROM read_csv('http://127.0.0.1:{TRESOR_TEST_PORT}/chttp-dyn/who.csv');
+----
+Bearer GEN-BEARER-1
+
+# the material was fetched once for each lookup's secret, then served from the cache (HEAD and GETs alike)
+query II
+SELECT name, comment FROM corp.secrets() WHERE name IN ('c_http', 'c_http_dyn', 'c_s3') ORDER BY name;
+----
+c_http	fetched 1
+c_http_dyn	fetched 1
+c_s3	fetched 1
+
+# detached, nothing of the service's reaches the endpoint any more
+statement ok
+DETACH corp;
+
+query II
+SELECT auth IS NULL, tenant IS NULL FROM read_csv('http://127.0.0.1:{TRESOR_TEST_PORT}/chttp/after-detach.csv');
+----
+true	true
