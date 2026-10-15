@@ -76,10 +76,11 @@ SELECT name, storage FROM which_secret('https://kc-node-lake.example/x', 'http')
 ----
 kc_node_lake	node
 
+# its material reached DuckDB typed (the headers redacted by DuckDB itself, duckdb #27257)
 query I
 SELECT tresor_secret_param('kc_node_lake', 'extra_http_headers');
 ----
-MAP(VARCHAR, VARCHAR) {X-Served-By=node}
+MAP(VARCHAR, VARCHAR) <redacted>
 
 # she is no admin: nothing is managed through the node for her
 statement error
