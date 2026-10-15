@@ -7,7 +7,8 @@ package api
 //   - mint+exchange://<audience>[?scope=<scope>] - a token for the caller at the identity provider (RFC 8693);
 //   - mint+claim://<claim> - a claim of the caller's verified token (its text), never the token.
 // A literal beginning with `mint+` is stored with the `+` doubled: `mint++x` is served as `mint+x`.
-// `provider: token_exchange` (specs/010) stays an alias: an exchange generator of the type's token param.
+// `provider: token_exchange` (specs/010) stays an alias: an exchange generator of the type's token param,
+// served with the consumer's provider (config).
 
 import (
 	"encoding/json"
@@ -26,6 +27,20 @@ import (
 )
 
 const generatorPrefix = "mint+"
+
+// sessionClaims name the caller's session at the IdP or bind one token: never served (CLAUDE.md: no session
+// handles leave the service).
+var sessionClaims = map[string]bool{"sid": true, "session_state": true, "jti": true, "nonce": true,
+	"at_hash": true, "c_hash": true, "s_hash": true}
+
+// servedProvider is the descriptor's provider: the stored one, the consumer's - the token_exchange alias's is
+// config, as every http and quack secret's (the protocol: never the service's mechanism).
+func servedProvider(sec *store.Secret) string {
+	if sec.Provider == tokenExchangeProvider {
+		return "config"
+	}
+	return sec.Provider
+}
 
 // generator is one generated parameter: a kind and what it needs.
 type generator struct {
@@ -69,6 +84,9 @@ func parseValue(value string) (*generator, string, error) {
 	case "claim":
 		if body == "" {
 			return nil, "", errors.New("is a mint+claim:// generator with no claim name")
+		}
+		if sessionClaims[body] {
+			return nil, "", errors.New("is a mint+claim:// generator of a session claim, never served")
 		}
 		return &generator{kind: kind, claim: body}, "", nil
 	case "login", "rule":
@@ -197,26 +215,35 @@ func (s *Server) generate(r *http.Request, c *auth.Caller, gen *generator) (stri
 		if problem != nil {
 			return "", time.Time{}, problem
 		}
+		if token.Expiry.IsZero() { // the IdP named none: a client still caches it for a bounded time
+			return token.Access, s.now().Add(mintNoExpiry), nil
+		}
 		return token.Access, token.Expiry, nil
 	case "claim":
 		value, ok := claimText(c.Claims, gen.claim)
+		if ok && strings.Count(value, ".") == 2 && !strings.ContainsAny(value, " @") {
+			// shaped like a JWT: a claim carrying a token is never served
+			return "", time.Time{}, refusedMint("the claim " + strconv.Quote(gen.claim) + " holds a token, never served")
+		}
 		if !ok {
 			return "", time.Time{}, refusedMint("the caller's token carries no text claim " + strconv.Quote(gen.claim))
 		}
-		// as long as the token it came from (under a grant: the grant)
+		// as long as the token it came from (under a grant: the grant); a token with no exp, a bounded time
+		if c.ExpiresAt.IsZero() {
+			return value, s.now().Add(mintNoExpiry), nil
+		}
 		return value, c.ExpiresAt, nil
 	}
 	return "", time.Time{}, refusedMint("an unknown generator")
 }
 
-// claimText is a top-level claim as text: a string as it is, a number or a boolean as its JSON text; a list,
-// an object, null, an empty string or no claim at all is none.
+// claimText is a top-level claim as text: a string as it is, a number or a boolean as its JSON text (the
+// claims are decoded with UseNumber: every digit kept); a list, an object, null, an empty string or no claim
+// at all is none.
 func claimText(claims map[string]any, name string) (string, bool) {
 	switch v := claims[name].(type) {
 	case string:
 		return v, v != ""
-	case float64:
-		return strconv.FormatFloat(v, 'f', -1, 64), true
 	case json.Number:
 		return v.String(), true
 	case bool:

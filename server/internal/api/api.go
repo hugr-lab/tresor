@@ -451,7 +451,7 @@ func descriptor(sec *store.Secret, verbs []string) map[string]any {
 	return map[string]any{
 		"name":        sec.Name,
 		"type":        sec.Type,
-		"provider":    sec.Provider,
+		"provider":    servedProvider(sec), // the consumer's (specs/029)
 		"scope":       scope,
 		"comment":     sec.Comment,
 		"owner":       sec.Owner,

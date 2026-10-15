@@ -3,6 +3,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -166,8 +167,15 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (*Caller, error) {
 	if !slices.Contains(token.Audience, is.cfg.Audience) {
 		return nil, fmt.Errorf("%w: aud %v does not contain %q", ErrUnauthenticated, token.Audience, is.cfg.Audience)
 	}
+	var payload json.RawMessage
+	if err := token.Claims(&payload); err != nil {
+		return nil, fmt.Errorf("%w: claims: %v", ErrUnauthenticated, err)
+	}
+	// numbers kept as their text: a 64-bit id served by mint+claim:// must not pass through a float (specs/029)
 	var claims map[string]any
-	if err := token.Claims(&claims); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	dec.UseNumber()
+	if err := dec.Decode(&claims); err != nil {
 		return nil, fmt.Errorf("%w: claims: %v", ErrUnauthenticated, err)
 	}
 	if token.Subject == "" {

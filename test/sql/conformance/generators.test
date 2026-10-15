@@ -7,7 +7,7 @@
 # TRESOR_CONFORMANCE_ECHO is an http API like test/keycloak/echo.py (whom a bearer token was minted for; under a
 # path ending /claim, the bearer value itself); TRESOR_CONFORMANCE_EXCHANGE_AUDIENCE an audience the service may
 # exchange the conformance client's token for; TRESOR_CONFORMANCE_CLAIM a claim of that client's token and
-# TRESOR_CONFORMANCE_CLAIM_VALUE its value. The client is an administrator holding at least one role.
+# TRESOR_CONFORMANCE_CLAIM_VALUE its value; TRESOR_CONFORMANCE_EXCHANGE_USER the user the exchanged token names. The client is an administrator holding at least one role.
 require-env TRESOR_CONFORMANCE_GENERATORS
 
 require-env TRESOR_CONFORMANCE_ECHO
@@ -17,6 +17,8 @@ require-env TRESOR_CONFORMANCE_EXCHANGE_AUDIENCE
 require-env TRESOR_CONFORMANCE_CLAIM
 
 require-env TRESOR_CONFORMANCE_CLAIM_VALUE
+
+require-env TRESOR_CONFORMANCE_EXCHANGE_USER
 
 require-env TRESOR_CONFORMANCE_HOST
 
@@ -72,7 +74,7 @@ CREATE PERSISTENT SECRET conformance_gen_missing IN svc (TYPE http,
 # the escape: a literal beginning with mint+ is written with the + doubled
 statement ok
 CREATE PERSISTENT SECRET conformance_gen_literal IN svc (TYPE http, SCOPE 'http://conformance-literal.invalid',
-    HTTP_PROXY 'mint++literal');
+    HTTP_PROXY 'mint++literal', HTTP_PROXY_USERNAME 'mint+++twice');
 
 # a generated parameter makes a secret dynamic; the provider is the one written - the consumer's
 query III
@@ -99,12 +101,11 @@ SELECT * FROM svc.grant_secret('conformance_gen_missing', getvariable('conforman
 statement ok
 SELECT * FROM svc.grant_secret('conformance_gen_literal', getvariable('conformance_role'), ['use']);
 
-# exchange: a token for the caller, for the audience
+# exchange: a token for the caller - this client, never another identity - for the audience
 query I
-SELECT trim(content) LIKE 'aud={TRESOR_CONFORMANCE_EXCHANGE_AUDIENCE} user=%'
-FROM read_text('http://{TRESOR_CONFORMANCE_ECHO}/conformance/exchange/who');
+SELECT trim(content) FROM read_text('http://{TRESOR_CONFORMANCE_ECHO}/conformance/exchange/who');
 ----
-true
+aud={TRESOR_CONFORMANCE_EXCHANGE_AUDIENCE} user={TRESOR_CONFORMANCE_EXCHANGE_USER}
 
 # claim: the claim's value - never the caller's token
 query I
@@ -124,10 +125,11 @@ SELECT tresor_secret_param('conformance_gen_missing', 'bearer_token');
 ----
 mint_refused
 
-query I
-SELECT tresor_secret_param('conformance_gen_literal', 'http_proxy');
+query II
+SELECT tresor_secret_param('conformance_gen_literal', 'http_proxy'),
+       tresor_secret_param('conformance_gen_literal', 'http_proxy_username');
 ----
-VARCHAR mint+literal
+VARCHAR mint+literal	VARCHAR mint++twice
 
 statement ok
 DROP PERSISTENT SECRET conformance_gen_exchange FROM svc;

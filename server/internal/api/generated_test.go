@@ -1,9 +1,13 @@
 package api
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hugr-lab/tresor/server/internal/store"
+	"github.com/hugr-lab/tresor/server/internal/testidp"
 )
 
 // specs/029: any parameter of any type may be generated per caller (mint+exchange://, mint+claim://)
@@ -39,6 +43,9 @@ func TestGeneratorValidation(t *testing.T) {
 		"login (not here)":   "mint+login://x",
 		"rule (not here)":    "mint+rule://x",
 		"this service's own": "mint+exchange://duckdb-secrets",
+		"its own, encoded":   "mint+exchange://duckdb%2Dsecrets",
+		"a session claim":    "mint+claim://sid",
+		"a token's id":       "mint+claim://jti",
 	} {
 		body := `{"type":"postgres","provider":"config","params":{"password":"` + value + `"},"redact_keys":[]}`
 		r := f.do("PUT", "/v1/secrets/g", f.admin, body)
@@ -204,8 +211,11 @@ func TestTokenExchangeAlias(t *testing.T) {
 	f.do("PUT", "/v1/secrets/echo", f.admin, mintedSecret)
 	f.do("PUT", "/v1/secrets/echo/grants/a", f.admin, `{"principal":"role:analysts","verbs":["use"]}`)
 	params, body, r := f.genMaterial("echo", f.alice)
-	if params == nil || body["provider"] != "token_exchange" || body["dynamic"] != true {
-		t.Fatalf("the alias: %d %s", r.status, r.body)
+	if params == nil || body["provider"] != "config" || body["dynamic"] != true {
+		t.Fatalf("the alias, served with the consumer's provider: %d %s", r.status, r.body)
+	}
+	if keys := redactKeys(body); len(keys) != 1 || keys[0] != "bearer_token" {
+		t.Fatalf("the alias's token redacted: %v", keys)
 	}
 	if c := claimsOf(t, params["bearer_token"].(string)); c["aud"] != "echo-api" || c["sub"] != "alice-id" {
 		t.Fatalf("the alias's token: %v", c)
@@ -214,5 +224,59 @@ func TestTokenExchangeAlias(t *testing.T) {
 	r = f.do("PUT", "/v1/secrets/m", f.admin, `{"type":"http","provider":"token_exchange","params":{"audience":"mint+claim://aud"}}`)
 	if r.status != 422 {
 		t.Fatalf("a generated audience: %d %s", r.status, r.body)
+	}
+}
+
+// claims of every scalar kind: a 64-bit number with every digit, a boolean; a JWT-shaped claim is never served
+func TestGeneratedClaimKinds(t *testing.T) {
+	f := newFixture(t, "")
+	dana := f.idp.Token(t, testidp.Claims{"sub": "dana-id", "aud": "duckdb-secrets", "uid": int64(9007199254740993),
+		"admin": true, "nested_token": "eyJh.eyJi.c2ln", "realm_access": map[string]any{"roles": []any{"analysts"}}})
+	f.do("PUT", "/v1/secrets/kinds", f.admin, `{"type":"postgres","provider":"config",
+		"params":{"user":"mint+claim://uid","options":"mint+claim://admin"}}`)
+	f.do("PUT", "/v1/secrets/kinds/grants/a", f.admin, `{"principal":"role:analysts","verbs":["use"]}`)
+	params, _, r := f.genMaterial("kinds", dana)
+	if params == nil || params["user"] != "9007199254740993" || params["options"] != "true" {
+		t.Fatalf("scalar claims as their JSON text: %d %s", r.status, r.body)
+	}
+	f.do("PUT", "/v1/secrets/tok", f.admin, `{"type":"postgres","provider":"config","params":{"password":"mint+claim://nested_token"}}`)
+	f.do("PUT", "/v1/secrets/tok/grants/a", f.admin, `{"principal":"role:analysts","verbs":["use"]}`)
+	if r := f.do("GET", "/v1/secrets/tok", dana, ""); r.status != 403 || r.problemType(t) != "mint_refused" ||
+		strings.Contains(string(r.body), "eyJh") {
+		t.Fatalf("a token in a claim: %d %s", r.status, r.body)
+	}
+}
+
+// a mint+ value stored before generators were checked is never served, and the refusal names no value
+func TestGeneratorStoredMalformed(t *testing.T) {
+	f := newFixture(t, "")
+	f.do("PUT", "/v1/secrets/old", f.admin, `{"type":"postgres","provider":"config","params":{"password":"x"}}`)
+	f.do("PUT", "/v1/secrets/old/grants/a", f.admin, `{"principal":"role:analysts","verbs":["use"]}`)
+	_, _ = f.srv.store.Update("old", func(cur *store.Secret) (*store.Secret, error) {
+		cur.Params = map[string]json.RawMessage{"password": json.RawMessage(`"mint+vault://hunter2"`)}
+		return cur, nil
+	})
+	r := f.do("GET", "/v1/secrets/old", f.alice, "")
+	if r.status != 500 || r.problemType(t) != "service_error" || strings.Contains(string(r.body), "hunter2") {
+		t.Fatalf("a malformed stored generator: %d %s", r.status, r.body)
+	}
+}
+
+// the alias beside a generator on another key: both generated, both redacted
+func TestAliasWithGenerator(t *testing.T) {
+	f := newFixture(t, "")
+	r := f.do("PUT", "/v1/secrets/both", f.admin, `{"type":"http","provider":"token_exchange",
+		"params":{"audience":"echo-api","http_proxy_username":"mint+claim://preferred_username"}}`)
+	if r.status != 201 {
+		t.Fatalf("the alias with a generator: %d %s", r.status, r.body)
+	}
+	f.do("PUT", "/v1/secrets/both/grants/a", f.admin, `{"principal":"role:analysts","verbs":["use"]}`)
+	params, body, r := f.genMaterial("both", f.alice)
+	if params == nil || params["http_proxy_username"] != "alice" ||
+		claimsOf(t, params["bearer_token"].(string))["sub"] != "alice-id" {
+		t.Fatalf("both made: %d %s", r.status, r.body)
+	}
+	if keys := redactKeys(body); len(keys) != 2 {
+		t.Fatalf("both redacted: %v", keys)
 	}
 }

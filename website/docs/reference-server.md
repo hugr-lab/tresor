@@ -114,8 +114,9 @@ No credentials mode is involved: the page sends a bearer token, never a cookie.
 
 The protocol lets a service generate a parameter on each read ([dynamic
 secrets](./protocol.md#dynamic-secrets)) and leaves how it is written to the service. The reference
-server and [tresor-server](https://github.com/hugr-lab/tresor-server) share one syntax, so a store
-moves between them.
+server and [tresor-server](https://github.com/hugr-lab/tresor-server) share the whole-value syntax
+below. tresor-server reads more (interpolation, typed values, its own kinds), so a store moved there
+escapes what it must keep literal (below).
 
 An administrator writes a **generator** as the whole value of a `VARCHAR` parameter (a JSON string)
 of a secret of any type, with the provider the consuming extension knows:
@@ -135,8 +136,11 @@ of a secret of any type, with the provider the consuming extension knows:
 - **The audience** is everything up to the first `?`, percent-decoded (`%3F` for a `?` in it). The
   query is `scope=<scope>` and nothing else, form-encoded (`read+write` is `read write`).
 - **The claim** is a top-level claim, named exactly. A claim that is missing, empty, a list or an
-  object is refused at the read (`403 mint_refused`). The served value is the claim, never the token
-  it came from.
+  object is refused at the read (`403 mint_refused`), and so is one shaped like a JWT. The served
+  value is the claim, never the token it came from. Claims that name the caller's IdP session or
+  bind a token (`sid`, `session_state`, `jti`, `nonce`, `at_hash`, `c_hash`, `s_hash`) are refused
+  at PUT. Prefer claims the user cannot change (`sub`, an object id) to editable ones
+  (`preferred_username`, where the IdP lets users edit it) for anything that grants access.
 - **For whom.** For the effective user: the direct caller, or under a delegation grant the grant's
   user, never the server.
 - **What is served.** The secret is `dynamic`; the descriptor's `provider` is the stored one; each
@@ -151,15 +155,20 @@ of a secret of any type, with the provider the consuming extension knows:
   two or more are a literal, with one dropped. The prefix is lowercase: `MINT+x` is a literal as it is.
 - **Whole values only, here.** tresor-server also generates a part of a string (`${…}` inside a
   value, including values inside `MAP`, `STRUCT` and `LIST`); a literal `${` there is written `$${`.
-  The reference server reads no `${…}`: it serves such a value as written. A typed value
-  (`{"type": …, "value": …}`) is always a literal here.
+  The reference server reads no `${…}` and no `$${`: it serves such a value as written. A typed value
+  (`{"type": …, "value": …}`) is always a literal here, never unescaped (a typed `mint++x` is served
+  as `mint++x`). Moving a store to tresor-server, escape every literal `${` as `$${`.
+- **Material is a resolved copy.** An administrator does not read a stored generator back: `GET`
+  serves what it generated, and an escaped literal unescaped. Never write material back with `PUT`:
+  a served literal `mint+claim://sub` written back is a generator.
 
 ## A token for the caller
 
 `mint+exchange://<audience>` mints a token for the caller. The older form still works as an alias: a
 secret with `provider: token_exchange` and the downstream `audience` (and `scope`) parameters, for
 an `http` (`bearer_token`) or `quack` (`token`) secret, is served as if that parameter were
-`mint+exchange://<audience>?scope=<scope>` (and with `provider` `token_exchange`, as stored):
+`mint+exchange://<audience>?scope=<scope>`, with the consumer's provider `config` (the protocol
+never serves a name for the service's mechanism):
 
 ```json
 {"type": "quack", "provider": "token_exchange", "scope": ["quack:corp.duck"], "params": {"audience": "acl-node"}}

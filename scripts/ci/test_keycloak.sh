@@ -141,7 +141,7 @@ export TRESOR_CONFORMANCE_PERSON=1 TRESOR_KC_HOST=127.0.0.1:$server_port TRESOR_
 # service under test says so itself); the echo API, an audience Keycloak exchanges etl's token for, a claim of it
 [ -z "${TRESOR_SERVER_CMD:-}" ] && export TRESOR_CONFORMANCE_GENERATORS=1
 export TRESOR_CONFORMANCE_ECHO="$TRESOR_KC_ECHO" TRESOR_CONFORMANCE_EXCHANGE_AUDIENCE=echo-api
-export TRESOR_CONFORMANCE_CLAIM=azp TRESOR_CONFORMANCE_CLAIM_VALUE=etl
+export TRESOR_CONFORMANCE_CLAIM=azp TRESOR_CONFORMANCE_CLAIM_VALUE=etl TRESOR_CONFORMANCE_EXCHANGE_USER=service-account-etl
 export BROWSER="$root/test/keycloak/browser.py" TRESOR_KC_USER=alice TRESOR_KC_PASS=alice-pass
 # a person's login is remembered in this instance's memory only (specs/012): the suite never touches the OS keychain
 export TRESOR_KEYCHAIN=memory

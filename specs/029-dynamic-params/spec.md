@@ -34,16 +34,18 @@ share one syntax: a parameter's whole value `mint+<kind>://…`.
 
 - A service MAY generate a parameter on each read: its whole value, or a part of a string, including
   strings inside `MAP`, `STRUCT` and `LIST` values. The secret is then `dynamic`, with `expires_at`
-  (the earliest expiry of what was generated).
-- The descriptor's `provider` is the **consumer's** (`config`, `access_token`, …), never the service's
-  mechanism.
+  (the earliest expiry of what was generated; never `null` on a dynamic secret's material).
+- The descriptor's `provider` MUST be the **consumer's** (`config`, `access_token`, …), never a name for
+  the service's mechanism.
 - The client receives **resolved values only**. The generator syntax is **not normative**, as a
   variable's references (`ref+…`) are not: it is the services'.
-- Every generated key is listed in `redact_keys`.
+- Every generated key MUST be listed in `redact_keys`; for a generated part inside a nested value, the
+  top-level key holding it.
 - Caller-dependent material is made for the **effective user**: the direct caller, or under a
   delegation grant the grant's user, never the server (already a rule, cross-referenced from
   Delegation).
-- Failures: `403 mint_refused` (lasting), `503` (outage), never an empty value.
+- Failures: `403 mint_refused` (lasting), `503` (outage); a service MUST NOT serve an empty value.
+  The problem table's `mint_refused` now reads "material generated for the caller could not be made".
 - `capabilities.dynamic` is described (informational); the reference server now says `true`.
 
 ### The services' shared syntax (`website/docs/reference-server.md`, "Generated parameters")
@@ -59,16 +61,25 @@ A parameter's **whole** `VARCHAR` value (a JSON string):
 
 - `exchange`: the audience is everything up to the first `?`, percent-decoded; the query is
   `scope=<scope>` only, form-encoded.
-- `claim`: a string as it is, a number or boolean as its JSON text; missing, empty, a list or an object
-  is `403 mint_refused`. Expiry: the caller token's (under a grant: the grant's).
+- `claim`: a string as it is, a number or boolean as its JSON text (claims decoded with `UseNumber`, so
+  a 64-bit id keeps every digit); missing, empty, a list, an object or a JWT-shaped value is `403
+  mint_refused`. Claims that name the IdP session or bind a token (`sid`, `session_state`, `jti`,
+  `nonce`, `at_hash`, `c_hash`, `s_hash`) are refused at PUT: no session handle leaves the service.
+  Expiry: the caller token's (under a grant: the grant's). The docs advise immutable claims (`sub`)
+  over editable ones (`preferred_username`) for anything that grants access.
 - **The escape (whole values).** Exactly one `+` after `mint` is a generator; a value beginning
   `mint++` is a literal with one `+` dropped (`mint++x` → `mint+x`, `mint+++x` → `mint++x`). The
   mapping is a bijection: a literal `L` beginning `mint+` is stored as `mint+` + `+` + `L[5:]`. The
   prefix is exact and lowercase (`MINT+x` is a literal as is). This doubles a character, as
   tresor-server's `$${` does for a literal `${` in interpolated strings.
-- **Interpolation** (`${…}` inside a string, inside nested values too) is tresor-server's; the
-  reference server implements the whole-value forms only and serves a `${…}` as written. A typed
-  value (`{"type": …, "value": …}`) is always a literal in the reference server.
+- **Interpolation** (`${…}` inside a string, inside nested values too; `$${` a literal `${`) is
+  tresor-server's; the reference server implements the whole-value forms only and serves `${…}` and
+  `$${` as written. A typed value (`{"type": …, "value": …}`) is always a literal in the reference
+  server, never unescaped. So a store moves to tresor-server only with its literal `${` escaped; the
+  two share the whole-value syntax, not every stored value's meaning.
+- Material is a resolved copy: an administrator does not read a stored generator back, and material
+  written back with `PUT` stores the generated values (or turns a served literal `mint+…` into a
+  generator).
 - A malformed `mint+` value or an unknown kind is refused at PUT (`422 invalid_secret`), naming the
   parameter and never its value; so is an exchange for the service's own audience.
 
@@ -83,9 +94,12 @@ A parameter's **whole** `VARCHAR` value (a JSON string):
 - `auth.Caller` carries the verified token's claims (read only); under a grant, the user's, taken at the
   grant's exchange.
 - **Migration**: `provider: token_exchange` stays an alias: a `mint+exchange://<audience>?scope=<scope>`
-  generator on the type's token parameter (`http.bearer_token`, `quack.token`), served with provider
-  `token_exchange` as stored. Its audience and scope are its own, never generated. Existing stores and
-  tests keep working.
+  generator on the type's token parameter (`http.bearer_token`, `quack.token`). It is stored as written
+  and **served with the consumer's provider `config`** (the protocol: never a name for the service's
+  mechanism; `test/sql/reference_server/minted.test` now expects `config`). Its audience and scope are
+  its own, never generated. Existing stores keep working.
+- A minted token the IdP gave no expiry counts `mintNoExpiry` (60 s) toward `expires_at`, under a grant
+  too; so does a claim of a token with no `exp`.
 
 ### The client
 
@@ -103,8 +117,10 @@ secret with provider `access_token`, generated keys redacted (one, `user`, no na
 
 ## Enforcement & security
 
-- A claim generator serves a claim's text, never the bearer token; the claim is the effective user's.
-- A generated value is never empty; a refusal names no token and no stored value.
+- A claim generator serves a claim's text, never the bearer token, never a JWT-shaped value, never a
+  session claim; the claim is the effective user's.
+- A generated value is never empty; a refusal names no token and no stored value but the downstream
+  audience (not secret) when the IdP minted a token for another.
 - An exchange for the service's own audience is refused at PUT and at the mint (spec 010's check).
 - Every generated key is redacted by the service; tresor also redacts its name-based net.
 - A value stored before this spec that begins with `mint+` but is no valid generator is not served
@@ -112,15 +128,18 @@ secret with provider `access_token`, generated keys redacted (one, `user`, no na
 
 ## Testing
 
-- Go (`server/internal/api/generated_test.go`): validation (kinds, query, own audience, no value in a
-  refusal, typed values literal), the escape, claim (direct, under a grant = the grant's user's, the
-  node's own, missing/object refused, redact_keys, expiry), exchange of any type (direct, under a grant,
-  scope, earliest expiry, mint_refused), the alias.
+- Go (`server/internal/api/generated_test.go`): validation (kinds, query, own audience also
+  percent-encoded, session claims, no value in a refusal, typed values literal), the escape, claim
+  (direct, under a grant = the grant's user's, the node's own, missing/object/JWT-shaped refused, a
+  64-bit number and a boolean, redact_keys, expiry), exchange of any type (direct, under a grant, scope,
+  earliest expiry, mint_refused), a malformed stored value (500, no value), the alias (served `config`,
+  redacted) alone and beside a generator.
 - `test/sql/attach/dynamic_params.test`: the client against the fake (provider served, redaction).
 - `test/sql/conformance/generators.test`, gated by `TRESOR_CONFORMANCE_GENERATORS` (set by
   `scripts/ci/test_keycloak.sh` for the reference server): exchange and claim through DuckDB, with
-  Keycloak and `test/keycloak/echo.py` (its `/claim` path answers the bearer value), the escape,
-  `mint_refused`.
+  Keycloak and `test/keycloak/echo.py` (its `/claim` path answers the bearer value; the exchanged
+  token must name the client's own user), the escape (`mint++`, `mint+++`), `mint_refused`. CI's
+  `assert_ran.sh` floor is 6 conformance files, and a `require httpfs` skip fails it.
 
 ## Alternatives considered
 

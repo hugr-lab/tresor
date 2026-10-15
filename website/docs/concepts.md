@@ -71,8 +71,9 @@ ATTACH 'quack:corp.duck' AS remote (TYPE quack);   -- its secret comes from corp
 An administrator stores such a secret with a parameter the service generates on every read, a
 token for the downstream audience (the reference server and tresor-server write it
 `mint+exchange://<audience>`, [generated parameters](./reference-server.md#generated-parameters)).
-You then get a fresh token of **your own** for it, minted by the identity provider. Through a node acting for your session, you still get a token of your own, never the
-node's. tresor caches it until shortly before it expires.
+You then get a fresh token of **your own** for it, minted by the identity provider. Through a node
+acting for your session, you still get a token of your own, never the node's. tresor caches it until
+shortly before it expires.
 
 ### On a duckdb-acl node
 

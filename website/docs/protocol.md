@@ -195,16 +195,19 @@ A client caches the material until shortly before that time.
 
 **Any secret type, any parameter.** A service MAY generate a parameter on each read: its whole
 value, or a part of a string, including strings inside `MAP`, `STRUCT` and `LIST` values. A secret
-with a generated parameter is `dynamic`, with an `expires_at`.
-- **The provider is the consumer's.** The descriptor's `provider` is the one the DuckDB extension
-  that uses the secret knows (`config`, `access_token`, …), never the name of the service's
+with a generated parameter is `dynamic`, and its material carries an `expires_at`.
+- **The provider is the consumer's.** The descriptor's `provider` MUST be one the DuckDB extension
+  that uses the secret knows (`config`, `access_token`, …), never a name for the service's
   mechanism.
 - **The client receives resolved values only.** How a service stores a generated parameter is its
   own: the syntax is **not part of the protocol**, like a variable's [references](#variables). (The
   reference server and tresor-server share one, `mint+<kind>://…`: see
-  [the reference server](./reference-server.md#generated-parameters).)
-- **Every generated key is listed in `redact_keys`.**
-- **`expires_at`** is the earliest expiry of what was generated.
+  [the reference server](./reference-server.md#generated-parameters).) Material is a resolved copy:
+  written back with `PUT`, it would store the generated values, not what generates them.
+- **Redaction.** A service MUST list in `redact_keys` every parameter it generated, or whose value
+  holds a generated part (the top-level key of a nested value).
+- **`expires_at`** is the earliest expiry of what was generated, and is never `null` on a dynamic
+  secret's material.
 
 A dynamic secret's material may depend on **the caller**, for example a token minted for them for a
 downstream server, or a claim of their token:
@@ -214,7 +217,7 @@ downstream server, or a claim of their token:
   between a server's own work and a user's session.
 - A service that cannot produce it answers `403 mint_refused` for a lasting refusal (the user's
   session at the identity provider has ended; the IdP refused; the caller's token has no such
-  claim), and `503 service_unavailable` for an outage. It never serves an empty value in place of
+  claim), and `503 service_unavailable` for an outage. It MUST NOT serve an empty value in place of
   one it could not make. A client MUST fail the lookup that needs it with the service's detail, and
   MUST NOT go on without it.
 
@@ -407,7 +410,7 @@ a session ran. tresor sends it only when that statement has one and it is well-f
 | `unauthenticated` | 401 | token missing, invalid or expired — refresh and retry once |
 | `no_verb` | 403 | the caller's roles do not hold the verb |
 | `actor_not_allowed` | 403 | the server may not act for users for this verb |
-| `mint_refused` | 403 | material minted for the caller could not be minted (the detail says why) |
+| `mint_refused` | 403 | material generated for the caller could not be made (the detail says why) |
 | `not_found` | 404 | no such secret or variable (or not visible) |
 | `precondition_failed` | 412 | `If-None-Match` / `If-Match` not met |
 | `invalid_secret` | 422 | the secret does not validate |
