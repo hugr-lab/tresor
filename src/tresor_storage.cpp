@@ -828,7 +828,8 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &calle
 	}
 	if (hit && !typed) {
 		// cached before its type's extension was loaded: of that class from now on (specs/032)
-		hit = AsType(DeserializerOf(db, hit->GetType()), std::move(hit));
+		auto deserialize = DeserializerOf(db, hit->GetType()); // before the move: arguments are in no set order
+		hit = AsType(deserialize, std::move(hit));
 	}
 	if (hit) {
 		// served from memory: counted (outside the storage's lock), not emitted - a scan asks once per file
