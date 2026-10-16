@@ -25,6 +25,9 @@ a sqllogictest can only steer the fake through what it attaches:
                comment counts exchanges, grants, revocations and live grants) and delegation grants - under a
                grant the node's own rights apply, for the grant's user; writes under a grant are refused
     shifty     like acting, but its discovery names another audience ("payroll-api") than the node's token has
+    consumers  its own secrets (consumer_secrets, specs/033), for the extensions that consume them: an s3 secret for
+               the fake's S3 (/cbucket, which checks the SigV4 signature), http secrets for /chttp and /chttp-dyn
+               (which answer what reached them), postgres logins, iceberg secrets for the fake REST catalog (/cice)
 
 Every realm serves the same secrets (SECRETS below) to every identity - but bob (OTHER_PERSON), who may not
 use alice_lake (NOT_FOR_OTHER_PERSON). A descriptor's comment counts
@@ -37,6 +40,7 @@ how often its material was fetched ("fetched N") - the only window a sqllogictes
 import argparse
 import base64
 import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -64,7 +68,7 @@ SERVICE = {"subject": "client:etl", "roles": ["role:etl"], "create": True}
 CLIENTS = {"etl": "s3cr3t"}
 STATIC_TOKENS = {"static-token": {"subject": "client:static", "roles": [], "create": False}}
 REALMS = {"", "multi", "wrong", "expiring", "revoking", "noflows", "broken", "nolist", "acting", "shifty", "picky",
-          "second", "auth0", "novars"}
+          "second", "auth0", "novars", "consumers"}
 ISSUERS = {"idp", "idp2", "idp-revoking"}
 FIRST_USES = 2  # expiring/revoking: how many whoami calls a token as first issued survives
 
@@ -175,6 +179,92 @@ SECRETS = {
     },
 }
 FETCHED = {}  # secret name -> material fetches
+
+# --- the consumers' realm (specs/033) ---------------------------------------------------------------------
+# what the consumers' endpoints saw (GET /_consumers): the extensions' requests, never tresor's
+SEEN = {"s3_key_id": "", "s3_signature": "", "iceberg_auth": [], "iceberg_token_requests": 0}
+S3_SECRETS = {"AKIA-CONSUMER": "consumer-s3-secret"}  # the fake S3 verifies a signature with the key's secret
+ICEBERG_CLIENT = ("ice-client", "ice-client-secret")  # the REST catalog's OAuth2 client (client_credentials)
+PG_LOGIN = {"user": "tresor_pg", "password": "pg-s3cret"}  # the test Postgres (TRESOR_TEST_PG_PORT)
+
+
+def consumer_secrets(port):
+    """The consumers realm's secrets: their endpoints are this fake's, on its port."""
+    base = "http://127.0.0.1:%d" % port
+    pg = {"user": PG_LOGIN["user"], "password": {"type": "VARCHAR", "value": PG_LOGIN["password"]}}
+    ice = {"uri": base + "/cice"}
+    oauth = {"client_id": ICEBERG_CLIENT[0], "client_secret": {"type": "VARCHAR", "value": ICEBERG_CLIENT[1]},
+             "oauth2_server_uri": base + "/cice/v1/oauth/tokens"}
+    return {
+        # httpfs, s3: a path-style read from the fake S3, which verifies the SigV4 signature with the secret
+        "c_s3": {"type": "s3", "scope": ["s3://cbucket"], "params": {
+            "key_id": "AKIA-CONSUMER", "secret": {"type": "VARCHAR", "value": S3_SECRETS["AKIA-CONSUMER"]},
+            "region": "us-east-1", "endpoint": "127.0.0.1:%d" % port, "url_style": "path",
+            "use_ssl": {"type": "BOOLEAN", "value": False}}, "redact_keys": ["secret"]},
+        # httpfs, http: a bearer token and a header on every request under the scope
+        "c_http": {"type": "http", "scope": [base + "/chttp/"], "params": {
+            "bearer_token": "consumer-bearer",
+            "extra_http_headers": {"type": "MAP(VARCHAR, VARCHAR)", "value": {"X-Tenant": "sales-consumer"}}},
+            "redact_keys": ["bearer_token"]},
+        # ... and one generated on each read (specs/029)
+        "c_http_dyn": {"type": "http", "scope": [base + "/chttp-dyn/"], "dynamic": True, "lifetime": 600,
+                       "generate": {"bearer_token": "GEN-BEARER"}, "params": {}, "redact_keys": []},
+        # postgres_scanner: by name (SECRET c_pg), the unnamed default (__default_postgres), a wrong password, and
+        # libpq's user under CREATE SECRET's alias (username) - which a served secret keeps as it is
+        "c_pg": {"type": "postgres", "scope": [], "params": dict(pg), "redact_keys": ["password"]},
+        "__default_postgres": {"type": "postgres", "scope": [], "params": dict(pg, dbname="postgres"),
+                               "redact_keys": ["password"]},
+        "c_pg_wrong": {"type": "postgres", "scope": [],
+                       "params": dict(pg, password={"type": "VARCHAR", "value": "not-the-password"}),
+                       "redact_keys": ["password"]},
+        "c_pg_alias": {"type": "postgres", "scope": [], "params": {"username": PG_LOGIN["user"],
+                                                                   "password": pg["password"]},
+                       "redact_keys": ["password"]},
+        # iceberg: the only unscoped one - iceberg's unnamed lookup is LookupSecret("", "iceberg"), which only an
+        # empty scope matches; with a token, as iceberg's own CREATE SECRET stores one (a stored secret is used as is)
+        "c_ice": {"type": "iceberg", "scope": [], "params": dict(ice, token="ICE-STATIC"), "redact_keys": ["token"]},
+        "c_ice_dyn": {"type": "iceberg", "scope": ["iceberg://dyn"], "dynamic": True, "lifetime": 600,
+                      "generate": {"token": "GEN-ICE"}, "params": dict(ice), "redact_keys": []},
+        # the client's credentials alone: iceberg's CREATE SECRET would log in, a stored secret is not logged in
+        "c_ice_login": {"type": "iceberg", "scope": ["iceberg://login"], "params": dict(ice, **oauth),
+                        "redact_keys": ["client_secret"]},
+        # expires_in as iceberg reads it, an INTEGER: past it, iceberg logs in itself with the client's credentials
+        "c_ice_short": {"type": "iceberg", "scope": ["iceberg://short"],
+                        "params": dict(ice, token="ICE-SHORT", expires_in={"type": "INTEGER", "value": 4}, **oauth),
+                        "redact_keys": ["token", "client_secret"]},
+        # ... and as a string, as a generated value always is: iceberg ignores it - the token is never renewed
+        "c_ice_short_text": {"type": "iceberg", "scope": ["iceberg://short-text"],
+                             "params": dict(ice, token="ICE-SHORT-TEXT", expires_in="4", **oauth),
+                             "redact_keys": ["token", "client_secret"]},
+    }
+
+
+def sigv4_valid(method, path, query, headers, auth):
+    """A SigV4 Authorization header checked as S3 would: the canonical request rebuilt from what arrived, signed with
+    the secret of the key it names, for the served region (us-east-1) and service s3 only, with host and x-amz-date
+    among the signed headers. The canonical query is the query as it arrived (raw): right for the query-less GET and
+    HEAD of an object read - canonicalise it (sorted, encoded pairs) before testing a listing or a multipart upload."""
+    try:
+        fields = dict(part.strip().split("=", 1) for part in auth[len("AWS4-HMAC-SHA256 "):].split(","))
+        key_id, date, region, service, _ = fields["Credential"].split("/")
+        signed = fields["SignedHeaders"].split(";")
+    except (KeyError, ValueError):
+        return False
+    if key_id not in S3_SECRETS or region != "us-east-1" or service != "s3":
+        return False
+    if "host" not in signed or "x-amz-date" not in signed:
+        return False
+    canonical = "\n".join([method, path, query] + ["%s:%s" % (h, (headers.get(h) or "").strip()) for h in signed] +
+                          ["", fields["SignedHeaders"], headers.get("x-amz-content-sha256") or ""])
+    scope = "/".join([date, region, service, "aws4_request"])
+    to_sign = "\n".join(["AWS4-HMAC-SHA256", headers.get("x-amz-date") or "", scope,
+                         hashlib.sha256(canonical.encode()).hexdigest()])
+    key = ("AWS4" + S3_SECRETS[key_id]).encode()
+    for part in (date, region, service, "aws4_request"):
+        key = hmac.new(key, part.encode(), hashlib.sha256).digest()
+    return hmac.compare_digest(hmac.new(key, to_sign.encode(), hashlib.sha256).hexdigest(), fields.get("Signature", ""))
+
+
 FAIL_REFRESH = [0]  # specs/025: how many refresh grants still fail with a transient error (/_fail_refresh)
 WRITES = {}  # secret name -> PUT / DELETE / PATCH the service received for it
 
@@ -404,13 +494,88 @@ class Handler(BaseHTTPRequestHandler):
         if not head:
             self.wfile.write(chunk)
 
+    # --- the consumers' endpoints (specs/033): what reached them, as the data they answer ----------------
+    CONSUMER_PATHS = ("/cbucket/", "/chttp/", "/chttp-dyn/", "/cice/")
+
+    def serve_bytes(self, data, head, content_type="text/csv"):
+        """A file as httpfs reads one: HEAD for the size, then GETs of byte ranges."""
+        status, start, end = 200, 0, len(data) - 1
+        rng = self.headers.get("Range", "")
+        if rng.startswith("bytes=") and not head:
+            first, _, last = rng[len("bytes="):].partition("-")
+            start, end = int(first or 0), min(int(last) if last else len(data) - 1, len(data) - 1)
+            status = 206
+        chunk = data[start:end + 1]
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(chunk) if not head else len(data)))
+        self.send_header("Last-Modified", "Wed, 01 Jan 2026 00:00:00 GMT")
+        if status == 206:
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, len(data)))
+        self.end_headers()
+        if not head:
+            self.wfile.write(chunk)
+
+    def consumer(self, method):
+        url = urllib.parse.urlparse(self.path)
+        if url.path.startswith("/cbucket/"):
+            # S3: the key the request was signed with, and whether the signature holds for that key's secret
+            auth = self.headers.get("Authorization", "")
+            key_id = auth.split("Credential=")[1].split("/")[0] if "Credential=" in auth else ""
+            valid = auth.startswith("AWS4-HMAC-SHA256 ") and sigv4_valid(method, url.path, url.query, self.headers, auth)
+            with LOCK:
+                SEEN["s3_key_id"], SEEN["s3_signature"] = key_id, "valid" if valid else "invalid"
+            if not valid:
+                body = b"<Error><Code>SignatureDoesNotMatch</Code><Message>bad signature</Message></Error>"
+                self.send(403, body, "application/xml")
+                return
+            self.serve_bytes(("key_id,signature\n%s,valid\n" % key_id).encode(), method == "HEAD")
+            return
+        if url.path.startswith("/chttp/") or url.path.startswith("/chttp-dyn/"):
+            # an http endpoint: the Authorization and X-Tenant headers that reached it, as CSV
+            row = (self.headers.get("Authorization", ""), self.headers.get("X-Tenant", ""))
+            self.serve_bytes(("auth,tenant\n%s,%s\n" % row).encode(), method == "HEAD")
+            return
+        self.iceberg(method, url)
+
+    def iceberg(self, method, url):
+        """A minimal Iceberg REST catalog: config, its OAuth2 token endpoint (client_credentials), and namespaces -
+        one, named after the bearer token the request carried."""
+        rest = url.path[len("/cice"):]
+        if rest == "/v1/oauth/tokens" and method == "POST":
+            form = self.form()
+            basic = "Basic " + base64.b64encode(("%s:%s" % ICEBERG_CLIENT).encode()).decode()
+            if form.get("grant_type") != "client_credentials" or self.headers.get("Authorization") != basic:
+                self.send(401, {"error": "invalid_client", "error_description": "bad client credentials"})
+                return
+            with LOCK:
+                SEEN["iceberg_token_requests"] += 1
+                token = "ICE-RENEWED-%d" % SEEN["iceberg_token_requests"]
+            self.send(200, {"access_token": token, "token_type": "bearer", "expires_in": 3600,
+                            "issued_token_type": "urn:ietf:params:oauth:token-type:access_token"})
+            return
+        auth = self.headers.get("Authorization", "")
+        token = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
+        with LOCK:
+            SEEN["iceberg_auth"].append(token)
+        if not token.startswith(("ICE-", "GEN-ICE-")):
+            self.send(401, {"error": {"message": "not authorized", "type": "NotAuthorizedException", "code": 401}})
+            return
+        if rest == "/v1/config" and method == "GET":
+            self.send(200, {"defaults": {}, "overrides": {}})
+        elif rest == "/v1/namespaces" and method == "GET":
+            self.send(200, {"namespaces": [["seen_" + token.lower().replace("-", "_")]]})
+        else:
+            self.send(404, {"error": {"message": "no such route", "type": "NoSuchNamespaceException", "code": 404}})
+
     def parse_request(self):
         # specs/020: what reached the IdP and the API besides what tresor means to send - an `http` secret's bearer
         # token or extra_http_headers of DuckDB's - and which client asked for the discovery (its User-Agent).
         # The test's own reads (/_stats, /_page_login, the dynamic bucket) are not tresor's requests.
         ok = super().parse_request()
         path = urllib.parse.urlparse(self.path).path
-        if ok and not path.startswith("/_") and not path.startswith("/dynbucket"):
+        if ok and not path.startswith("/_") and not path.startswith("/dynbucket") and \
+                not path.startswith(self.CONSUMER_PATHS):
             with LOCK:
                 if self.headers.get("X-Tresor-Leak") or self.headers.get("Authorization") == "Bearer leak-token":
                     IDP_STATS["leaked"] += 1
@@ -419,10 +584,16 @@ class Handler(BaseHTTPRequestHandler):
         return ok
 
     def do_HEAD(self):
-        if urllib.parse.urlparse(self.path).path in ("/_stats", "/_forget", "/_page_login", "/_fail_refresh"):
+        if urllib.parse.urlparse(self.path).path.startswith(self.CONSUMER_PATHS):
+            self.consumer("HEAD")
+            return
+        if urllib.parse.urlparse(self.path).path in ("/_stats", "/_forget", "/_page_login", "/_fail_refresh",
+                                                     "/_consumers"):
             # httpfs asks HEAD first: the size of what GET will answer (the stats are read under the lock there)
             with LOCK:
-                if self.path == "/_page_login":
+                if self.path == "/_consumers":
+                    size = len(json.dumps(SEEN).encode())
+                elif self.path == "/_page_login":
                     size = len(json.dumps(PAGE_LOGIN_SHAPE).encode())
                 elif self.path == "/_fail_refresh":
                     size = len(json.dumps({"armed": True}).encode())
@@ -450,6 +621,13 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/_stats":  # specs/012: what the IdP saw, for the tests
             with LOCK:
                 self.send(200, dict(IDP_STATS))
+            return
+        if url.path == "/_consumers":  # specs/033: what the consumers' endpoints saw
+            with LOCK:
+                self.send(200, SEEN)
+            return
+        if url.path.startswith(self.CONSUMER_PATHS):
+            self.consumer("GET")
             return
         if url.path == "/msi/token":  # specs/013: Azure's App Service identity endpoint (IDENTITY_ENDPOINT)
             query = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
@@ -580,6 +758,9 @@ class Handler(BaseHTTPRequestHandler):
                 "permissions": {"create": identity["create"]},
             })
             return
+        if realm == "consumers" and rest.startswith("/v1/secrets"):
+            self.consumers_get(rest)
+            return
         if rest == "/v1/secrets" or rest.startswith("/v1/secrets/"):
             auth = self.headers.get("Authorization", "")
             token = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
@@ -637,6 +818,35 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, body)
             return
         self.send(404, {"type": "not_found"})
+
+    # --- the consumers realm (specs/033): its own secrets, read only ------------------------------------
+    def consumers_get(self, rest):
+        if self.bearer_identity() is None:
+            self.problem(401, "unauthenticated", "token missing, invalid or expired")
+            return
+        listing = consumer_secrets(self.server.server_address[1])
+        for sec in listing.values():
+            sec.setdefault("permissions", ["use"])
+            sec.setdefault("owner", "role:consumers")
+        if rest == "/v1/secrets":
+            with LOCK:
+                self.send(200, [descriptor(n, s) for n, s in listing.items()])
+            return
+        name = urllib.parse.unquote(rest[len("/v1/secrets/"):])
+        sec = listing.get(name)
+        if sec is None:
+            self.problem(404, "not_found", "no secret %s" % name)
+            return
+        with LOCK:
+            FETCHED[name] = FETCHED.get(name, 0) + 1
+            body = dict(descriptor(name, sec), params=dict(sec["params"]), redact_keys=list(sec["redact_keys"]),
+                        expires_at=None)
+            for key, prefix in sec.get("generate", {}).items():
+                body["params"][key] = "%s-%d" % (prefix, FETCHED[name])
+                body["redact_keys"].append(key)
+            if sec.get("dynamic"):
+                body["expires_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + sec["lifetime"]))
+        self.send(200, body)
 
     # --- acting (specs/008): grants, the Delegation header ---------------------------------------------
     def bearer_identity(self):
@@ -863,6 +1073,13 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         return json.loads(self.rfile.read(length) or b"null")
 
+    def refuse_consumers_write(self, realm):
+        """consumers (specs/033) is read only: a write there would land in the other realms' SECRETS / VARIABLES."""
+        if realm != "consumers":
+            return False
+        self.problem(403, "no_verb", "the consumers realm is read only")
+        return True
+
     def refuse_delegated_write(self, realm):
         """acting: a write carrying a grant is the actor policy's refusal (as the reference server's default)."""
         if realm not in ACTING_REALMS or not self.headers.get("Delegation"):
@@ -874,6 +1091,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         realm, rest = self.split(urllib.parse.urlparse(self.path).path)
+        if self.refuse_consumers_write(realm):
+            return
         if self.variables("PUT", realm, rest):  # specs/018
             return
         if self.refuse_delegated_write(realm):
@@ -923,6 +1142,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         realm, rest = self.split(urllib.parse.urlparse(self.path).path)
+        if self.refuse_consumers_write(realm):
+            return
         if self.variables("DELETE", realm, rest):  # specs/018
             return
         if realm in ACTING_REALMS and rest.startswith("/v1/delegations/"):
@@ -953,6 +1174,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PATCH(self):
         realm, rest = self.split(urllib.parse.urlparse(self.path).path)
+        if self.refuse_consumers_write(realm):
+            return
         if self.variables("PATCH", realm, rest):  # specs/018
             return
         if self.refuse_delegated_write(realm):
@@ -976,6 +1199,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         url = urllib.parse.urlparse(self.path)
+        if url.path.startswith(self.CONSUMER_PATHS):
+            self.consumer("POST")
+            return
         realm, rest = self.split(url.path)
         if realm in ACTING_REALMS and rest == "/v1/delegations":
             self.acting_post_grant()
