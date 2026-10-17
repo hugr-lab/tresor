@@ -34,8 +34,9 @@ a deserializer `KeyValueSecret::Deserialize<BigquerySecret>`.
   service's response body, the deserializer's temporaries) are as before.
 - Not validated as `CREATE SECRET` would (BigQuery's "exactly one auth method"): as with a persistent secret read
   from disk; the service holds what an administrator created.
-- BigQuery renews its own tokens from a service account key, an external account config or an authorized user, so
-  those are what the service should hold for it (docs/concepts.md), not a bare `access_token`.
+- BigQuery renews its own tokens from an external account config or an authorized user; docs/concepts.md
+  recommends the former, or an `access_token` minted on each fetch, and never a service account key (as
+  tresor-server's docs, 0.5.1).
 - The refresh provider (`CreateTresorProvided`) copies the material as a `KeyValueSecret`: right for the refreshable
   types, httpfs's, whose class that is.
 
