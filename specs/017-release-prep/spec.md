@@ -69,8 +69,8 @@ Updated by specs/035 (2026-10-17) for specs 018-034.
    DuckDB's build sets `EXT_VERSION_TRESOR` from `git describe --tags` when the tag is checked out (a
    checkout without it gives the commit). Check it on the tag's distribution artifact:
    `SELECT tresor_version()` returns `v0.1.0`.
-5. **Publishing**: to hugr lab's repository, then a PR to duckdb/community-extensions with
-   `description.yml`, its `ref` being the tag.
+5. **Publishing**: a PR to duckdb/community-extensions with
+   `description.yml`, its `ref` being the tag; hugr lab's own repository too, once it exists (specs/035).
    - Their CI builds and runs the tests. Before the PR, check how their runner treats
      `require-env TRESOR_TEST_PORT` (the tests that need a service should skip), and tresor loaded by
      build path.
@@ -88,7 +88,8 @@ Updated by specs/035 (2026-10-17) for specs 018-034.
 
 - **The first version is `0.1.0`.** The tag is `v0.1.0`.
 - **Published to both**, after DuckDB 2.0's release:
-  - hugr lab's own extension repository (still to come): an external repository of the kind DuckDB 2.0
+  - hugr lab's own extension repository (still to come; as soon as it exists - not a condition of the release,
+    specs/035): an external repository of the kind DuckDB 2.0
     supports, which signs what it serves with its own key. Nodes trust that key and need no
     `allow_unsigned_extensions`.
   - duckdb/community-extensions, signed, through their review.

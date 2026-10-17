@@ -78,17 +78,16 @@ changes.
   in one target with tresor's (024, hugr-node's build); a cache hit read back after its type's extension loads
   (032); `rds` secrets and iceberg's table secret provider (033).
 
-## Owner questions
+## Decided by the owner (2026-10-17)
 
-- **`ACL_COMMIT`** points at duckdb-acl #233's branch commit 00375b8 (034's follow-up); #233's head has since
-  moved to e7b2192, so `ACL_COMMIT` must move to the merged commit once it merges - the checklist wants a merged
-  one at the release.
-- **`enable_external_access`** and tresor's built-in client (023's follow-up, still open): should
-  `enable_external_access = false` stop tresor's own requests to the IdP and the service before the first
-  release?
-- **`@hugr-lab/tresor-web`** is not published: with 0.1.0, or when duckdb-wasm is on DuckDB 2.0?
-- **hugr lab's extension repository** (017: "still to come"): ready for the release, or does the first one
-  go to community-extensions only?
+- **`ACL_COMMIT`**: moved to duckdb-acl #233's merge commit 23a8b18 (tresor #58) - 034's follow-up done.
+- **`enable_external_access`**: before the first release, `enable_external_access = false` stops tresor's own
+  requests (its built-in client: the IdP and the service) as DuckDB's HTTP client is stopped - 023's follow-up,
+  a spec of its own.
+- **`@hugr-lab/tresor-web`**: not published with 0.1.0; it waits for duckdb-wasm on DuckDB 2.0, as wasm stays
+  excluded from the distribution.
+- **Where 0.1.0 goes**: duckdb/community-extensions; hugr lab's own extension repository as soon as it exists
+  (not a condition of the release).
 
 ## Testing
 
