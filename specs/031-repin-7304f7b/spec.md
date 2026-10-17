@@ -31,4 +31,4 @@ With duckdb-acl's spec 131: CI.
 
 ## Follow-ups
 
-- `ACL_COMMIT` to spec 131's merged commit.
+- `ACL_COMMIT` to spec 131's merged commit. Done: ce1d417 (#53).

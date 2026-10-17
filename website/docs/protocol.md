@@ -428,7 +428,9 @@ variables. It checks what a client can observe:
 - a service login and a person login, each followed by `whoami`;
 - a secret the service holds, found by DuckDB's lookup, its material delivered;
 - writes: create, conflict, replace, annotate, grant, revoke, drop;
-- variables, only for a service that advertises them (`TRESOR_CONFORMANCE_VARIABLES`).
+- variables, only for a service that advertises them (`TRESOR_CONFORMANCE_VARIABLES`);
+- generated parameters in the services' shared `mint+` syntax, only for a service that implements it
+  (`TRESOR_CONFORMANCE_GENERATORS`).
 
 The suite grows with the client. The
 [reference server](./reference-server.md) passes it in CI, next to a real Keycloak.

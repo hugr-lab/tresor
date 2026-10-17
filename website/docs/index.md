@@ -20,10 +20,12 @@ FROM 's3://lake/sales/*.parquet';                      -- found by scope, like a
 ```
 
 :::note Status
-Everything on this site works today: attaching, the logins of people and of services, the
-secrets in DuckDB's lookup, writes and grants, dynamic secrets, acting for duckdb-acl's sessions
-and the audit. The first release ships with DuckDB 2.0. Until then, build it from source
-([Development](./development.md)), and the [protocol](./protocol.md) is a draft.
+Everything on this site works today: attaching, the logins of people (from any client) and of
+services and pipelines, the secrets in DuckDB's lookup, writes and grants, variables, dynamic
+secrets, acting for duckdb-acl's sessions and the audit. A web application's DuckDB-wasm waits for
+duckdb-wasm on DuckDB 2.0 ([In a web application](./web.md)). The first release ships with DuckDB 2.0.
+Until then, build it from source ([Development](./development.md)), and the [protocol](./protocol.md)
+is a draft.
 :::
 
 ## What it is
@@ -42,6 +44,8 @@ and the audit. The first release ships with DuckDB 2.0. Until then, build it fro
 ## Where to next
 
 - [Getting started](./getting-started.md) — the first attach, for a person and for a service.
+- [From DuckDB UI, Python and IDEs](./clients.md) and [Pipelines](./pipelines.md) — logging in where
+  you run DuckDB.
 - [Concepts](./concepts.md) — the attached catalog, lookup, persistence, acting for users.
 - [Protocol](./protocol.md) — the specification a secrets service implements.
 - [Security model](./security.md) — what a role can and cannot protect, and why delegation matters.

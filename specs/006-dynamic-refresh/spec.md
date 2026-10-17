@@ -147,5 +147,6 @@ lookup never does: it may be the very credential that was refused.
 
 ## Follow-ups
 
-- A dynamic backend in the reference server (an STS-like mint, or a database user per session).
-- spec 007: delegation.
+- A dynamic backend in the reference server (an STS-like mint, or a database user per session). In part:
+  specs/010, 029 (a token or a claim generated per caller).
+- spec 007: delegation. Done: specs/007, 008, 009.

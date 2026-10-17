@@ -295,5 +295,5 @@ CALL corp.drop_variable('lake_bucket', if_exists := true);
 ## Detach
 
 ```sql
-DETACH corp;   -- logs out: the tokens are dropped (and, once secrets arrive, they leave the lookup)
+DETACH corp;   -- logs out: the tokens are dropped, and the service's secrets leave the lookup
 ```

@@ -163,5 +163,6 @@ No change to requests or responses. The protocol page states two client-side rul
 
 ## Follow-ups
 
-- spec 006: dynamic secrets and the `REFRESH auto` provider for httpfs.
-- spec 007: delegation rules (`add_delegation`, …) with the server side in the reference server.
+- spec 006: dynamic secrets and the `REFRESH auto` provider for httpfs. Done: specs/006.
+- spec 007: delegation rules (`add_delegation`, …) with the server side in the reference server. Done:
+  specs/007; the rules removed by specs/009.

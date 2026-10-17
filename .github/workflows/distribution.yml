@@ -25,8 +25,8 @@ jobs:
       extension_name: tresor
       duckdb_version: v2.0-cyanoptera
       ci_tools_version: main
-      # wasm is out: the login needs a loopback listener / device polling and an HTTPS client, and a
-      # browser-hosted duckdb has neither sockets nor a place for a redirect to land
+      # wasm is out for now (specs/035): tresor's wasm build compiles and logs in through the page
+      # (tresor_web_login, specs/020), but needs duckdb-wasm on DuckDB 2.0, and is not in CI yet
       exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads'
       # One vcpkg binary cache with duckdb-acl, acl-otel and hugr-node (Cloudflare R2, duckdb-acl's
       # docs/vcpkg-cache-r2.md): vcpkg keys packages by ABI hash, so the repositories share it without

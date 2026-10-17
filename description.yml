@@ -1,5 +1,6 @@
 # The community-extensions descriptor (duckdb/community-extensions), filled at the release: `version` and
-# `repo.ref` become the release's tag. See specs/017.
+# `repo.ref` become the release's tag. See specs/017 (checked again by specs/035). wasm stays excluded until
+# duckdb-wasm is on DuckDB 2.0 (specs/020, 035).
 extension:
   name: tresor
   description: "One OIDC login, role-based secrets: attach an external secrets service (duckdb-secrets/1)."
@@ -32,10 +33,13 @@ docs:
     secret lookup. The service is anything that implements the open protocol duckdb-secrets/1; a
     production one is tresor-server.
 
-    - People log in through the browser or the device flow; services with a client secret, a key, a
-      federated token or an Azure managed identity. Single sign-on through the OS keychain.
+    - People log in through the browser or the device flow, also from DuckDB UI, notebooks and IDEs
+      (tresor_login); single sign-on through the OS keychain, tresor_logoff to forget it.
+    - Services and pipelines log in with a key, a federated token (Kubernetes, GitHub Actions), an
+      Azure managed identity, a client secret or a token they hold.
     - Administrators store secrets with CREATE PERSISTENT SECRET ... IN corp and grant their use to
-      roles; dynamic secrets are minted per caller.
+      roles; any parameter may be generated per caller (dynamic secrets). Optional variables:
+      corp.variable(name).
     - On a duckdb-acl node, tresor acts for each user's session through a delegation grant.
     - Every action is audited, for DuckDB's log and OpenTelemetry.
 

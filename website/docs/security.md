@@ -80,8 +80,8 @@ one setting covers tresor's whole trust, on both clients (specs/030):
   redirect, or a device code. The secrets service is not a login hub: other servers (a DuckDB node
   behind a gateway, a data platform) need identity-provider tokens too, and one login mints them for
   each audience.
-- Services log in with their own credentials — client credentials, a private-key JWT, or a federated
-  workload assertion — never with a stored person's token.
+- Services log in with their own credentials — client credentials, a private-key JWT, a federated
+  workload assertion, or an Azure managed identity — never with a stored person's token.
 - **A person's refresh token is kept in the OS credential store** (specs/012), and only that: never
   a file, never an access token, never a service's credential. It goes to its identity provider only,
   both for a refresh and for a revocation.

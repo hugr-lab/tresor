@@ -201,5 +201,5 @@ An independent review, most of them reproduced against the fake:
 
 ## Follow-ups
 
-- spec 005: `CREATE / DROP PERSISTENT SECRET … IN corp`, `annotate_secret`, grants.
-- spec 006: dynamic secrets and the `REFRESH auto` provider for httpfs.
+- spec 005: `CREATE / DROP PERSISTENT SECRET … IN corp`, `annotate_secret`, grants. Done: specs/005.
+- spec 006: dynamic secrets and the `REFRESH auto` provider for httpfs. Done: specs/006.
