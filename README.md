@@ -22,11 +22,16 @@ CREATE PERSISTENT SECRET lake_rw IN corp (TYPE s3, …); -- stored in the servic
 
 **Status: complete for its first release, which ships with DuckDB 2.0.** It covers:
 - people's and services' logins: browser and device flows, keys, federated tokens, managed identities;
-- single sign-on through the OS keychain;
-- the service's secrets in DuckDB's lookup, writes and grants;
-- dynamic secrets;
+- logging in from DuckDB UI, notebooks and IDEs (`tresor_login`), and pipelines as service identities;
+- single sign-on through the OS keychain, `tresor_logoff` to forget it;
+- the service's secrets in DuckDB's lookup, writes and grants, and its optional variables;
+- dynamic secrets: any parameter generated per caller;
 - acting for [duckdb-acl](https://github.com/hugr-lab/duckdb-acl)'s sessions;
 - an audit for DuckDB's log and OpenTelemetry.
+
+A web application's path - the page's login handed over (`tresor_web_login`, on DuckDB's HTTP client) and
+the helper `@hugr-lab/tresor-web` - is implemented and tested natively and in Node; a browser needs
+DuckDB-wasm on DuckDB 2.0.
 
 Until the release, build it from source (below). See the [CHANGELOG](CHANGELOG.md), the design
 ([specs/001](specs/001-architecture/spec.md)) and the docs (<https://hugr-lab.github.io/tresor/>).

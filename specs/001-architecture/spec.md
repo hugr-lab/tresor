@@ -1,7 +1,8 @@
 # Spec 001: tresor — attach a secrets service, one OIDC login, role-based secrets
 
 - **Status**: accepted (scaffold implemented: the `tresor` ATTACH type is registered and loads the
-  extension by prefix; the attach itself is specs/002)
+  extension by prefix; the attach itself is specs/002; the architecture implemented through specs/034, see
+  [035](../035-release-readiness/spec.md))
 - **Date**: 2026-09-18
 - **Author**: VGSML
 
@@ -132,10 +133,11 @@ acl-otel load into one DuckDB, and loadable extensions must match the host exact
 
 ## Follow-ups
 
-- specs/002 — attach, discovery, login (people + services), `corp.whoami()`.
-- specs/003 — the storage: list, lookup, material cache; `corp.secrets()`.
-- specs/004 — writes, annotate, grants.
-- specs/005 — dynamic secrets and the `REFRESH auto` provider.
-- specs/006 — delegation (grant exchange, rules).
-- duckdb-ext-common — `hooks/` base and `contracts/tresor_audit.hpp`; the OIDC core additions.
-- The reference server (`server/`, Go) and the conformance suite.
+- specs/002 — attach, discovery, login (people + services), `corp.whoami()`. Done: specs/002.
+- specs/003 — the storage: list, lookup, material cache; `corp.secrets()`. Done: specs/004.
+- specs/004 — writes, annotate, grants. Done: specs/005.
+- specs/005 — dynamic secrets and the `REFRESH auto` provider. Done: specs/006.
+- specs/006 — delegation (grant exchange, rules). Done: specs/007, 008; rules removed by specs/009.
+- duckdb-ext-common — `hooks/` base and `contracts/tresor_audit.hpp`; the OIDC core additions. Done: specs/011,
+  012, 013, 020, 030.
+- The reference server (`server/`, Go) and the conformance suite. Done: specs/003.

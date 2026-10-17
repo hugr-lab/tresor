@@ -174,5 +174,6 @@ An independent review, the worst of them reproduced:
 ## Follow-ups
 
 - tresor as the actor: the grant from `acl_connection` (duckdb-acl's contract) used by the storage's
-  lookups in that connection.
-- `user` mode in the reference server, with a dynamic backend.
+  lookups in that connection. Done: specs/008.
+- `user` mode in the reference server, with a dynamic backend. Dropped: specs/009 (no rules; a token for the
+  grant's user is specs/010).

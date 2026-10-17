@@ -76,4 +76,4 @@ sends or reads.
 ## Follow-ups
 
 - An idea from the owner, not decided: `tresor_value('name')`, named values shared by users. It would
-  be a protocol change here first.
+  be a protocol change here first. Done as variables: specs/018 (`corp.variable(name)`).

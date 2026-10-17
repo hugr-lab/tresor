@@ -23,6 +23,14 @@ scripts/ci/test_keycloak.sh                 # the reference server + Keycloak (d
 duckdb-secrets service and identity provider on a loopback port), passes the port to the tests as
 `TRESOR_TEST_PORT`, and sets `BROWSER` to a script that plays the person's browser.
 
+`TRESOR_TEST_HTTPFS=1` (as CI builds) also builds the test-only extensions: httpfs (the s3 types and
+`REFRESH auto`), stubs of duckdb-acl's sessions and of a typed secret, and an extension that builds
+tresor in. `TRESOR_TEST_CONSUMERS=1` on top adds postgres_scanner, iceberg and avro, for the tests that
+the right secret reaches them (`test/sql/consumers/`), which also need a real Postgres
+(`TRESOR_TEST_PG_PORT`) and run through `scripts/ci/test_attach.sh "" 'test/sql/consumers/*'`. Without the
+flags those tests skip. The
+distribution build compiles none of them.
+
 tresor is never statically linked: the test shell does not contain it, so a test can prove that an
 `ATTACH 'tresor:…'` loads the installed extension by itself. Tests load it by build path
 (`LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension'`) or install it from the
@@ -33,6 +41,8 @@ build's local repository.
 tresor rides the **2.0 line** at the same duckdb commit as
 [duckdb-acl](https://github.com/hugr-lab/duckdb-acl) and acl-otel: on a server the three load into
 one DuckDB, and loadable extensions must match the host's duckdb exactly. Bump the pins together.
+The test-only extensions stay at the commits duckdb's own tree pins
+(`scripts/ci/check_extension_pins.sh`).
 
 ## Repository layout
 
@@ -42,6 +52,8 @@ one DuckDB, and loadable extensions must match the host's duckdb exactly. Bump t
 | `duckdb-ext-common/` | submodule: shared contracts and hook bases (the audit hook tresor publishes lives there) |
 | `server/` | the [reference server](./reference-server.md) (Go), with the Keycloak realm its tests import |
 | `website/` | this site; the [protocol](./protocol.md) page is the specification |
+| `web/` | `@hugr-lab/tresor-web`, the page's helper ([In a web application](./web.md)) |
+| `test/` | sqllogictests, the fake service and identity provider, the test-only extensions |
 | `specs/` | one lightweight spec per feature |
 
 ## Docs

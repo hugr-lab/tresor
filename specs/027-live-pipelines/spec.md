@@ -150,7 +150,9 @@ Entra takes such a token as the assertion. tresor now accepts either form, for t
 
 ## Follow-ups
 
-- The Azure results into the table and `website/docs/pipelines.md` ("checked live").
+- The Azure results into the table and `website/docs/pipelines.md` ("checked live"). Done: in this spec
+  (2026-10-14).
 - Check 2's open point: tresor sends the managed identity's token only when its `aud` holds
   `api://AzureADTokenExchange` exactly; should Entra put the token-exchange app's GUID there, the check fails
-  with "not meant for api://AzureADTokenExchange - not sent" and tresor would need to accept it.
+  with "not meant for api://AzureADTokenExchange - not sent" and tresor would need to accept it. Done: it
+  happened, and tresor accepts the app id for that audience (above).

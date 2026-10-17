@@ -156,7 +156,7 @@ more than the actor's `use`. It found:
 ## Follow-ups
 
 - spec 010: the `token_exchange` provider, a token for the effective caller: a user directly; the
-  node itself; the grant's user under a grant, with a refresh token.
+  node itself; the grant's user under a grant, with a refresh token. Done: specs/010.
 - duckdb-acl: the `ACL GRANT SECRET` / `CREATE SECRET` syntax and the catalog choice above.
 
 ## Addendum: an administrator sees unredacted parameters in tresor-server's console (2026-10-05)

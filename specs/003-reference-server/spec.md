@@ -237,3 +237,5 @@ An independent review, several of them reproduced:
 - A second reference backend (OpenBao) as an example.
 - Entra ID live validation (the claims shape is unit-tested). Done in part: specs/013 (2026-09-30: a person;
   a node with a secret or a certificate). On-Behalf-Of, federated and managed identity not yet live.
+  Done since: On-Behalf-Of (2026-10-06) and GitHub Actions' federated token (2026-10-07) in specs/013; a
+  managed identity, directly and as a federated credential, and an AKS pod's token in specs/027.
