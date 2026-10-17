@@ -31,10 +31,11 @@ secrets among them are refreshed through httpfs's own `REFRESH auto` when they r
 
 A secret is served as its extension made it: a type the extension registered with a class of its own
 (BigQuery's) reaches it in that class, as one read from a persistent secret file would. Such
-extensions usually renew their tokens themselves — for BigQuery, keep a service account key
-(`service_account_json`), a workload identity federation config (`external_account_json`) or an
-authorized user (`refresh_token`, `client_id`, `client_secret`) in the service, not a bare
-`access_token`.
+extensions usually renew their tokens themselves. For BigQuery, prefer a workload identity
+federation config (`external_account_json`): it holds no key, and BigQuery renews its token. An
+`access_token` the service mints on every fetch suits a short-lived attach; an authorized user
+(`refresh_token`, `client_id`, `client_secret`) works too. Do not serve a service account key
+(`service_account_json`): whoever may use the secret gets the long-lived key itself.
 
 ## What your role may do
 
