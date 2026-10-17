@@ -87,6 +87,14 @@ SET allowed_directories = ['https://secrets.corp.example/', 'https://login.corp.
 SET enable_external_access = false;
 ```
 
+- Name every host tresor calls: the service, and each endpoint the IdP's discovery names (token, device,
+  revocation - some IdPs serve them from another host than the issuer). A `managed_identity` login needs
+  `http://169.254.169.254/` (or `IDENTITY_ENDPOINT`'s host); a GitHub Actions federated login, the host of
+  `ACTIONS_ID_TOKEN_REQUEST_URL`.
+- `allowed_directories` matches by prefix: give a host (or a path) ending in `/`, spelled as the URL spells
+  it - an explicit `:443` or another case does not match. `allowed_paths` names exact URLs, query included,
+  so it rarely fits tresor's requests.
+
 The same sandbox already bounds the files a login reads (`ASSERTION_FILE`, `PRIVATE_KEY_FILE`).
 
 ## Logins

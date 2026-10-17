@@ -31,7 +31,16 @@ which honours `enable_external_access` and the URLs `allowed_directories` / `all
   operations are disabled by configuration"), inside tresor's message for the call (discovery, the secret, a
   login). The URL is an endpoint's: it carries no token or secret.
 - **Allowed endpoints**: `allowed_directories = ['https://secrets.corp.example/', 'https://login.corp.example/']`
-  set before external access is turned off lets tresor reach those, as it lets DuckDB.
+  set before external access is turned off lets tresor reach those, as it lets DuckDB - matched by prefix (DuckDB
+  stores each with a trailing `/`, so `allowed.example` never admits `allowed.example.evil.com`). Every host
+  tresor calls must be named: the service, each endpoint the IdP's discovery names (token, device, revocation),
+  IMDS / `IDENTITY_ENDPOINT` for a managed identity, `ACTIONS_ID_TOKEN_REQUEST_URL`'s host for GitHub Actions
+  (security.md).
+- **A refusal is never a dead login**: wasm reads any renewal failure without an error code as `invalid_grant`
+  (duckdb-wasm drops the IdP's body) and forgets the login; a sandbox refusal (`IsSandboxRefusal`) is not read
+  so, natively or in wasm.
+- **Fail closed**: a session calls only with the client set at ATTACH; one without it throws rather than use the
+  bare built-in client, which skips the sandbox. The guarded built-in transport is private to `tresor_http.cpp`.
 - **Every request is covered**: every call tresor makes runs under an `HttpScope` (the ATTACH, a login and its
   thread, a session's calls and renewals, the actor's exchanges and revocations, `tresor_logoff`'s revocation);
   the OIDC core's own requests inside a grant ride the scope's transport.
@@ -47,12 +56,20 @@ which honours `enable_external_access` and the URLs `allowed_directories` / `all
   enable_external_access = false`, a secret not fetched yet is refused, one fetched before is still served, a new
   ATTACH and `tresor_login` are refused. Without the DuckDB transport's check, the refusal does not happen on
   `tresor_http_client = 'duckdb'` (checked).
+- `external_access.test` also logs a remembered person off with external access off: the login is removed, its
+  revocation refused (`removed` true, `revoked` false - the fake IdP revokes otherwise).
 - `test/sql/attach/external_access_allowed.test`: with the fake service's URL in `allowed_directories`, ATTACH,
   whoami and a secret work with external access off.
+- `test/sql/attach/external_access_other.test`: `allowed_directories` naming only the IdP's path leaves the
+  service's discovery refused.
+- Reviewed, not tested: a renewal refused by the sandbox (a session's `AccessToken`), the managed identity's and
+  GitHub's token sources (they ride the same transport: the OIDC core has one way out, `HttpSend`).
 - `service_identities.test`'s sandbox case allows the service's URL, so it still proves that a credential file
   outside `allowed_directories` is refused.
 
 ## Implementation
 
-- `src/tresor_http.cpp`: `Refusal`, `BuiltinTransport`; `TransportFor` returns it for `builtin`; `Send` (the
-  DuckDB transport) checks first.
+- `src/tresor_http.cpp`: `Refusal`, `IsSandboxRefusal`, `BuiltinTransport` (private); `TransportFor` returns it
+  for `builtin`; `Send` (the DuckDB transport) checks first.
+- `TresorSession::Client()`: the session's client, or an internal error when none was set.
+- The wasm renewals (`tresor_session.cpp`, `tresor_login.cpp`) do not read a refusal as `invalid_grant`.

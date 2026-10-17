@@ -8,7 +8,7 @@ statement ok
 LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
 
 statement ok
-SET tresor_keychain = 'off';
+SET tresor_keychain = 'memory';
 
 statement ok
 CREATE SECRET etl_login (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}',
@@ -17,6 +17,14 @@ CREATE SECRET etl_login (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}
 
 statement ok
 ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+
+# a person's login, remembered: its logoff comes below, with external access off (detached now - every service of
+# the fake serves the same secrets' names, which two catalogs would make ambiguous)
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/second' AS person (INSECURE_HTTP true, LOGIN 'browser');
+
+statement ok
+DETACH person;
 
 # fetched while the service may be reached: held in memory, as any secret DuckDB holds
 query I
@@ -38,6 +46,13 @@ query I
 SELECT tresor_secret_param('lake_team_a', 'key_id');
 ----
 VARCHAR AKIA-TEAM-A
+
+# a logoff still forgets the login: only its revocation at the IdP is refused
+query III
+SELECT removed, revoked, detached FROM tresor_logoff(service := '127.0.0.1:{TRESOR_TEST_PORT}/second',
+    issuer := 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', client_id := 'duckdb');
+----
+true	false	0
 
 statement ok
 DETACH corp;

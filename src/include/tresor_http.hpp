@@ -23,8 +23,9 @@ void RegisterHttpClient(DatabaseInstance &db);
 //! catalogs.
 oidc::Transport TransportFor(ClientContext &context);
 
-//! The OIDC core's own client behind DuckDB's sandbox (`builtin`).
-oidc::Transport BuiltinTransport(DatabaseInstance &db);
+//! A transport's refusal by DuckDB's sandbox (specs/036), as the error of a request or a grant: never a verdict on
+//! the login itself (wasm, which reads any failed renewal as a dead token, must not forget a login for it).
+bool IsSandboxRefusal(const string &message);
 
 //! DuckDB's HTTPUtil as an OIDC transport (duckdb-ext-common spec 013's contract): no redirect followed, no
 //! retry, no request logged, no `http` secret or extra header of DuckDB's mixed in, certificates verified (against

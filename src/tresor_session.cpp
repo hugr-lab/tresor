@@ -145,7 +145,7 @@ string TresorSession::AccessToken(bool force) {
 #ifdef __EMSCRIPTEN__
 		// duckdb-wasm's client drops the body of the IdP's 400: a dead refresh token's invalid_grant comes without
 		// its code. A page's login is a person's, and any failed renewal ends it the same way (specs/020)
-		if (renewed.error_code.empty() && flow == LoginFlow::REMEMBERED) {
+		if (renewed.error_code.empty() && flow == LoginFlow::REMEMBERED && !IsSandboxRefusal(renewed.error)) {
 			renewed.error_code = "invalid_grant";
 		}
 #endif
@@ -185,7 +185,7 @@ string TresorSession::AccessToken(bool force) {
 ServiceResponse TresorSession::Call(const string &method, const string &path, const string &body,
                                     const std::map<std::string, std::string> &extra_headers, int timeout_seconds,
                                     const std::function<bool()> &interrupted) {
-	HttpScope http(http_client);
+	HttpScope http(Client());
 	if (wait_pending) {
 		// logged off: a login tresor_login started for this key is waited for first (specs/025) - never under the
 		// lock, so other calls, a DETACH and the logoff that cancels it go on meanwhile
@@ -253,7 +253,7 @@ ServiceResponse TresorSession::Call(const string &method, const string &path, co
 
 oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bool on_behalf_of, const string &scope,
                                                  const string &audience) {
-	HttpScope http(http_client);
+	HttpScope http(Client());
 	ServiceCredential proof; // paths and ids: copied under the lock - the files are read and the IdP called outside it
 	{
 		lock_guard<mutex> guard(lock);
@@ -304,7 +304,7 @@ oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bo
 }
 
 vector<string> TresorSession::OwnAudiences(bool &is_jwt) {
-	HttpScope http(http_client);
+	HttpScope http(Client());
 	lock_guard<mutex> guard(lock);
 	auto token = AccessToken(false);
 	auto audiences = JwtAudiences(token, is_jwt);

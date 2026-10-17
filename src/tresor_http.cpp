@@ -94,11 +94,13 @@ private:
 //! DuckDB's sandbox for tresor's own requests (specs/036): `enable_external_access` and `allowed_directories` /
 //! `allowed_paths`, read as DuckDB's HTTPUtil reads them for any request, at the moment of the request. An empty
 //! result may go; otherwise the refusal, as a transport error (DuckDB's own words).
+constexpr const char *SANDBOX_REFUSAL = "file system operations are disabled by configuration";
+
 string Refusal(DatabaseInstance &db, const string &url) {
 	if (DBConfig::GetConfig(db).CanAccessFile(url, FileType::FILE_TYPE_REGULAR)) {
 		return string();
 	}
-	return "Cannot access \"" + url + "\" - file system operations are disabled by configuration";
+	return "Cannot access \"" + url + "\" - " + SANDBOX_REFUSAL;
 }
 
 oidc::HttpResult Send(DatabaseInstance &db, const string &method, const string &url,
@@ -175,7 +177,24 @@ oidc::HttpResult Send(DatabaseInstance &db, const string &method, const string &
 	return out;
 }
 
+oidc::Transport BuiltinTransport(DatabaseInstance &db) {
+	// the OIDC core's own client behind DuckDB's sandbox: a transport calling back into the core reaches its built-in
+	// client. By reference, as DuckDBTransport
+	return [&db](const std::string &method, const std::string &url, const std::map<std::string, std::string> &headers,
+	             const std::string &body, const std::string &content_type, int timeout_seconds) {
+		oidc::HttpResult out;
+		out.error = Refusal(db, url);
+		if (!out.error.empty()) {
+			return out;
+		}
+		return oidc::HttpSend(method, url, headers, body, content_type, timeout_seconds);
+	};
+}
 } // namespace
+
+bool IsSandboxRefusal(const string &message) {
+	return message.find(SANDBOX_REFUSAL) != string::npos;
+}
 
 void RegisterHttpClient(DatabaseInstance &db) {
 	// the default may come from the environment: TRESOR_HTTP_CLIENT=duckdb (a test suite run on DuckDB's client)
@@ -195,20 +214,6 @@ oidc::Transport DuckDBTransport(DatabaseInstance &db) {
 	return [&db](const std::string &method, const std::string &url, const std::map<std::string, std::string> &headers,
 	             const std::string &body, const std::string &content_type, int timeout_seconds) {
 		return Send(db, method, url, headers, body, content_type, timeout_seconds);
-	};
-}
-
-oidc::Transport BuiltinTransport(DatabaseInstance &db) {
-	// the OIDC core's own client behind DuckDB's sandbox: a transport calling back into the core reaches its built-in
-	// client. By reference, as DuckDBTransport
-	return [&db](const std::string &method, const std::string &url, const std::map<std::string, std::string> &headers,
-	             const std::string &body, const std::string &content_type, int timeout_seconds) {
-		oidc::HttpResult out;
-		out.error = Refusal(db, url);
-		if (!out.error.empty()) {
-			return out;
-		}
-		return oidc::HttpSend(method, url, headers, body, content_type, timeout_seconds);
 	};
 }
 
