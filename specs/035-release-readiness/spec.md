@@ -54,8 +54,8 @@ changes.
     account key.
 - **Specs hygiene.** Status lines agree with the README's index (007's and 020's in more words). Follow-ups done since are marked with the spec
   that did them: 001, 003 (Entra live), 004, 005, 006 (in part), 007, 009, 016 (variables, 018), 027 (both
-  done in 027 itself), 031 (`ACL_COMMIT` ce1d417). 034's stays open: duckdb-acl #233 is not merged, and
-  `ACL_COMMIT` is its branch commit 00375b8. 001 stays *accepted* (an architecture) and 017 *accepted* (the
+  done in 027 itself), 031 (`ACL_COMMIT` ce1d417). 034's was done
+  meanwhile by #58 (`ACL_COMMIT` 23a8b18, #233 merged). 001 stays *accepted* (an architecture) and 017 *accepted* (the
   release waits for the tag); both now point here.
 
 ## Decided (2026-10-17)
