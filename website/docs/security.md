@@ -74,6 +74,21 @@ one setting covers tresor's whole trust, on both clients (specs/030):
   system's roots, as for any other httpfs request: there the file must hold the public roots too
   where a public endpoint is called. It reads the global value only - set it with `SET GLOBAL`.
 
+## DuckDB's sandbox
+
+`SET enable_external_access = false` stops tresor's own requests as it stops DuckDB's: the service, the
+identity provider, a revocation, on either HTTP client (specs/036). An attached catalog asks the service
+no more - a secret not fetched yet is refused, one already fetched is served from memory until it
+expires - and neither a new `ATTACH` nor `tresor_login` reaches anything. To keep tresor working in a
+sandbox, name its endpoints before turning external access off, as for any URL DuckDB may reach:
+
+```sql
+SET allowed_directories = ['https://secrets.corp.example/', 'https://login.corp.example/'];
+SET enable_external_access = false;
+```
+
+The same sandbox already bounds the files a login reads (`ASSERTION_FILE`, `PRIVATE_KEY_FILE`).
+
 ## Logins
 
 - People log in directly with the identity provider — authorization code with PKCE and a loopback

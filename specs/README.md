@@ -53,3 +53,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | [033](033-consumer-tests/spec.md) | the right secret reaches the extension - httpfs, postgres_scanner, iceberg use what tresor serves | implemented |
 | [034](034-repin-f8f3f4d/spec.md) | re-pin duckdb to f8f3f4d - with duckdb-acl | implemented |
 | [035](035-release-readiness/spec.md) | release readiness - specs 018-034 checked against the first release, the checklist current | implemented |
+| [036](036-external-access/spec.md) | DuckDB's sandbox stops tresor's own requests - `enable_external_access` on either client | implemented |

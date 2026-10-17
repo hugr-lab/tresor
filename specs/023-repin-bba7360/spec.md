@@ -36,4 +36,5 @@ node, acl's never set, private_key_jwt), and the wasm build.
 ## Follow-ups
 
 - tresor's built-in HTTP client and `enable_external_access` (whether a disabled setting stops tresor's own
-  requests to the IdP and the service): its own spec.
+  requests to the IdP and the service): its own spec. Done: specs/036 - which found the DuckDB transport not
+  checked either (its opener names no database, so `HTTPUtil::Request` skips the check); both are now.

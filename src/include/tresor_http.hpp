@@ -17,9 +17,14 @@ namespace tresor {
 //! `duckdb` (DuckDB's HTTPUtil: httpfs where it is loaded; in wasm the browser's, and the only one there).
 void RegisterHttpClient(DatabaseInstance &db);
 
-//! The transport the setting names for this context: empty for `builtin`. It refers to the instance without owning
-//! it: a session holding it lives in one of the instance's catalogs.
+//! The transport the setting names for this context. Either one asks DuckDB's sandbox first (specs/036):
+//! `enable_external_access = false` stops tresor's requests unless `allowed_directories` / `allowed_paths` name
+//! their URL. It refers to the instance without owning it: a session holding it lives in one of the instance's
+//! catalogs.
 oidc::Transport TransportFor(ClientContext &context);
+
+//! The OIDC core's own client behind DuckDB's sandbox (`builtin`).
+oidc::Transport BuiltinTransport(DatabaseInstance &db);
 
 //! DuckDB's HTTPUtil as an OIDC transport (duckdb-ext-common spec 013's contract): no redirect followed, no
 //! retry, no request logged, no `http` secret or extra header of DuckDB's mixed in, certificates verified (against

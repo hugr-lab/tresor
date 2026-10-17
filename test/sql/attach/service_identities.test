@@ -557,6 +557,10 @@ statement ok
 CREATE SECRET sandboxed (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'federated', CLIENT_ID 'fednode',
     ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_FILE '{TRESOR_TEST_KEYS}/fed.token');
 
+# the service and its IdP allowed (specs/036: the sandbox stops tresor's requests too), the file is not
+statement ok
+SET allowed_directories = ['http://127.0.0.1:{TRESOR_TEST_PORT}/'];
+
 statement ok
 SET enable_external_access = false;
 
