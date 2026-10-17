@@ -21,6 +21,11 @@ endif
 endif
 
 # Include the Makefile from extension-ci-tools
+# The distribution build (extension-ci-tools a90d6d4, 2026-10-15) hands over a prebuilt duckdb
+# (DUCKDB_PREBUILT_LIBRARY / _EXTENSIONS): its version (v2.0.0-alphaN) is not the one tresor is stamped for, so the
+# tests refuse to load it. tresor builds duckdb from the pinned source as before - as duckdb-acl does (its spec 133).
+override DUCKDB_PREBUILT_LIBRARY :=
+override DUCKDB_PREBUILT_EXTENSIONS :=
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
 .PHONY: vcpkg-setup
