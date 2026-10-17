@@ -31,7 +31,7 @@ if(DEFINED ENV{TRESOR_TEST_HTTPFS} AND "$ENV{TRESOR_TEST_HTTPFS}" STREQUAL "1")
     duckdb_extension_load(httpfs
         APPLY_PATCHES
         GIT_URL https://github.com/duckdb/duckdb-httpfs
-        GIT_TAG abdd053708ff3ef9359a5b3da680b128d95e4f84
+        GIT_TAG 2174b462678979089e8bf1f2fc1328d6eb306450
     )
     duckdb_extension_statically_link(httpfs)
 endif()
@@ -74,7 +74,7 @@ if(DEFINED ENV{TRESOR_TEST_CONSUMERS} AND "$ENV{TRESOR_TEST_CONSUMERS}" STREQUAL
     if(NOT MINGW AND NOT ${WASM_ENABLED})
         duckdb_extension_load(postgres_scanner
             GIT_URL https://github.com/duckdb/duckdb-postgres
-            GIT_TAG 9671d2c5cd5fa8e3b295ca7f130fa7590e9b4568
+            GIT_TAG c0f5a3c0c4b68b02afbf669d36d7f0e503985c88
             SUBMODULES database-connector
         )
     endif()
@@ -88,7 +88,7 @@ if(DEFINED ENV{TRESOR_TEST_CONSUMERS} AND "$ENV{TRESOR_TEST_CONSUMERS}" STREQUAL
         duckdb_extension_statically_link(avro)
         duckdb_extension_load(iceberg
             GIT_URL https://github.com/duckdb/duckdb-iceberg
-            GIT_TAG 5b9ff899a17edc4289c4b3760a58c931736b4863
+            GIT_TAG 10eafd0b340c946e4a6ba7b6c7244c6a270327b0
             APPLY_PATCHES
         )
         duckdb_extension_statically_link(iceberg)

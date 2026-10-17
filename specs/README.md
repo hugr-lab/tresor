@@ -51,3 +51,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | [031](031-repin-7304f7b/spec.md) | re-pin duckdb to 7304f7b - with duckdb-acl | implemented |
 | [032](032-typed-secrets/spec.md) | a served secret of its type's own class (BigQuery) - through the type's deserializer | implemented |
 | [033](033-consumer-tests/spec.md) | the right secret reaches the extension - httpfs, postgres_scanner, iceberg use what tresor serves | implemented |
+| [034](034-repin-f8f3f4d/spec.md) | re-pin duckdb to f8f3f4d - with duckdb-acl | implemented |
