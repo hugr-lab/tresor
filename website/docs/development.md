@@ -26,7 +26,9 @@ duckdb-secrets service and identity provider on a loopback port), passes the por
 `TRESOR_TEST_HTTPFS=1` (as CI builds) also builds the test-only extensions: httpfs (the s3 types and
 `REFRESH auto`), stubs of duckdb-acl's sessions and of a typed secret, and an extension that builds
 tresor in. `TRESOR_TEST_CONSUMERS=1` on top adds postgres_scanner, iceberg and avro, for the tests that
-the right secret reaches them (`test/sql/consumers/`). Without the flags those tests skip. The
+the right secret reaches them (`test/sql/consumers/`), which also need a real Postgres
+(`TRESOR_TEST_PG_PORT`) and run through `scripts/ci/test_attach.sh "" 'test/sql/consumers/*'`. Without the
+flags those tests skip. The
 distribution build compiles none of them.
 
 tresor is never statically linked: the test shell does not contain it, so a test can prove that an

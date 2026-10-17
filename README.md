@@ -29,8 +29,9 @@ CREATE PERSISTENT SECRET lake_rw IN corp (TYPE s3, …); -- stored in the servic
 - acting for [duckdb-acl](https://github.com/hugr-lab/duckdb-acl)'s sessions;
 - an audit for DuckDB's log and OpenTelemetry.
 
-DuckDB-wasm (a web application, the page's login) is built and tested natively and in Node; it waits for
-duckdb-wasm on DuckDB 2.0.
+A web application's path - the page's login handed over (`tresor_web_login`, on DuckDB's HTTP client) and
+the helper `@hugr-lab/tresor-web` - is implemented and tested natively and in Node; a browser needs
+DuckDB-wasm on DuckDB 2.0.
 
 Until the release, build it from source (below). See the [CHANGELOG](CHANGELOG.md), the design
 ([specs/001](specs/001-architecture/spec.md)) and the docs (<https://hugr-lab.github.io/tresor/>).

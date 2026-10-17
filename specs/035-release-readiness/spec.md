@@ -35,6 +35,10 @@ changes.
   the merged PRs).
 - **`distribution.yml`**: the comment on `exclude_archs` gave spec 017's reason (no loopback listener in a
   browser), which specs/020 removed; it now gives the current one. The setting is unchanged.
+- **Review of #57** (2026-10-17): the CHANGELOG's DuckDB line no longer claims duckdb-acl and acl-otel are at
+  f8f3f4d (their main is on 7304f7b, acl-otel on ext-common v0.12.0); the checklist's contract stamps
+  (`acl_checkout.sh` checks ACLC only), its gate (macOS on push only, `make wasm_eh` by hand, `live-image.yml`)
+  and the community runner's consumer skips corrected; Auth0's `audience` added to the CHANGELOG.
 - **The docs**:
   - `README.md` and the home page: the status lists named neither `tresor_login`, pipelines, variables nor
     generated parameters, and said nothing of wasm; the home page links the clients and pipelines pages;
@@ -46,8 +50,9 @@ changes.
     check, `web/` and `test/` in the layout.
   - Checked and current: `clients.md` (025), `pipelines.md` (026, 027), `web.md` (020), `reference-server.md`
     (029's generators, `cors_origins`), `security.md`'s certificates (030), `concepts.md`.
-    `concepts.md`'s BigQuery paragraph is left to the open PR #56.
-- **Specs hygiene.** Status lines match the README's index. Follow-ups done since are marked with the spec
+    `concepts.md`'s BigQuery paragraph was updated by #56: prefer `external_account_json`, never a service
+    account key.
+- **Specs hygiene.** Status lines agree with the README's index (007's and 020's in more words). Follow-ups done since are marked with the spec
   that did them: 001, 003 (Entra live), 004, 005, 006 (in part), 007, 009, 016 (variables, 018), 027 (both
   done in 027 itself), 031 (`ACL_COMMIT` ce1d417). 034's stays open: duckdb-acl #233 is not merged, and
   `ACL_COMMIT` is its branch commit 00375b8. 001 stays *accepted* (an architecture) and 017 *accepted* (the
@@ -75,8 +80,9 @@ changes.
 
 ## Owner questions
 
-- **`ACL_COMMIT`** points at duckdb-acl #233's branch commit until it merges (034's follow-up); the checklist
-  wants a merged one at the release.
+- **`ACL_COMMIT`** points at duckdb-acl #233's branch commit 00375b8 (034's follow-up); #233's head has since
+  moved to e7b2192, so `ACL_COMMIT` must move to the merged commit once it merges - the checklist wants a merged
+  one at the release.
 - **`enable_external_access`** and tresor's built-in client (023's follow-up, still open): should
   `enable_external_access = false` stop tresor's own requests to the IdP and the service before the first
   release?

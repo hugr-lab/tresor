@@ -20,10 +20,10 @@ FROM 's3://lake/sales/*.parquet';                      -- found by scope, like a
 ```
 
 :::note Status
-Everything on this site works today: attaching, the logins of people (from any client) and of
+Everything on this site works today, except in a browser (see
+[In a web application](./web.md)): attaching, the logins of people (from any client) and of
 services and pipelines, the secrets in DuckDB's lookup, writes and grants, variables, dynamic
-secrets, acting for duckdb-acl's sessions and the audit. A web application's DuckDB-wasm waits for
-duckdb-wasm on DuckDB 2.0 ([In a web application](./web.md)). The first release ships with DuckDB 2.0.
+secrets, acting for duckdb-acl's sessions and the audit. The first release ships with DuckDB 2.0.
 Until then, build it from source ([Development](./development.md)), and the [protocol](./protocol.md)
 is a draft.
 :::
