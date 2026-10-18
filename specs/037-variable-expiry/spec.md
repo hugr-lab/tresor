@@ -33,9 +33,9 @@ token tresor-server mints for the caller: its life may be shorter than the clien
   (required for a dynamic one, as before) and a variable's value. A static secret whose `expires_at` cannot be
   read is now not reused either (before: kept its 5 minutes) - a service's mistake is not trusted.
 - A value not kept leaves no older one behind: the cache entry is removed.
-- Once set, the token is DuckDB's: `current_setting` shows it unless MotherDuck hides its setting; in the
-  connection string it becomes the database's path. The docs say both; tresor's protections end where the value
-  leaves it.
+- Once set, the token is MotherDuck's and DuckDB's: MotherDuck hides its setting (`current_setting` and
+  `duckdb_settings()` answer `<redacted>`); in the connection string it is part of the ATTACH's path. The docs
+  say both; tresor's protections end where the value leaves it.
 
 ## Testing
 
@@ -44,8 +44,11 @@ token tresor-server mints for the caller: its life may be shorter than the clien
   generated anew; an expired one and one with an unreadable expiry are generated on every read; the value goes
   into DuckDB (`SET VARIABLE`) as a setting would take it.
 - `variables.test`'s listing includes the generated variables (sensitive).
-- MotherDuck itself is not built here (no `motherduck` extension in the test build): the recipe is the
-  documented `SET`.
+- MotherDuck has no extension for DuckDB's 2.0 development line, so tresor and MotherDuck cannot meet in one
+  DuckDB yet. The recipe's MotherDuck half was checked live on DuckDB 1.5.6 with a real token (2026-10-18): `SET
+  motherduck_token = <an expression>` then `ATTACH 'md:'` connects, and the setting reads back `<redacted>`. (An
+  expression as the ATTACH path is 2.0's: checked on our build, not with MotherDuck.) Again with tresor once
+  MotherDuck ships for 2.0.
 
 ## Follow-ups
 

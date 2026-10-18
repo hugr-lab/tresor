@@ -304,10 +304,11 @@ SET motherduck_token = corp.variable('md_token');   -- a stored token, a referen
 ATTACH 'md:my_db' AS md;
 ```
 
-- Once set, the token is DuckDB's: whoever may read settings (`current_setting`) may read it, unless
-  MotherDuck hides its setting. tresor's protections end where the value leaves it.
-- Prefer the setting to the connection string (`'md:my_db?motherduck_token=' || corp.variable(…)`):
-  there the token becomes part of the database's path, shown by `duckdb_databases()`.
+- MotherDuck hides its setting: `current_setting('motherduck_token')` and `duckdb_settings()` show
+  `<redacted>` (checked with a live token). Past that, the token is MotherDuck's and DuckDB's to keep:
+  tresor's protections end where the value leaves it.
+- Prefer the setting to the connection string (`'md:my_db?motherduck_token=' || corp.variable(…)`,
+  DuckDB 2.0): there the token is part of the ATTACH's path, which DuckDB keeps and shows.
 - MotherDuck reads the token when it connects: a token generated with an expiry needs to outlive the
   connection's start only.
 
