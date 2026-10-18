@@ -312,7 +312,15 @@ VARIABLES = {
     "hidden": {"value": "nope", "comment": "", "version": 1, "permissions": []},
     "admin_only": {"value": "nope", "comment": "", "version": 1, "permissions": ["update", "delete", "annotate", "grant"]},
     "whoami_var": {"value": "", "comment": "", "version": 1, "permissions": ["use"]},
+    # specs/037: a value generated on each read (the service's own syntax, here mint+fake://), with its expiry
+    "minted_var": {"value": "mint+fake://md", "comment": "", "version": 1, "permissions": ["use"], "lifetime": 600},
+    "minted_short": {"value": "mint+fake://short", "comment": "", "version": 1, "permissions": ["use"], "lifetime": 6},
+    "minted_expired": {"value": "mint+fake://expired", "comment": "", "version": 1, "permissions": ["use"],
+                       "lifetime": -60},
+    "minted_unreadable": {"value": "mint+fake://unreadable", "comment": "", "version": 1, "permissions": ["use"],
+                          "expires_at": "not-a-time"},
 }
+MINTED_VARS = {}  # specs/037: variable name -> values generated
 
 
 def b64url_decode(text):
@@ -971,7 +979,7 @@ class Handler(BaseHTTPRequestHandler):
     # --- variables (specs/018) ---------------------------------------------------------------------------
     @staticmethod
     def variable_view(name, var):
-        sensitive = var["value"].startswith("ref+")
+        sensitive = var["value"].startswith("ref+") or var["value"].startswith("mint+")
         return {"name": name, "comment": var["comment"], "owner": "client:etl", "version": str(var["version"]),
                 "created_at": "2026-10-01T10:00:00Z", "updated_at": "2026-10-01T10:00:00Z",
                 "sensitive": sensitive, "permissions": var["permissions"]}
@@ -1030,7 +1038,13 @@ class Handler(BaseHTTPRequestHandler):
                         value = "resolved:" + value[len("ref+fake://"):]  # a reference, resolved on read
                     if name == "whoami_var":
                         value = "for:" + identity["subject"]
-                    self.send(200, dict(self.variable_view(name, var), value=value))
+                    extra = {}
+                    if value.startswith("mint+fake://"):  # under LOCK already
+                        MINTED_VARS[name] = MINTED_VARS.get(name, 0) + 1
+                        value = "MINT-%s-%d" % (value[len("mint+fake://"):], MINTED_VARS[name])
+                        extra["expires_at"] = var.get("expires_at") or time.strftime(
+                            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + var["lifetime"]))
+                    self.send(200, dict(self.variable_view(name, var), value=value, **extra))
                 return True
             if name.startswith("forbidden_"):
                 self.problem(403, "no_verb", "the caller may not write this variable")

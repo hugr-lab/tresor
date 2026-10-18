@@ -291,6 +291,25 @@ CALL corp.drop_variable('lake_bucket', if_exists := true);
 - **Sensitive values are handled as secret material.** They never reach the audit or a log, and each
   caller caches its own, for no longer than a secret's material. Other values are cached for 30
   seconds, and a write through tresor is read at once.
+- **Generated values.** A service may generate a value on each read - a token minted for you - and
+  give it an expiry (tresor-server: `mint+…`, its own syntax). tresor keeps it until shortly before it
+  expires, as a dynamic secret (specs/037).
+
+### A token in a DuckDB setting: MotherDuck
+
+MotherDuck reads its token from a setting, never from a secret. A variable carries it there:
+
+```sql
+SET motherduck_token = corp.variable('md_token');   -- a stored token, a reference, or one generated for you
+ATTACH 'md:my_db' AS md;
+```
+
+- Once set, the token is DuckDB's: whoever may read settings (`current_setting`) may read it, unless
+  MotherDuck hides its setting. tresor's protections end where the value leaves it.
+- Prefer the setting to the connection string (`'md:my_db?motherduck_token=' || corp.variable(…)`):
+  there the token becomes part of the database's path, shown by `duckdb_databases()`.
+- MotherDuck reads the token when it connects: a token generated with an expiry needs to outlive the
+  connection's start only.
 
 ## Detach
 
