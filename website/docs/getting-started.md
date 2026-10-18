@@ -292,25 +292,29 @@ CALL corp.drop_variable('lake_bucket', if_exists := true);
   caller caches its own, for no longer than a secret's material. Other values are cached for 30
   seconds, and a write through tresor is read at once.
 - **Generated values.** A service may generate a value on each read - a token minted for you - and
-  give it an expiry (tresor-server: `mint+…`, its own syntax). tresor keeps it until shortly before it
-  expires, as a dynamic secret (specs/037).
+  give it an expiry, with a syntax of its own (tresor-server's `mint+…`, once it supports variables).
+  tresor keeps it until shortly before it expires, as a dynamic secret (specs/037).
 
 ### A token in a DuckDB setting: MotherDuck
 
 MotherDuck reads its token from a setting, never from a secret. A variable carries it there:
 
 ```sql
+LOAD motherduck;                                     -- its setting exists once the extension is loaded
 SET motherduck_token = corp.variable('md_token');   -- a stored token, a reference, or one generated for you
-ATTACH 'md:my_db' AS md;
+ATTACH 'md:my_db';
 ```
+
+This needs MotherDuck's extension for DuckDB 2.0, which it does not ship yet; the MotherDuck half was
+checked live on DuckDB 1.5.
 
 - MotherDuck hides its setting: `current_setting('motherduck_token')` and `duckdb_settings()` show
   `<redacted>` (checked with a live token). Past that, the token is MotherDuck's and DuckDB's to keep:
   tresor's protections end where the value leaves it.
 - Prefer the setting to the connection string (`'md:my_db?motherduck_token=' || corp.variable(…)`,
-  DuckDB 2.0): there the token is part of the ATTACH's path, which DuckDB keeps and shows.
-- MotherDuck reads the token when it connects: a token generated with an expiry needs to outlive the
-  connection's start only.
+  DuckDB 2.0): there the token is part of the ATTACH's path, which DuckDB keeps and may show.
+- MotherDuck reads the token when it connects: a generated token needs to outlive the connection's start,
+  and is set again (`SET motherduck_token = corp.variable(…)`) before a new connection.
 
 ## Detach
 

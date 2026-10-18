@@ -5,6 +5,8 @@
 
 require-env TRESOR_TEST_PORT
 
+require httpfs
+
 statement ok
 LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
 
@@ -68,11 +70,12 @@ SELECT corp.variable('minted_unreadable');
 ----
 MINT-unreadable-2
 
-# into DuckDB, as a MotherDuck recipe takes it (SET motherduck_token = corp.variable(...) the same way)
+# into a DuckDB setting, as the MotherDuck recipe takes it (SET motherduck_token = corp.variable(...)); httpfs's
+# s3_region stands in for a setting the test build has
 statement ok
-SET VARIABLE md = corp.variable('minted_var');
+SET s3_region = corp.variable('minted_var');
 
 query I
-SELECT getvariable('md');
+SELECT current_setting('s3_region');
 ----
 MINT-md-1
