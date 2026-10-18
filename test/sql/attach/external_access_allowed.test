@@ -1,0 +1,37 @@
+# name: test/sql/attach/external_access_allowed.test
+# description: with enable_external_access = false, allowed_directories naming the service and its IdP lets tresor
+#              reach them, as it lets DuckDB's own requests (specs/036)
+# group: [attach]
+
+require-env TRESOR_TEST_PORT
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+SET tresor_keychain = 'off';
+
+statement ok
+CREATE SECRET etl_login (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}',
+                         FLOW 'client_credentials', CLIENT_ID 'etl', CLIENT_SECRET 's3cr3t',
+                         ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+
+# the service and its IdP (the fake serves both): allowed before external access is turned off
+statement ok
+SET allowed_directories = ['http://127.0.0.1:{TRESOR_TEST_PORT}/'];
+
+statement ok
+SET enable_external_access = false;
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+
+query II
+SELECT subject, login FROM corp.whoami();
+----
+client:etl	client_credentials
+
+query I
+SELECT tresor_secret_param('alice_lake', 'key_id');
+----
+VARCHAR AKIA-ALICE

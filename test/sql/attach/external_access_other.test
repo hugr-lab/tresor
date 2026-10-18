@@ -1,0 +1,29 @@
+# name: test/sql/attach/external_access_other.test
+# description: with enable_external_access = false, allowed_directories naming only the IdP leaves the service
+#              refused - a prefix of the URL, as DuckDB matches it (specs/036)
+# group: [attach]
+
+require-env TRESOR_TEST_PORT
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+SET tresor_keychain = 'off';
+
+statement ok
+CREATE SECRET etl_login (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}',
+                         FLOW 'client_credentials', CLIENT_ID 'etl', CLIENT_SECRET 's3cr3t',
+                         ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+
+statement ok
+SET allowed_directories = ['http://127.0.0.1:{TRESOR_TEST_PORT}/idp/'];
+
+statement ok
+SET enable_external_access = false;
+
+# the service's discovery is not under the IdP's path
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+----
+Cannot access "http://127.0.0.1:{TRESOR_TEST_PORT}/.well-known/duckdb-secrets"

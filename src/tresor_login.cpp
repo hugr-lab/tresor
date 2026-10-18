@@ -426,7 +426,7 @@ bool RememberedLogin(ClientContext &context, const AttachRequest &request, const
 #ifdef __EMSCRIPTEN__
 	// duckdb-wasm's client drops a POST's error body: a dead token's invalid_grant arrives without its code. In a
 	// browser every failure is the same to the page anyway - forget the token, and ask for a new login (specs/020)
-	if (renewed.error_code.empty()) {
+	if (renewed.error_code.empty() && !IsSandboxRefusal(renewed.error)) {
 		renewed.error_code = "invalid_grant";
 	}
 #endif

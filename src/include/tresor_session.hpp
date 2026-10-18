@@ -5,6 +5,7 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/exception.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/unordered_map.hpp"
 #include "oidc_core.hpp"
@@ -171,6 +172,15 @@ private:
 	string subject;
 	string catalog_name;
 	HttpClient http_client;
+	//! The client set at ATTACH (SetHttpClient). Never the bare built-in one: an empty transport would skip
+	//! DuckDB's sandbox (specs/036), so a session without its client fails closed - that call only (an internal
+	//! error would invalidate the instance, every connection of a node).
+	const HttpClient &Client() const {
+		if (!http_client.transport) {
+			throw IOException("tresor: a session's HTTP client was not set");
+		}
+		return http_client;
+	}
 	mutable mutex lock;
 	oidc::TokenSet tokens;
 	int64_t issued_at = 0;        // when `tokens` arrived: the renewal margin is at most half their life
