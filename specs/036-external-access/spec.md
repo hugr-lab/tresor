@@ -71,5 +71,6 @@ which honours `enable_external_access` and the URLs `allowed_directories` / `all
 
 - `src/tresor_http.cpp`: `Refusal`, `IsSandboxRefusal`, `BuiltinTransport` (private); `TransportFor` returns it
   for `builtin`; `Send` (the DuckDB transport) checks first.
-- `TresorSession::Client()`: the session's client, or an internal error when none was set.
+- `TresorSession::Client()`: the session's client, or an error for that call when none was set (never an internal
+  error, which would invalidate the instance).
 - The wasm renewals (`tresor_session.cpp`, `tresor_login.cpp`) do not read a refusal as `invalid_grant`.

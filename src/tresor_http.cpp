@@ -91,11 +91,11 @@ private:
 	int timeout_seconds;
 };
 
+constexpr const char *SANDBOX_REFUSAL = "file system operations are disabled by configuration";
+
 //! DuckDB's sandbox for tresor's own requests (specs/036): `enable_external_access` and `allowed_directories` /
 //! `allowed_paths`, read as DuckDB's HTTPUtil reads them for any request, at the moment of the request. An empty
 //! result may go; otherwise the refusal, as a transport error (DuckDB's own words).
-constexpr const char *SANDBOX_REFUSAL = "file system operations are disabled by configuration";
-
 string Refusal(DatabaseInstance &db, const string &url) {
 	if (DBConfig::GetConfig(db).CanAccessFile(url, FileType::FILE_TYPE_REGULAR)) {
 		return string();

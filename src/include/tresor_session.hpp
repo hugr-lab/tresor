@@ -173,10 +173,11 @@ private:
 	string catalog_name;
 	HttpClient http_client;
 	//! The client set at ATTACH (SetHttpClient). Never the bare built-in one: an empty transport would skip
-	//! DuckDB's sandbox (specs/036), so a session without its client fails closed.
+	//! DuckDB's sandbox (specs/036), so a session without its client fails closed - that call only (an internal
+	//! error would invalidate the instance, every connection of a node).
 	const HttpClient &Client() const {
 		if (!http_client.transport) {
-			throw InternalException("tresor: a session's HTTP client was not set");
+			throw IOException("tresor: a session's HTTP client was not set");
 		}
 		return http_client;
 	}
