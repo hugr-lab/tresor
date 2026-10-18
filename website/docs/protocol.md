@@ -311,7 +311,7 @@ secret: it takes no part in a secret lookup, and a client reads it only by name.
 }
 ```
 
-`GET /v1/variables/{name}` adds `"value": "<string>"`.
+`GET /v1/variables/{name}` adds `"value": "<string>"`, and MAY add `"expires_at"` (below).
 
 - **The value is a UTF-8 string.** A service MAY refuse a longer value than it keeps (`422
   invalid_secret`); 64 KiB is always accepted.
@@ -326,6 +326,15 @@ secret: it takes no part in a secret lookup, and a client reads it only by name.
   - it never writes one to a log, an audit or an error;
   - it caches it no longer than a secret's material;
   - it never serves one fetched for one caller to another.
+- **`expires_at`** (optional, RFC 3339, in the `GET` of one variable): until when the value may be used.
+  A service sets it on a value it generates on each read - a token minted for the caller, say, with
+  its own syntax as for [dynamic secrets](#dynamic-secrets) - or one that otherwise expires, and MUST
+  mark such a value `sensitive`. Absent or `null`, the value has no expiry.
+  - A client caches the value no longer than its `expires_at` (in practice until shortly before it),
+    besides its other rules (a value marked not `sensitive` keeps the shorter of the two); not at all
+    when it cannot read the field. A value already expired is served for this read and not kept.
+  - Optional both ways: a client that does not know the field ignores it, and a service that does not
+    send it is complete.
 - **`use` comes only from a grant**, as for a secret. Under a delegation grant, a server reads with
   its own grants, and passes management on for administrators only.
 

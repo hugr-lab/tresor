@@ -21,6 +21,8 @@ The first release, with DuckDB 2.0.
   - `managed_identity`: Azure's, with no credential at all;
   - `token`: a token already held.
 - **Auth0**: the discovery may ask clients to send `audience` (specs/013).
+- **Generated variables**: a variable's value may carry an `expires_at` (a value the service generates per
+  read, such as a MotherDuck token); tresor caches it until shortly before it (specs/037).
 - **DuckDB's sandbox**: `enable_external_access = false` stops tresor's requests on either client unless
   `allowed_directories` / `allowed_paths` name their URL (specs/036).
 - **Single sign-on**: a person's refresh token is kept in the OS credential store (macOS

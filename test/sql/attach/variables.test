@@ -95,6 +95,10 @@ admin_only	false
 broken_ref	true
 db_password	true
 lake_bucket	false
+minted_expired	true
+minted_short	true
+minted_unreadable	true
+minted_var	true
 whoami_var	false
 
 # a NULL name is NULL

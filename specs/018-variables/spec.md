@@ -55,6 +55,7 @@ organisation runs. It lacks only a value that is not a DuckDB secret.
   then treats the value as material:
   - no log, audit or error ever shows it;
   - it is cached no longer than a secret's material;
+    (a value with an `expires_at`, one the service generates: until shortly before it - specs/037)
   - it is never served across callers.
 - **Permissions** are the secrets' own. Administrators create (`permissions.create`) and manage, roles
   get `use` through grants, and delegation works the same.

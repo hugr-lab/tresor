@@ -1,0 +1,81 @@
+# name: test/sql/attach/variable_expiry.test
+# description: a variable's value with an expiry - one the service generates on each read - cached until shortly
+#              before it, as a dynamic secret (specs/037)
+# group: [attach]
+
+require-env TRESOR_TEST_PORT
+
+require httpfs
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+SET tresor_keychain = 'off';
+
+statement ok
+CREATE SECRET etl_login (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'client_credentials',
+    CLIENT_ID 'etl', CLIENT_SECRET 's3cr3t', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+
+# a long-lived value: generated once, then served from memory
+query I
+SELECT corp.variable('minted_var');
+----
+MINT-md-1
+
+query I
+SELECT corp.variable('minted_var');
+----
+MINT-md-1
+
+# six seconds of life: kept for three (a margin of half its life), then generated anew
+query I
+SELECT corp.variable('minted_short');
+----
+MINT-short-1
+
+query I
+SELECT corp.variable('minted_short');
+----
+MINT-short-1
+
+sleep 4 seconds
+
+query I
+SELECT corp.variable('minted_short');
+----
+MINT-short-2
+
+# expired when it arrives, or an expiry that cannot be read: served, never reused
+query I
+SELECT corp.variable('minted_expired');
+----
+MINT-expired-1
+
+query I
+SELECT corp.variable('minted_expired');
+----
+MINT-expired-2
+
+query I
+SELECT corp.variable('minted_unreadable');
+----
+MINT-unreadable-1
+
+query I
+SELECT corp.variable('minted_unreadable');
+----
+MINT-unreadable-2
+
+# into a DuckDB setting, as the MotherDuck recipe takes it (SET motherduck_token = corp.variable(...)); httpfs's
+# s3_region stands in for a setting the test build has
+statement ok
+SET s3_region = corp.variable('minted_var');
+
+query I
+SELECT current_setting('s3_region');
+----
+MINT-md-1

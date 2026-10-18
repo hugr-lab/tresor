@@ -38,6 +38,27 @@ int64_t NowSeconds() {
 	    .count();
 }
 
+//! Until when a fetched value (a secret's material, a variable's value) may be served from memory: `lifetime` from
+//! now, and with an `expires_at` until shortly before it - a margin of at most half its life, so a short-lived
+//! value is not fetched anew for every file of a scan. An `expires_at` that cannot be read (or none, where one is
+//! required) leaves nothing to reuse.
+int64_t ValidUntil(yyjson_val *root, int64_t now, int64_t lifetime, bool expiry_required) {
+	auto valid_until = now + lifetime;
+	auto field = root && yyjson_is_obj(root) ? yyjson_obj_get(root, "expires_at") : nullptr;
+	if (!field || yyjson_is_null(field)) {
+		return expiry_required ? now : valid_until;
+	}
+	auto expires = yyjson_is_str(field) ? string(yyjson_get_str(field)) : string();
+	timestamp_t parsed;
+	if (expires.empty() ||
+	    Timestamp::TryConvertTimestamp(expires.c_str(), expires.size(), parsed, true) != TimestampCastResult::SUCCESS) {
+		return now;
+	}
+	auto expires_at = Timestamp::GetEpochSeconds(parsed);
+	auto margin = MinValue<int64_t>(DYNAMIC_MARGIN_SECONDS, MaxValue<int64_t>(0, (expires_at - now) / 2));
+	return MinValue<int64_t>(valid_until, expires_at - margin);
+}
+
 string Str(yyjson_val *obj, const char *key) {
 	auto value = obj && yyjson_is_obj(obj) ? yyjson_obj_get(obj, key) : nullptr;
 	return value && yyjson_is_str(value) ? yyjson_get_str(value) : "";
@@ -921,19 +942,8 @@ unique_ptr<const BaseSecret> TresorSecretStorage::MaterialOf(const Caller &calle
 	auto deserialize = DeserializerOf(db, secret->GetType());
 	auto served = AsType(deserialize, std::move(secret));
 	// how long this material may be served: a static secret a few minutes (or until its version changes),
-	// a dynamic one until shortly before it expires - with a margin of at most half its life, so a
-	// short-lived credential is not minted anew for every file of a scan
-	int64_t valid_until = now + STATIC_MATERIAL_SECONDS;
-	auto expires = Str(root, "expires_at");
-	timestamp_t parsed;
-	if (!expires.empty() &&
-	    Timestamp::TryConvertTimestamp(expires.c_str(), expires.size(), parsed, true) == TimestampCastResult::SUCCESS) {
-		auto expires_at = Timestamp::GetEpochSeconds(parsed);
-		auto margin = MinValue<int64_t>(DYNAMIC_MARGIN_SECONDS, MaxValue<int64_t>(0, (expires_at - now) / 2));
-		valid_until = MinValue<int64_t>(valid_until, expires_at - margin);
-	} else if (d.dynamic) {
-		valid_until = now; // a dynamic secret without a readable expiry is never reused
-	}
+	// a dynamic one until shortly before it expires (a dynamic secret without a readable expiry is never reused)
+	auto valid_until = ValidUntil(root, now, STATIC_MATERIAL_SECONDS, d.dynamic);
 	audited.Ok();
 	lock_guard<mutex> guard(lock);
 	if (!Serves(caller, view)) {
@@ -1100,14 +1110,20 @@ bool TresorSecretStorage::VariableOf(const Caller &caller, const string &name, s
 	auto sensitive = yyjson_obj_get(root, "sensitive");
 	value = string(yyjson_get_str(found), yyjson_get_len(found));
 	// a sensitive value (material the service keeps as a secret) no longer than a secret's material; another for
-	// as long as a list is trusted - each caller's own, never shared
+	// as long as a list is trusted - each caller's own, never shared. A value with an expiry (one the service
+	// generated, specs/037) until shortly before it, as a dynamic secret; an expiry it cannot read, not at all
 	auto lifetime = sensitive && yyjson_is_true(sensitive) ? STATIC_MATERIAL_SECONDS : LIST_TTL_SECONDS;
+	auto valid_until = ValidUntil(root, now, lifetime, false);
 	{
 		lock_guard<mutex> guard(lock);
 		if (Serves(caller, *view)) {
-			auto &entry = view->variables[name];
-			entry.value = value;
-			entry.valid_until = now + lifetime;
+			if (valid_until > now) {
+				auto &entry = view->variables[name];
+				entry.value = value;
+				entry.valid_until = valid_until;
+			} else {
+				view->variables.erase(name);
+			}
 		}
 	}
 	audited.Ok();
