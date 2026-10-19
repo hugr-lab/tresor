@@ -24,6 +24,7 @@ vcpkg_installed/
 # the docs site (website/): installed and built locally, deployed by pages.yml
 website/node_modules/
 website/build/
+website/build-ionos/
 website/.docusaurus/
 website/versioned_docs/
 website/versioned_sidebars/

@@ -1,6 +1,7 @@
 name: Deploy docs
 
-# Publishes website/ to GitHub Pages at https://hugr-lab.github.io/tresor/.
+# Publishes website/ to GitHub Pages at https://hugr-lab.github.io/tresor/ - and, when the org enables it
+# (DOCS_IONOS), the same docs to https://hugr-lab.com/docs/tresor/ on IONOS.
 #
 # The docs build from MAIN, and Docusaurus VERSIONING keeps released content
 # authoritative - done here, at build time, from the TAGS: for every release tag
@@ -78,6 +79,30 @@ jobs:
       - name: Build the docs site
         working-directory: website
         run: npx docusaurus build
+
+      # The same docs, versions included, for https://hugr-lab.com/docs/tresor/ on IONOS (Apache, the site's CSP:
+      # nothing from another server). Off until the org variable DOCS_IONOS is 'true'; the SFTP secrets are the
+      # org's. Only on the events that deploy Pages: this workflow never runs on a pull request.
+      - name: Build for hugr-lab.com
+        if: ${{ vars.DOCS_IONOS == 'true' }}
+        working-directory: website
+        env:
+          DOCS_TARGET: ionos
+        run: npm run build -- --out-dir build-ionos
+
+      - name: Upload to hugr-lab.com (IONOS)
+        if: ${{ vars.DOCS_IONOS == 'true' }}
+        env:
+          HOST: ${{ secrets.IONOS_SFTP_HOST }}
+          USER: ${{ secrets.IONOS_SFTP_USER }}
+          LFTP_PASSWORD: ${{ secrets.IONOS_SFTP_PASSWORD }}
+          REMOTE: ${{ vars.IONOS_DOCS_ROOT || '/hugr-lab/docs' }}/tresor
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq lftp
+          # Mirrors the build into <docs root>/tresor on IONOS; nothing outside that folder is touched.
+          lftp --env-password -u "$USER" -e "set sftp:auto-confirm yes; set net:max-retries 3; \
+            mirror --reverse --delete --verbose website/build-ionos/ $REMOTE; bye" \
+            "sftp://$HOST"
 
       - uses: actions/configure-pages@v6
 
