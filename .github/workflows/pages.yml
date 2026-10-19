@@ -78,6 +78,9 @@ jobs:
 
       - name: Build the docs site
         working-directory: website
+        env:
+          # while the hugr-lab.com copy exists, this copy names it as canonical and has no sitemap
+          DOCS_CANONICAL: ${{ vars.DOCS_IONOS == 'true' && 'https://hugr-lab.com/docs/tresor/' || '' }}
         run: npx docusaurus build
 
       # The same docs, versions included, for https://hugr-lab.com/docs/tresor/ on IONOS (Apache, the site's CSP:
