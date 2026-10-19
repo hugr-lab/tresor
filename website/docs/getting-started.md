@@ -292,7 +292,7 @@ CALL corp.drop_variable('lake_bucket', if_exists := true);
   caller caches its own, for no longer than a secret's material. Other values are cached for 30
   seconds, and a write through tresor is read at once.
 - **Generated values.** A service may generate a value on each read - a token minted for you - and
-  give it an expiry, with a syntax of its own (tresor-server's `mint+…`, once it supports variables).
+  give it an expiry, with a syntax of its own (tresor-server's `mint+…`, since its v0.6.0).
   tresor keeps it until shortly before it expires, as a dynamic secret (specs/037).
 
 ### A token in a DuckDB setting: MotherDuck

@@ -23,7 +23,7 @@ token tresor-server mints for the caller: its life may be shorter than the clien
 - **Client**: a variable's value is cached until `ValidUntil` - its usual lifetime (30 s, or 5 minutes for a
   sensitive one), and with an `expires_at` until shortly before it (a margin of at most half its life, as a
   dynamic secret's material); an unreadable expiry, or an expired value, is served and not kept.
-- **The generators are the service's** (tresor-server's `mint+…` once it supports variables, as for secrets' parameters - specs/029) and not
+- **The generators are the service's** (tresor-server's `mint+…`, in variables since its v0.6.0, as for secrets' parameters - specs/029) and not
   part of the protocol. A separate `token()` function was considered and not taken: MotherDuck accepts no IdP
   token, so a token for it is the service's to mint anyway, and a variable carries it with nothing new in the
   client's surface.
@@ -57,4 +57,6 @@ token tresor-server mints for the caller: its life may be shorter than the clien
 ## Follow-ups
 
 - tresor-server: generators in variables' values, and a MotherDuck rule (its session) - after this lands, as the
-  protocol changes in tresor first.
+  protocol changes in tresor first. Done for the generators: tresor-server v0.6.0 (its spec 024, pinned to
+  fc97659) - `mint+exchange/claim/login/rule://` in a variable's value, `sensitive` with an `expires_at` always;
+  nothing MotherDuck-specific (the owner wants the general mechanism).
