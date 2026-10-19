@@ -15,6 +15,10 @@ const ionos = process.env.DOCS_TARGET === 'ionos';
 const site = ionos
   ? {url: 'https://hugr-lab.com', baseUrl: '/docs/tresor/', home: 'https://hugr-lab.com/', impressum: 'https://hugr-lab.com/impressum/', datenschutz: 'https://hugr-lab.com/datenschutz/'}
   : {url: 'https://hugr-lab.github.io', baseUrl: '/tresor/', home: 'https://hugr-lab.github.io/', impressum: 'https://hugr-lab.github.io/impressum/', datenschutz: 'https://hugr-lab.github.io/datenschutz/'};
+// While the hugr-lab.com copy exists (DOCS_IONOS on), pages.yml sets DOCS_CANONICAL for
+// the GitHub Pages build: its pages then name the hugr-lab.com copy as canonical
+// (src/theme/SiteMetadata) and it has no sitemap of its own.
+const canonicalBase = ionos ? '' : process.env.DOCS_CANONICAL ?? '';
 
 const config: Config = {
   title: 'tresor',
@@ -25,7 +29,7 @@ const config: Config = {
   baseUrl: site.baseUrl,
   baseUrlIssueBanner: false,
   trailingSlash: true,
-  customFields: {docsTarget: ionos ? 'ionos' : 'github'},
+  customFields: {docsTarget: ionos ? 'ionos' : 'github', canonicalBase},
 
   organizationName: 'hugr-lab',
   projectName: 'tresor',
@@ -58,6 +62,7 @@ const config: Config = {
         theme: {
           customCss: './src/css/custom.css',
         },
+        sitemap: canonicalBase ? false : undefined,
       } satisfies Preset.Options,
     ],
   ],
