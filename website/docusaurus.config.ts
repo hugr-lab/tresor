@@ -5,18 +5,27 @@ import type * as Preset from '@docusaurus/preset-classic';
 // Docs for tresor - one OIDC login, role-based secrets for DuckDB. Mirrors the
 // mssql-extension and mssql-ducklake sites and the org site (hugr-lab.github.io)
 // so they share look and feel; published by this repo's Pages workflow to
-// https://hugr-lab.github.io/tresor/. The protocol page is the normative
+// https://hugr-lab.github.io/tresor/ (and, with DOCS_TARGET=ionos, to hugr-lab.com/docs/tresor/). The protocol page is the normative
 // specification of duckdb-secrets/1 - a secrets service in any language
 // implements that page.
+
+// The same docs are built twice: for GitHub Pages (default) and for hugr-lab.com on IONOS (DOCS_TARGET=ionos).
+// The IONOS copy must request nothing from another server (the site's CSP and its Datenschutz): links only.
+const ionos = process.env.DOCS_TARGET === 'ionos';
+const site = ionos
+  ? {url: 'https://hugr-lab.com', baseUrl: '/docs/tresor/', home: 'https://hugr-lab.com/', impressum: 'https://hugr-lab.com/impressum/', datenschutz: 'https://hugr-lab.com/datenschutz/'}
+  : {url: 'https://hugr-lab.github.io', baseUrl: '/tresor/', home: 'https://hugr-lab.github.io/', impressum: 'https://hugr-lab.github.io/impressum/', datenschutz: 'https://hugr-lab.github.io/datenschutz/'};
 
 const config: Config = {
   title: 'tresor',
   tagline: 'One OIDC login, role-based secrets for DuckDB - attach your company\'s secrets service.',
   favicon: 'img/favicon.ico',
 
-  url: 'https://hugr-lab.github.io',
-  baseUrl: '/tresor/',
+  url: site.url,
+  baseUrl: site.baseUrl,
+  baseUrlIssueBanner: false,
   trailingSlash: true,
+  customFields: {docsTarget: ionos ? 'ionos' : 'github'},
 
   organizationName: 'hugr-lab',
   projectName: 'tresor',
@@ -87,7 +96,7 @@ const config: Config = {
           position: 'left',
         },
         {
-          href: 'https://hugr-lab.github.io/',
+          href: site.home,
           label: 'Hugr Lab',
           position: 'right',
         },
@@ -126,8 +135,15 @@ const config: Config = {
         {
           title: 'Hugr Lab',
           items: [
-            {label: 'Main site', href: 'https://hugr-lab.github.io/'},
+            {label: 'Main site', href: site.home},
             {label: 'DuckDB MSSQL Extension', href: 'https://hugr-lab.github.io/mssql-extension/'},
+          ],
+        },
+        {
+          title: 'Legal',
+          items: [
+            {label: 'Impressum', href: site.impressum},
+            {label: 'Datenschutz', href: site.datenschutz},
           ],
         },
       ],
