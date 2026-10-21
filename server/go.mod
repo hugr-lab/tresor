@@ -1,13 +1,11 @@
 module github.com/hugr-lab/tresor/server
 
-go 1.26.1
+go 1.27.3
 
 require (
 	github.com/coreos/go-oidc/v3 v3.21.0
+	github.com/go-jose/go-jose/v4 v4.1.5
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require (
-	github.com/go-jose/go-jose/v4 v4.1.5 // indirect
-	golang.org/x/oauth2 v0.36.0 // indirect
-)
+require golang.org/x/oauth2 v0.36.0 // indirect
