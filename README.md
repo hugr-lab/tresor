@@ -20,7 +20,7 @@ CREATE PERSISTENT SECRET lake_rw IN corp (TYPE s3, …); -- stored in the servic
 - **Your role decides** what you may use; administrators manage secrets and grant their use to roles
   — through the CLI, or through a server acting for you, which serves you its own grants.
 
-**Status: complete for its first release, which ships with DuckDB 2.0.** It covers:
+**Status: released - 0.1.0, for DuckDB 2.0.0.** It covers:
 - people's and services' logins: browser and device flows, keys, federated tokens, managed identities;
 - logging in from DuckDB UI, notebooks and IDEs (`tresor_login`), and pipelines as service identities;
 - single sign-on through the OS keychain, `tresor_logoff` to forget it;
@@ -52,7 +52,7 @@ scripts/ci/smoke_load.sh
 The full test setup (the fake service, Keycloak, duckdb-acl) is on the
 [Development](https://hugr-lab.github.io/tresor/development/) page.
 
-tresor tracks the DuckDB 2.0 line at the same commit as
+tresor is built for DuckDB 2.0 (the `v2.0.0` tag) at the same commit as
 [duckdb-acl](https://github.com/hugr-lab/duckdb-acl).
 
 ## License

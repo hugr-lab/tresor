@@ -44,6 +44,10 @@ fixes only what a client sees.
   is the service's to accept.
 - Bodies: a client sends only the fields listed here. A service may refuse unknown fields with
   `422 invalid_secret`.
+- **Unknown is ignored, absent is off.** A client ignores a response field, a capability, a flow, a
+  permission or an error `type` it does not know; a capability that is absent means `false`. A field
+  added to a request after version 1 is sent only to a service whose discovery advertises it. This is
+  what lets version 1 grow by additions (the banner above).
 - Every error is a problem document, including an unknown route or method (`404 not_found`).
 - **Browsers.** A client may run in a web page (tresor in DuckDB-wasm), so its requests are
   cross-origin. A service meant for such pages **SHOULD** answer CORS for the origins it trusts, on
@@ -442,5 +446,6 @@ variables. It checks what a client can observe:
 - generated parameters in the services' shared `mint+` syntax, only for a service that implements it
   (`TRESOR_CONFORMANCE_GENERATORS`).
 
-The suite grows with the client. The
-[reference server](./reference-server.md) passes it in CI, next to a real Keycloak.
+This page is normative; the suite checks it and never requires what the page does not. It grows as
+the page does (by additions). The [reference server](./reference-server.md) passes it in CI, next to
+a real Keycloak.

@@ -11,7 +11,7 @@ title: Development
 git clone --recurse-submodules https://github.com/hugr-lab/tresor.git
 cd tresor
 make vcpkg-setup                            # once: vcpkg builds OpenSSL (or set VCPKG_TOOLCHAIN_PATH)
-GEN=ninja make                              # duckdb (2.0 line) + tresor
+GEN=ninja make                              # duckdb (2.0.0) + tresor
 build/release/test/unittest 'test/sql/*'    # sqllogictests (the attach tests skip without the fake)
 scripts/ci/test_attach.sh                   # the attach tests, against a fake service + IdP
 scripts/ci/smoke_load.sh                    # the artifact, used out of tree, loaded by ATTACH alone
@@ -38,7 +38,7 @@ build's local repository.
 
 ## Pins
 
-tresor rides the **2.0 line** at the same duckdb commit as
+tresor is built for **DuckDB 2.0.0** (the `v2.0.0` tag) at the same duckdb commit as
 [duckdb-acl](https://github.com/hugr-lab/duckdb-acl) and acl-otel: on a server the three load into
 one DuckDB, and loadable extensions must match the host's duckdb exactly. Bump the pins together.
 The test-only extensions stay at the commits duckdb's own tree pins
