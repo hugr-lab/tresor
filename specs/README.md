@@ -55,4 +55,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | [035](035-release-readiness/spec.md) | release readiness - specs 018-034 checked against the first release, the checklist current | implemented |
 | [036](036-external-access/spec.md) | DuckDB's sandbox stops tresor's own requests - `enable_external_access` on either client | implemented |
 | [037](037-variable-expiry/spec.md) | a variable's value with an expiry - a generated token into a DuckDB setting (MotherDuck) | implemented |
-| [038](038-repin-v2.0.0/spec.md) | re-pin to DuckDB v2.0.0 - the release tag, with duckdb-acl | accepted |
+| [038](038-repin-v2.0.0/spec.md) | re-pin to DuckDB v2.0.0 - the release tag, with duckdb-acl | implemented |

@@ -1,6 +1,6 @@
 # Spec 038: re-pin to DuckDB v2.0.0 - the release tag, with duckdb-acl
 
-- **Status**: accepted (local gate green; with duckdb-acl's spec 141: CI)
+- **Status**: implemented
 - **Date**: 2026-10-21
 - **Author**: hugr lab
 - **Asked by**: the owner (relayed by duckdb-acl, 2026-10-21): the family moves onto DuckDB v2.0.0, released that day;
@@ -21,7 +21,8 @@ has moved past it). The pins follow, as specs/017's checklist says, and as duckd
 - **distribution.yml**: `duckdb_version: v2.0.0` (was the branch), `uses: …@main`, `ci_tools_version: main`.
   The distribution stamps the extension for `v2.0.0`, which the released DuckDB loads; a local build reports
   `v2.0.0-devN` (DuckDB 2.0 derives a source build's version from its release file, not `git describe`).
-- **duckdb-ext-common** v0.13.0 stays; `ACL_COMMIT` moves to duckdb-acl's spec 141 merged commit.
+- **duckdb-ext-common** v0.13.0 stays; `ACL_COMMIT` moves to duckdb-acl's spec 141, merged: 41ec046 (#250 - duckdb
+  d54cbbe, extension-ci-tools fe955ed, the same ext-common).
 
 ## What changed in duckdb that tresor meets
 
@@ -33,10 +34,9 @@ has moved past it). The pins follow, as specs/017's checklist says, and as duckd
 
 At d54cbbe, locally (macOS, `GEN=ninja`, `TRESOR_TEST_HTTPFS=1 TRESOR_TEST_CONSUMERS=1`): `test/sql/*`;
 `test_attach.sh` on both HTTP clients (1185 assertions each); the consumers with a Postgres in docker (58);
-`smoke_load.sh`; the wasm build. With duckdb-acl's spec 141: `test_keycloak.sh` (the actor against real
-duckdb-acl), CI, and the Distribution build dispatched on the branch before the merge.
+`smoke_load.sh`; the wasm build; `test_keycloak.sh` with duckdb-acl 41ec046 (111 assertions, the actor against
+real duckdb-acl). Then CI, and the Distribution build dispatched on the branch before the merge.
 
 ## Follow-ups
 
-- `ACL_COMMIT` to spec 141's merged commit.
 - The first release (0.1.0): specs/017's checklist, the owner's go.
