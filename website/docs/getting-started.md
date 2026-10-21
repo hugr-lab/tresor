@@ -5,17 +5,16 @@ title: Getting started
 
 # Getting started
 
-:::note Before the first release
-tresor is released with DuckDB 2.0. Until then, build it from source ([Development](./development.md))
-and load it by path, or `INSTALL tresor FROM '<your build>/repository'`. A build of your own is
-unsigned: start DuckDB with `-unsigned`, or with `allow_unsigned_extensions` set.
-:::
-
 ## Install
 
+tresor needs DuckDB 2.0.
+
 ```sql
-INSTALL tresor;   -- from your organisation's extension repository, or community once published
+INSTALL tresor FROM community;
 ```
+
+A build of your own ([Development](./development.md)) loads by path, or `INSTALL tresor FROM '<your
+build>/repository'`; it is unsigned: start DuckDB with `-unsigned`, or with `allow_unsigned_extensions` set.
 
 No `LOAD` is needed: attaching a `tresor:` path loads the installed extension by itself.
 

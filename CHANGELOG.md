@@ -7,7 +7,9 @@ All notable changes to tresor are documented here. The format follows
 
 ## [Unreleased]
 
-The first release, with DuckDB 2.0.
+## [0.1.0] - 2026-10-21
+
+The first release, with DuckDB 2.0.0. The protocol `duckdb-secrets/1` is version 1, normative from here on.
 
 ### Added
 
@@ -71,9 +73,11 @@ The first release, with DuckDB 2.0.
   `LoadTresorCore`, as hugr-node's `hugr_node` builds tresor in.
 - **Platforms**: Linux, macOS and Windows (clang-cl with `/GF-`, specs/022); wasm compiles (specs/020) but is
   not distributed until duckdb-wasm is on DuckDB 2.0.
-- **Built for DuckDB 2.0**: the `v2.0-cyanoptera` line (today f8f3f4d, duckdb-ext-common v0.13.0), moved
-  together with duckdb-acl and acl-otel; at the release, the `v2.0.0` tag for all three (specs/014, 019, 021,
-  023, 028, 031, 034).
+- **Built for DuckDB 2.0.0** (the `v2.0.0` tag, duckdb-ext-common v0.13.0), together with duckdb-acl and
+  acl-otel (specs/014, 019, 021, 023, 028, 031, 034, 038).
 - **Docs**, Microsoft Entra ID included: <https://hugr-lab.github.io/tresor/>.
 - **Pipelines** in the docs: a job logs in as a service identity, a recipe per executor (Kubernetes,
   GitHub Actions, Azure, a key, a client secret, a token) and dbt-duckdb's profile (specs/026).
+
+[Unreleased]: https://github.com/hugr-lab/tresor/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/hugr-lab/tresor/releases/tag/v0.1.0

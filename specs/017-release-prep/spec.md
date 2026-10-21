@@ -1,7 +1,7 @@
 # Spec 017: the first release - what is ready, what waits for DuckDB 2.0
 
-- **Status**: accepted (the release itself waits for DuckDB 2.0; version and channels decided; the checklist
-  brought up to date by [035](../035-release-readiness/spec.md))
+- **Status**: accepted (the checklist brought up to date by [035](../035-release-readiness/spec.md); run by
+  [038](../038-repin-v2.0.0/spec.md) - the pins - and [039](../039-release-0.1.0/spec.md) - the release)
 - **Date**: 2026-10-01 (checklist updated 2026-10-17)
 - **Author**: hugr lab
 

@@ -5,9 +5,10 @@ title: Protocol — duckdb-secrets/1
 
 # The `duckdb-secrets/1` protocol
 
-:::caution Draft
-This is the draft of version 1. It becomes normative with tresor's first release; until then it
-may change without a version bump.
+:::info Version 1
+This is version 1 of `duckdb-secrets`, normative since tresor 0.1.0 (2026-10-21). An addition that
+a client or a service may ignore - an optional field, an optional resource a service advertises in
+its discovery - keeps the version; any other change is a new version.
 :::
 
 A **secrets service** is any HTTPS server that implements this page. How it stores secrets, how it

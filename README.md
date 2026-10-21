@@ -33,7 +33,8 @@ A web application's path - the page's login handed over (`tresor_web_login`, on 
 the helper `@hugr-lab/tresor-web` - is implemented and tested natively and in Node; a browser needs
 DuckDB-wasm on DuckDB 2.0.
 
-Until the release, build it from source (below). See the [CHANGELOG](CHANGELOG.md), the design
+Install it from DuckDB's community extensions (`INSTALL tresor FROM community;`, DuckDB 2.0), or build it
+from source (below). See the [CHANGELOG](CHANGELOG.md), the design
 ([specs/001](specs/001-architecture/spec.md)) and the docs (<https://hugr-lab.github.io/tresor/>).
 A production service: [tresor-server](https://github.com/hugr-lab/tresor-server).
 
