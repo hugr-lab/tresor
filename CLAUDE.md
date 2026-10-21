@@ -14,16 +14,16 @@ ATTACH prefix works).
 ## Technology
 
 - **Language**: C++17 (DuckDB extension standard).
-- **Pins — the 2.0 line at duckdb-acl's commit, bumped together with duckdb-acl and acl-otel.** On a
+- **Pins — DuckDB 2.0 (the `v2.0.0` tag) at duckdb-acl's commit, bumped together with duckdb-acl and acl-otel.** On a
   server the three load into one DuckDB, and loadable extensions must match the host's duckdb
   exactly:
 
   | Piece | Where | Pin |
   | --- | --- | --- |
-  | duckdb | submodule `duckdb/` | branch `v2.0-cyanoptera`, commit = duckdb-acl's |
+  | duckdb | submodule `duckdb/` | tag `v2.0.0` (d54cbbe), commit = duckdb-acl's |
   | extension-ci-tools | submodule `extension-ci-tools/` | `main`, commit = duckdb-acl's |
   | duckdb-ext-common | submodule `duckdb-ext-common/` | tag `v0.13.0` (keychain/ specs/012, service identities specs/013, the OIDC core's pluggable transport specs/020, its CA bundle specs/030); the same tag as duckdb-acl - `acl_checkout.sh` checks the contract stamps match |
-  | distribution | `.github/workflows/distribution.yml` | `@main`, `duckdb_version: v2.0-cyanoptera` |
+  | distribution | `.github/workflows/distribution.yml` | `@main`, `duckdb_version: v2.0.0` |
   | duckdb-acl (tests only) | `ACL_COMMIT` in `scripts/ci/acl_checkout.sh` | a duckdb-acl commit whose duckdb is ours |
 
 - **Dependencies**: OpenSSL from vcpkg (`vcpkg.json`, static, as in duckdb-acl), for the OIDC core

@@ -1,7 +1,7 @@
 # The build community-extensions runs, run here first: the very reusable workflow they call, with the
-# same inputs, on every platform they cover. Like duckdb-acl, it builds against the 2.0 LINE
-# (`duckdb_version: v2.0-cyanoptera`, the branch head) rather than our submodule pin - an early warning
-# for drift before we bump the pin.
+# same inputs, on every platform they cover. Like duckdb-acl, it builds against DuckDB's release tag
+# (`duckdb_version: v2.0.0`), the pin of our submodule (specs/038).
+
 name: Distribution build
 
 on:
@@ -23,7 +23,7 @@ jobs:
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
     with:
       extension_name: tresor
-      duckdb_version: v2.0-cyanoptera
+      duckdb_version: v2.0.0
       ci_tools_version: main
       # wasm is out for now (specs/035): tresor's wasm build compiles and logs in through the page
       # (tresor_web_login, specs/020), but needs duckdb-wasm on DuckDB 2.0, and is not in CI yet

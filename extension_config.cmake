@@ -29,9 +29,8 @@ duckdb_extension_load(tresor
 # in .github/config/extensions/httpfs.cmake - move both with the duckdb pin. tresor never calls httpfs.
 if(DEFINED ENV{TRESOR_TEST_HTTPFS} AND "$ENV{TRESOR_TEST_HTTPFS}" STREQUAL "1")
     duckdb_extension_load(httpfs
-        APPLY_PATCHES
         GIT_URL https://github.com/duckdb/duckdb-httpfs
-        GIT_TAG 2174b462678979089e8bf1f2fc1328d6eb306450
+        GIT_TAG 77392a72077a85897db2519fae11e2c0da972b8a
     )
     duckdb_extension_statically_link(httpfs)
 endif()
@@ -88,8 +87,7 @@ if(DEFINED ENV{TRESOR_TEST_CONSUMERS} AND "$ENV{TRESOR_TEST_CONSUMERS}" STREQUAL
         duckdb_extension_statically_link(avro)
         duckdb_extension_load(iceberg
             GIT_URL https://github.com/duckdb/duckdb-iceberg
-            GIT_TAG 10eafd0b340c946e4a6ba7b6c7244c6a270327b0
-            APPLY_PATCHES
+            GIT_TAG 4c0c0874c48ec82a3e29910554891d04bcc0e988
         )
         duckdb_extension_statically_link(iceberg)
     endif()
