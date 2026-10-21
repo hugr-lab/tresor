@@ -1,13 +1,13 @@
-# The community-extensions descriptor (duckdb/community-extensions), filled at the release: `version` and
-# `repo.ref` become the release's tag. See specs/017 (checked again by specs/035). wasm stays excluded until
-# duckdb-wasm is on DuckDB 2.0 (specs/020, 035).
+# The community-extensions descriptor (duckdb/community-extensions). For their PR, `repo.ref` is the full SHA of
+# the release's tagged commit (a tag can move; their descriptors take the commit) - here the tag names it. See
+# specs/017, 035, 039. wasm stays excluded until duckdb-wasm is on DuckDB 2.0 (specs/020, 035).
 extension:
   name: tresor
   description: "One OIDC login, role-based secrets: attach an external secrets service (duckdb-secrets/1)."
   version: "0.1.0"
   language: "C++"
   build: "cmake"
-  licence: "MIT"
+  license: "MIT"
   maintainers:
     - "VGSML"
   excluded_platforms:

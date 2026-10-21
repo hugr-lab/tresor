@@ -20,7 +20,7 @@ CREATE PERSISTENT SECRET lake_rw IN corp (TYPE s3, …); -- stored in the servic
 - **Your role decides** what you may use; administrators manage secrets and grant their use to roles
   — through the CLI, or through a server acting for you, which serves you its own grants.
 
-**Status: complete for its first release, which ships with DuckDB 2.0.** It covers:
+**Status: released - 0.1.0, for DuckDB 2.0.0.** It covers:
 - people's and services' logins: browser and device flows, keys, federated tokens, managed identities;
 - logging in from DuckDB UI, notebooks and IDEs (`tresor_login`), and pipelines as service identities;
 - single sign-on through the OS keychain, `tresor_logoff` to forget it;
@@ -33,7 +33,8 @@ A web application's path - the page's login handed over (`tresor_web_login`, on 
 the helper `@hugr-lab/tresor-web` - is implemented and tested natively and in Node; a browser needs
 DuckDB-wasm on DuckDB 2.0.
 
-Until the release, build it from source (below). See the [CHANGELOG](CHANGELOG.md), the design
+Install it from DuckDB's community extensions (`INSTALL tresor FROM community;`, DuckDB 2.0), or build it
+from source (below). See the [CHANGELOG](CHANGELOG.md), the design
 ([specs/001](specs/001-architecture/spec.md)) and the docs (<https://hugr-lab.github.io/tresor/>).
 A production service: [tresor-server](https://github.com/hugr-lab/tresor-server).
 
@@ -51,7 +52,7 @@ scripts/ci/smoke_load.sh
 The full test setup (the fake service, Keycloak, duckdb-acl) is on the
 [Development](https://hugr-lab.github.io/tresor/development/) page.
 
-tresor tracks the DuckDB 2.0 line at the same commit as
+tresor is built for DuckDB 2.0 (the `v2.0.0` tag) at the same commit as
 [duckdb-acl](https://github.com/hugr-lab/duckdb-acl).
 
 ## License

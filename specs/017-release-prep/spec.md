@@ -1,7 +1,7 @@
 # Spec 017: the first release - what is ready, what waits for DuckDB 2.0
 
-- **Status**: accepted (the release itself waits for DuckDB 2.0; version and channels decided; the checklist
-  brought up to date by [035](../035-release-readiness/spec.md))
+- **Status**: accepted (the checklist brought up to date by [035](../035-release-readiness/spec.md); run by
+  [038](../038-repin-v2.0.0/spec.md) - the pins - and [039](../039-release-0.1.0/spec.md) - the release)
 - **Date**: 2026-10-01 (checklist updated 2026-10-17)
 - **Author**: hugr lab
 
@@ -70,7 +70,8 @@ Updated by specs/035 (2026-10-17) for specs 018-034.
    checkout without it gives the commit). Check it on the tag's distribution artifact:
    `SELECT tresor_version()` returns `v0.1.0`.
 5. **Publishing**: a PR to duckdb/community-extensions with
-   `description.yml`, its `ref` being the tag; hugr lab's own repository too, once it exists (specs/035).
+   `description.yml`, its `ref` the tagged commit's full SHA (specs/039); hugr lab's own repository too, once it
+   exists (specs/035).
    - Their CI builds and runs the tests. Before the PR, check how their runner treats
      `require-env TRESOR_TEST_PORT` (the tests that need a service should skip), and tresor loaded by
      build path.
