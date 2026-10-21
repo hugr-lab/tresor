@@ -30,10 +30,11 @@ SELECT subject, roles, can_create, login FROM corp.whoami();
 ----
 client:etl	['role:etl']	[*]	client_credentials
 
+# lake_team_a, not lake: the fake counts lake's fetches for secrets.test, across the files of one run
 query III
-SELECT name, persistent, storage FROM which_secret('s3://lake/sales/2026.parquet', 's3');
+SELECT name, persistent, storage FROM which_secret('s3://lake/team-a/sales.parquet', 's3');
 ----
-lake	PERSISTENT	corp
+lake_team_a	PERSISTENT	corp
 
 statement ok
 DETACH corp;
