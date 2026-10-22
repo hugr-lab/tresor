@@ -22,7 +22,7 @@ ATTACH prefix works).
   | --- | --- | --- |
   | duckdb | submodule `duckdb/` | tag `v2.0.0` (d54cbbe), commit = duckdb-acl's |
   | extension-ci-tools | submodule `extension-ci-tools/` | `main`, commit = duckdb-acl's |
-  | duckdb-ext-common | submodule `duckdb-ext-common/` | tag `v0.13.0` (keychain/ specs/012, service identities specs/013, the OIDC core's pluggable transport specs/020, its CA bundle specs/030); the same tag as duckdb-acl - `acl_checkout.sh` checks the contract stamps match |
+  | duckdb-ext-common | submodule `duckdb-ext-common/` | tag `v0.14.0` (keychain/ specs/012, service identities specs/013, the OIDC core's pluggable transport specs/020, its CA bundle specs/030, PKCE on the device flow specs/040); the same tag as duckdb-acl - `acl_checkout.sh` checks the contract stamps match |
   | distribution | `.github/workflows/distribution.yml` | `@main`, `duckdb_version: v2.0.0` |
   | duckdb-acl (tests only) | `ACL_COMMIT` in `scripts/ci/acl_checkout.sh` | a duckdb-acl commit whose duckdb is ours |
 
@@ -51,6 +51,7 @@ test/extension/tresor_embedder/  # test-only extension that builds tresor in, as
 test/extension/typed_secret_stub/  # test-only extension: secret types of their own classes, as bigquery's (specs/032)
 test/acl/actor.sql          # the actor against real duckdb-acl (test_keycloak.sh, TRESOR_ACL_EXTENSION)
 test/keycloak/browser.py    # fills Keycloak's login form: the person's browser in the Keycloak tests
+test/keycloak/device.py     # approves a device login at Keycloak (the link with the code, the login form)
 scripts/ci/                 # smoke_load.sh, test_attach.sh, assert_ran.sh, check_docs_links.py, check_extension_pins.sh
 specs/                      # one lightweight spec per feature (see specs/README.md)
 design/                     # LOCAL, gitignored research

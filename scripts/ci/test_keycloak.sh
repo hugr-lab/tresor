@@ -43,6 +43,7 @@ done
 cleanup() {
 	[ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null || true
 	[ -n "${echo_pid:-}" ] && kill "$echo_pid" 2>/dev/null || true
+	[ -n "${device_pid:-}" ] && kill "$device_pid" 2>/dev/null || true
 	[ "${KEEP_KEYCLOAK:-0}" = "1" ] || "${compose[@]}" down >/dev/null 2>&1 || true
 	rm -rf "$work"
 }
@@ -280,6 +281,41 @@ if [ "${TRESOR_KC_KEYCHAIN:-0}" = "1" ]; then
 	else
 		status=1
 	fi
+fi
+# a person's device login (RFC 8628) at a Keycloak whose public client enforces PKCE (the test realm's duckdb client):
+# the device request must carry a code_challenge, the poll its verifier (duckdb-ext-common spec 017). The person
+# approves through test/keycloak/device.py with the code tresor printed.
+cli="${TRESOR_CLI:-$(dirname "$unittest")/../duckdb}"
+ext="$(dirname "$unittest")/../extension/tresor/tresor.duckdb_extension"
+device_out="$work/device.out"
+printf "LOAD '%s';\nATTACH 'tresor:127.0.0.1:%s' AS dv (INSECURE_HTTP true, LOGIN 'device', LOGIN_TIMEOUT 60);\nSELECT 'kc:' || login FROM dv.whoami();\n" \
+	"$ext" "$server_port" | TRESOR_KEYCHAIN=memory "$cli" -no-agent -unsigned -list -noheader >"$device_out" 2>&1 &
+device_pid=$!
+for _ in $(seq 30); do
+	grep -q "enter the code" "$device_out" && break
+	kill -0 "$device_pid" 2>/dev/null || break # the ATTACH ended early: nothing to wait for
+	sleep 1
+done
+# the link with the code (verification_uri_complete), as the person follows it; Keycloak's own form takes no code
+# outside a browser session
+device_uri="$(sed -nE 's/.*or open ([^ ]+).*/\1/p' "$device_out" | head -1)"
+[ -n "$device_uri" ] || device_uri="$(sed -nE 's/.*visit ([^ ]+) and enter the code .*/\1/p' "$device_out" | head -1)"
+device_code="$(sed -nE 's/.*enter the code ([A-Z0-9-]+).*/\1/p' "$device_out" | head -1)"
+if [ -n "$device_uri" ] && [ -n "$device_code" ] && python3 "$root/test/keycloak/device.py" "$device_uri" "$device_code"; then
+	wait "$device_pid" || true
+	if grep -q '^kc:device$' "$device_out"; then
+		echo "test_keycloak: a device login with PKCE (Keycloak enforcing it) logged the person in"
+	else
+		echo "test_keycloak: the device login was approved, but the ATTACH did not log in:" >&2
+		grep -E 'Error|tresor:' "$device_out" >&2 || true
+		status=1
+	fi
+else
+	kill "$device_pid" 2>/dev/null || true
+	wait "$device_pid" 2>/dev/null || true
+	echo "test_keycloak: the device login did not start or was not approved:" >&2
+	grep -E 'Error|tresor:' "$device_out" >&2 || true
+	status=1
 fi
 # a node that proves itself with a key (specs/013): a key and certificate made for this run, registered on Keycloak's
 # keynode client (client-jwt) through the admin API, then a login from a DuckDB process with PRIVATE_KEY_FILE

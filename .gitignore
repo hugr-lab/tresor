@@ -37,3 +37,6 @@ web/build/
 
 # agents' git worktrees (Claude Code)
 .claude/worktrees/
+
+# drafts of announcements (LinkedIn post, article, screenshots) - local only
+posts/
