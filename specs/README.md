@@ -57,3 +57,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | [037](037-variable-expiry/spec.md) | a variable's value with an expiry - a generated token into a DuckDB setting (MotherDuck) | implemented |
 | [038](038-repin-v2.0.0/spec.md) | re-pin to DuckDB v2.0.0 - the release tag, with duckdb-acl | implemented |
 | [039](039-release-0.1.0/spec.md) | the first release - tresor 0.1.0 for DuckDB 2.0.0, the protocol's version 1 | accepted |
+| [040](040-device-pkce/spec.md) | a person's device login at a Keycloak that enforces PKCE (duckdb-ext-common spec 017) | accepted |

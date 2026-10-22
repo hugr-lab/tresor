@@ -7,6 +7,12 @@ All notable changes to tresor are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The device login at a Keycloak that enforces PKCE** (a public client's common setting) failed with
+  `Missing parameter: code_challenge_method`: the device request now carries PKCE where the issuer advertises it
+  (specs/040, duckdb-ext-common spec 017).
+
 ## [0.1.0] - 2026-10-21
 
 The first release, with DuckDB 2.0.0. The protocol `duckdb-secrets/1` is version 1, normative from here on.
