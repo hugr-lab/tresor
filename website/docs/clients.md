@@ -85,6 +85,12 @@ reading it for the first time - Python, a JVM after the CLI - makes macOS ask yo
 Choose **Always Allow**. A new build of that program may ask again. Windows' Credential Manager and the
 Secret Service on Linux do not ask.
 
+## An application that logs its users in
+
+A program that has already logged its user in (MSAL, an OIDC library) does not log them in again: it hands tresor
+its access token for the service with `tresor_web_token`, and each renewed one ([In your
+application](./embedding.md); from the first release after 0.1.0).
+
 ## Pipelines are not people
 
 A scheduled job does not log in as a person: it has a service identity of its own, a `tresor` secret
