@@ -21,6 +21,9 @@ All notable changes to tresor are documented here. The format follows
 
 ### Fixed
 
+- **The wasm_threads build could not load in a threads DuckDB-wasm**: it imported a plain memory, as every
+  wasm_threads extension of DuckDB's pipeline does (`USE_WASM_THREADS` is never set). `make wasm_threads` now links
+  it with shared memory; a distribution job checks each wasm build's memory (specs/044).
 - **The wasm build could not load**: it imported OpenSSL and sockets, which DuckDB-wasm does not have. A wasm build
   now has no built-in HTTP client, so no OpenSSL, sockets or threads of its own; every request goes through DuckDB's
   client, the browser's (specs/042).

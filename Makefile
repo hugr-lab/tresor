@@ -26,6 +26,15 @@ endif
 # tests refuse to load it. tresor builds duckdb from the pinned source as before - as duckdb-acl does (its spec 133).
 override DUCKDB_PREBUILT_LIBRARY :=
 override DUCKDB_PREBUILT_EXTENSIONS :=
+# wasm_threads (specs/044): DuckDB links a loadable extension with shared memory (-pthread -sSHARED_MEMORY=1) only
+# when USE_WASM_THREADS is on (duckdb/CMakeLists.txt, extension_build_tools.cmake), and extension-ci-tools'
+# wasm_threads goal does not turn it on - without it the extension imports a non-shared memory, which no threads build
+# of DuckDB-wasm can link (DuckDB's own wasm_threads extensions have the same flaw). The distribution and community
+# builds run `make wasm_threads`, so it is turned on here.
+ifneq ($(filter wasm_threads,$(MAKECMDGOALS)),)
+EXT_FLAGS += -DUSE_WASM_THREADS=1
+endif
+
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
 .PHONY: vcpkg-setup
