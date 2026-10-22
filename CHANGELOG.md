@@ -11,9 +11,9 @@ All notable changes to tresor are documented here. The format follows
 
 - **`whoami` names the person**: a `name` column (the token's user name, else name, else email) for people to
   read; the protocol's `whoami` may carry it (specs/041).
-- **wasm**: tresor builds for `wasm_eh`, `wasm_mvp` and `wasm_threads` and LOADs in DuckDB-wasm on DuckDB 2.0 -
-  proven in CI in a browser, in DuckDB-wasm's own shell: the page's login handed over, ATTACH, whoami, the secrets,
-  a variable (specs/042, duckdb-ext-common spec 018).
+- **wasm**: tresor LOADs in DuckDB-wasm on DuckDB 2.0. CI builds `wasm_eh` and runs it in a browser, in
+  DuckDB-wasm's own shell: the page's login handed over, ATTACH, whoami, the secrets, a variable. The distribution
+  builds `wasm_eh`, `wasm_mvp` and `wasm_threads` (specs/042, duckdb-ext-common spec 018).
 
 ### Fixed
 

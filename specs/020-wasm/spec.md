@@ -198,8 +198,8 @@ Read from duckdb-wasm `lib/src/http_wasm.cc`, to check again on its 2.0 port and
 
 ## Testing
 
-- **The wasm build compiles** (`make wasm_eh`, no `GEN=ninja`, emsdk 3.1.71: `tresor.duckdb_extension.wasm`,
-  0.9 MB). It stays out of the CI pipeline until duckdb-wasm is on v2.0.
+- **The wasm build compiles** (`make wasm_eh`, no `GEN=ninja`). Since specs/042 it also loads: CI builds it with
+  emsdk 6.0.9 and runs it in Chromium in DuckDB-wasm's shell on DuckDB v2.0.
 - **DuckDB's client, natively, in CI**: the whole attach suite runs twice, on the built-in client and with
   `TRESOR_HTTP_CLIENT=duckdb` (`scripts/ci/test_attach.sh` loads httpfs in each test's database).
 - `test/sql/http_client.test`: the setting's values, and `duckdb` refused without httpfs.

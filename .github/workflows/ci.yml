@@ -119,8 +119,9 @@ jobs:
         uses: emscripten-core/setup-emsdk@4528d102f7230f0e7b276855c01ea1159be0e984 # v16
         with:
           version: 6.0.9
+      # restored always, saved off pull requests only: a key per run would crowd out the native jobs' caches
       - name: Restore ccache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: .ccache
           key: ccache-wasm_eh-${{ hashFiles('.gitmodules') }}-${{ github.sha }}
@@ -143,7 +144,14 @@ jobs:
           npx playwright install --with-deps chromium
       - name: In DuckDB-wasm's shell
         run: scripts/ci/test_wasm.sh
+      - name: Save ccache
+        if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .ccache
+          key: ccache-wasm_eh-${{ hashFiles('.gitmodules') }}-${{ github.sha }}
       - name: Upload extension artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v7
         with:
           name: tresor-wasm_eh
