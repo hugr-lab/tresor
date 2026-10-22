@@ -48,7 +48,7 @@ ATTACH 'tresor:secrets.corp.example' AS corp;   -- waits until the login complet
 | Where DuckDB runs | Logging in |
 | --- | --- |
 | DuckDB CLI | `ATTACH` - the browser opens, the link is printed |
-| DuckDB UI (`duckdb -ui`, `CALL start_ui()`) | `ATTACH` - the browser opens in a new tab; or `tresor_login` to see the link |
+| DuckDB UI (`duckdb -ui`, `CALL start_ui()`) | `ATTACH` - the browser opens in a new tab; or `tresor_login(..., login := 'device')`: a short `url` (with the code in it, at Keycloak) and the `user_code` read better in a grid than the browser flow's long link |
 | Python on your machine (script, Jupyter, VS Code) | `ATTACH` - the browser opens; in a notebook, `tresor_login` in one cell and `ATTACH` in the next |
 | DBeaver, DataGrip (JDBC) | `ATTACH` - the browser opens while the query waits; or log in once from the CLI, and the IDE's DuckDB attaches with no browser |
 | A remote kernel (JupyterHub), SSH, a container | no browser there: `tresor_login(..., login := 'device')`, open its `url` on your machine and enter its `user_code` |

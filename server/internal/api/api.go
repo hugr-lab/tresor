@@ -421,14 +421,29 @@ func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 			roles = append(roles, p)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"issuer":      c.Issuer,
 		"subject":     c.Subject,
 		"roles":       roles,
 		"actor":       nilIfEmpty(c.Actor),
 		"expires_at":  c.ExpiresAt.UTC().Format(time.RFC3339),
 		"permissions": map[string]any{"create": create},
-	})
+	}
+	if name := displayName(c.Claims); name != "" {
+		body["name"] = name // for people to read (tresor specs/041); absent when the token carries none
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+// displayName is who a token's subject is, for people to read: preferred_username, else name, else email, else
+// upn (Entra's v1 tokens). Never an identity (the protocol forbids deciding anything by it).
+func displayName(claims map[string]any) string {
+	for _, claim := range []string{"preferred_username", "name", "email", "upn"} {
+		if v, ok := claims[claim].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 func nilIfEmpty(v string) any {

@@ -60,9 +60,10 @@ CODES = {}     # authorization code -> (challenge, redirect_uri, identity)
 DEVICES = {}   # device code -> pending polls left before approval
 DEVICE_CHALLENGES = {}  # device code -> its PKCE challenge (S256)
 
-PERSON = {"subject": "alice", "roles": ["role:analysts", "group:sales"], "create": ["team_a_*"]}
+PERSON = {"subject": "alice", "name": "alice@corp.example", "roles": ["role:analysts", "group:sales"],
+          "create": ["team_a_*"]}
 # specs/025: who logs in when the IdP is asked to pick the account (prompt=select_account) - another person
-OTHER_PERSON = {"subject": "bob", "roles": ["role:analysts"], "create": []}
+OTHER_PERSON = {"subject": "bob", "name": "Bob", "roles": ["role:analysts"], "create": []}
 # ...who may not use alice_lake: a kept catalog that takes up bob's login must not serve it (specs/025)
 NOT_FOR_OTHER_PERSON = {"alice_lake"}
 SERVICE = {"subject": "client:etl", "roles": ["role:etl"], "create": True}
@@ -763,6 +764,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, {
                 "issuer": base + ("/idp-revoking" if realm == "revoking" else "/idp"),
                 "subject": identity["subject"],
+                **({"name": identity["name"]} if identity.get("name") else {}),  # specs/041: optional
                 "roles": identity["roles"],
                 "actor": None,
                 "expires_at": "2030-01-01T00:00:00Z",
@@ -889,7 +891,8 @@ class Handler(BaseHTTPRequestHandler):
         if identity is None:
             return
         if rest == "/v1/whoami":
-            self.send(200, {"issuer": self.base() + "/idp", "subject": identity["subject"], "roles": identity["roles"],
+            self.send(200, {"issuer": self.base() + "/idp", "subject": identity["subject"],
+                            **({"name": identity["name"]} if identity.get("name") else {}), "roles": identity["roles"],
                             "actor": actor, "expires_at": "2030-01-01T00:00:00Z",
                             "permissions": {"create": identity["create"]}})
             return

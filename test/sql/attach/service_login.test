@@ -25,6 +25,12 @@ SELECT subject, roles, can_create, login FROM corp.whoami();
 ----
 client:etl	['role:etl']	[*]	client_credentials
 
+# no name from the service: NULL (specs/041)
+query I
+SELECT name IS NULL FROM corp.whoami();
+----
+true
+
 statement ok
 DETACH corp;
 

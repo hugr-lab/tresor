@@ -42,6 +42,7 @@ unique_ptr<FunctionData> WhoamiBind(ClientContext &context, TableFunctionBindInp
 	add("expires_at", LogicalType::TIMESTAMP_TZ);
 	add("can_create", LogicalType::LIST(LogicalType::VARCHAR));
 	add("login", LogicalType::VARCHAR);
+	add("name", LogicalType::VARCHAR); // for people to read (specs/041), last: the columns before keep their places
 	return make_uniq<WhoamiBindData>(info.session, *info.storage);
 }
 
@@ -117,6 +118,7 @@ void WhoamiScan(ClientContext &context, TableFunctionInput &data, DataChunk &out
 	output.data[5].Append(expires_at);
 	output.data[6].Append(can_create);
 	output.data[7].Append(Value(session.LoginName()));
+	output.data[8].Append(StringOrNull(root, "name"));
 }
 
 } // namespace
