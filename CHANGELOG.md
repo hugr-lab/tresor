@@ -7,31 +7,7 @@ All notable changes to tresor are documented here. The format follows
 
 ## [Unreleased]
 
-### Added
-
-- **`whoami` names the person**: a `name` column (the token's user name, else name, else email) for people to
-  read; the protocol's `whoami` may carry it (specs/041).
-- **wasm**: tresor LOADs in DuckDB-wasm on DuckDB 2.0. CI builds `wasm_eh` and runs it in a browser, in
-  DuckDB-wasm's own shell: the page's login handed over, ATTACH, whoami, the secrets, a variable. The distribution
-  builds `wasm_eh`, `wasm_mvp` and `wasm_threads` (specs/042, duckdb-ext-common spec 018).
-
-- **The application's own login in a browser**: a web application that logs its users in hands tresor its access
-  token for the service, and each renewed one, with `tresor_web_token` - no second login, and its refresh token never
-  leaves it. `attachTresor` takes `token`, `onTokenChange`, `signal`; `whoami().login` is `page` (specs/043).
-
-### Fixed
-
-- **The wasm_threads build could not load in a threads DuckDB-wasm**: it imported a plain memory, as every
-  wasm_threads extension of DuckDB's pipeline does (`USE_WASM_THREADS` is never set). `make wasm_threads` now links
-  it with shared memory; a distribution job checks each wasm build's memory (specs/044).
-- **The wasm build could not load**: it imported OpenSSL and sockets, which DuckDB-wasm does not have. A wasm build
-  now has no built-in HTTP client, so no OpenSSL, sockets or threads of its own; every request goes through DuckDB's
-  client, the browser's (specs/042).
-- **The device login at a Keycloak that enforces PKCE** (a public client's common setting) failed with
-  `Missing parameter: code_challenge_method`: the device request now carries PKCE where the issuer advertises it
-  (specs/040, duckdb-ext-common spec 017).
-
-## [0.1.0] - 2026-10-21
+## [0.1.0] - 2026-10-22
 
 The first release, with DuckDB 2.0.0. The protocol `duckdb-secrets/1` is version 1, normative from here on.
 
@@ -40,7 +16,8 @@ The first release, with DuckDB 2.0.0. The protocol `duckdb-secrets/1` is version
 - **Attach a secrets service** with `ATTACH 'tresor:<host>' AS corp`. DuckDB loads the installed
   extension by the prefix. The ATTACH covers discovery, the login and the mount (specs/001, 002).
 - **People log in** through the browser (authorization code with PKCE, loopback redirect) or the
-  device flow, directly with the identity provider (specs/002).
+  device flow (with PKCE where the issuer advertises it, as a Keycloak that enforces it needs), directly with the
+  identity provider (specs/002, 040). `whoami` names the person: a `name` column (specs/041).
 - **Services log in** with a `tresor` secret, by its `FLOW` (specs/002, 013, 015):
   - `client_credentials`: a client secret, or a private key (`private_key_jwt`, RS256/ES256, `x5t`);
   - `federated`: a token from a file, from GitHub Actions, or from the Azure managed identity;
@@ -80,6 +57,10 @@ The first release, with DuckDB 2.0.0. The protocol `duckdb-secrets/1` is version
   DuckDB's HTTP client, the only one in wasm), `tresor_web_login()` (a login the page made, handed over and
   remembered in memory), CORS in the protocol and the reference server (`cors_origins`), and the page's
   helper `@hugr-lab/tresor-web` (`attachTresor`: the extension verified and loaded, the login handed over).
+- **The application's own login** (specs/043): an application that logs its users in - a web page, or any program
+  that embeds DuckDB (Python, Go, Rust, .NET) - hands tresor its access token for the service, and each renewed one,
+  with `tresor_web_token`: no second login, and its refresh token never leaves it. `whoami().login` is `page`;
+  another user's token empties the catalog of the previous one's; `attachTresor` takes `token`, `onTokenChange`.
 - **Log in from any client** (specs/025): `tresor_login()` answers at once with the link and device code
   (DuckDB UI, notebooks, IDEs) and completes in the background, an ATTACH waiting for it; `tresor_logoff`
   detaches the catalogs on the login (`detach := false` keeps them, taking up the next login); `prompt` to switch
@@ -95,9 +76,11 @@ The first release, with DuckDB 2.0.0. The protocol `duckdb-secrets/1` is version
   conformance suite (specs/003, 016).
 - **Built into another extension** (specs/024): `tresor_sources.cmake` (`TRESOR_EMBEDDED`) and
   `LoadTresorCore`, as hugr-node's `hugr_node` builds tresor in.
-- **Platforms**: Linux, macOS and Windows (clang-cl with `/GF-`, specs/022); wasm compiles (specs/020) but is
-  not distributed until duckdb-wasm is on DuckDB 2.0.
-- **Built for DuckDB 2.0.0** (the `v2.0.0` tag, duckdb-ext-common v0.13.0), together with duckdb-acl and
+- **Platforms**: Linux, macOS and Windows (clang-cl with `/GF-`, specs/022), and wasm (`wasm_eh`, `wasm_mvp`,
+  `wasm_threads`): no OpenSSL or sockets of its own, every request through DuckDB's client - the browser's; it loads
+  in DuckDB-wasm on DuckDB 2.0, run in CI in a browser in DuckDB-wasm's own shell (specs/042, duckdb-ext-common
+  spec 018); `wasm_threads` linked with shared memory, which DuckDB's pipeline leaves out (specs/044).
+- **Built for DuckDB 2.0.0** (the `v2.0.0` tag, duckdb-ext-common v0.15.0), together with duckdb-acl and
   acl-otel (specs/014, 019, 021, 023, 028, 031, 034, 038).
 - **Docs**, Microsoft Entra ID included: <https://hugr-lab.github.io/tresor/>.
 - **Pipelines** in the docs: a job logs in as a service identity, a recipe per executor (Kubernetes,

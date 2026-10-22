@@ -25,7 +25,6 @@ build behind shell.duckdb.org): the page's login handed over with `tresor_web_lo
 `tresor_web_token`, `ATTACH`, `whoami`, the secrets, a variable. Still to come:
 - the npm package `@duckdb/duckdb-wasm` on DuckDB 2.0, which a page builds on (not published yet);
 - the helper `@hugr-lab/tresor-web`, tested in Node so far;
-- the wasm build in DuckDB's community repository, with the first release after 0.1.0.
 :::
 
 ## The application's token

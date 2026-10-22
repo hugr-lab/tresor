@@ -1,7 +1,6 @@
 # The community-extensions descriptor (duckdb/community-extensions). For their PR, `repo.ref` is the full SHA of
 # the release's tagged commit (a tag can move; their descriptors take the commit) - here the tag names it. See
-# specs/017, 035, 039. wasm stays excluded for v0.1.0, whose wasm build links OpenSSL and cannot load; the release
-# that carries specs/042 drops excluded_platforms (its wasm builds and loads in DuckDB-wasm on 2.0).
+# specs/017, 035, 039. wasm is built (specs/042, 044): it loads in DuckDB-wasm on DuckDB 2.0.
 extension:
   name: tresor
   description: "One OIDC login, role-based secrets: attach an external secrets service (duckdb-secrets/1)."
@@ -11,10 +10,6 @@ extension:
   license: "MIT"
   maintainers:
     - "VGSML"
-  excluded_platforms:
-    - "wasm_mvp"
-    - "wasm_eh"
-    - "wasm_threads"
 
 repo:
   github: "hugr-lab/tresor"

@@ -30,11 +30,6 @@ be 2.0:
 | .NET | DuckDB.NET: not yet on 2.0 (1.5.x); the code below waits for it |
 | Browser | DuckDB-wasm on 2.0: not on npm yet, see [In a web application](./web.md) |
 
-:::note Release
-The application's own login (`tresor_web_token`), `whoami`'s `name` and the login `page` come with the first release
-after 0.1.0; until then, build tresor from `main`. The other logins below work with 0.1.0.
-:::
-
 ## Which login
 
 | Who uses the application | The login | |

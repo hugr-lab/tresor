@@ -33,8 +33,8 @@ returns to the distribution build (spec 035 had left it out).
   (specs/020). tresor's other `std::thread`s resolve against the engine (its `pthread_create`) and are never
   started in a page.
 - **Distribution**: `distribution.yml` builds every platform, wasm included (`wasm_mvp`, `wasm_eh`, `wasm_threads`).
-  `description.yml` keeps `excluded_platforms` while `repo.ref` is `v0.1.0`, whose wasm build cannot load; the
-  release that carries this spec drops it.
+  `description.yml` kept `excluded_platforms` while `v0.1.0` was a commit whose wasm build cannot load; the tag
+  moved before publishing (spec 039), and the exclusion went.
 - **The version stamp**: DuckDB-wasm refuses an extension stamped with another version (`v2.0.0`, not
   `d54cbbe3df`). A shallow submodule has no tag, so a local build and CI's wasm job pass
   `OVERRIDE_GIT_DESCRIBE` (CI reads it from `distribution.yml`'s `duckdb_version`).
@@ -79,4 +79,4 @@ returns to the distribution build (spec 035 had left it out).
   owner's approval.
 - The helper `@hugr-lab/tresor-web` in a browser, once `@duckdb/duckdb-wasm` on 2.0 is on npm.
 - DuckDB's `HTTPUtil` has no PATCH: `annotate_*` stay unavailable in wasm (specs/020).
-- `description.yml`: drop `excluded_platforms` with the next release.
+- `description.yml`: `excluded_platforms` dropped - v0.1.0 was re-tagged on a commit that carries this spec (spec 039).
