@@ -56,6 +56,7 @@ LOCK = threading.Lock()
 TOKENS = {}    # access token -> {"identity": ..., "uses": n, "renewed": bool}
 REFRESH = {}   # refresh token -> identity
 PAGE_LOGIN_SHAPE = {"refresh_token": "rt-" + "x" * 16}  # /_page_login's answer, for its size (specs/020)
+PAGE_TOKEN_SIZE = 2048  # /_page_token's answer, padded to it: httpfs asks HEAD for the size first (specs/043)
 CODES = {}     # authorization code -> (challenge, redirect_uri, identity)
 DEVICES = {}   # device code -> pending polls left before approval
 DEVICE_CHALLENGES = {}  # device code -> its PKCE challenge (S256)
@@ -422,10 +423,10 @@ def s256(verifier):
     return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
 
 
-def jwt_shaped(aud):
+def jwt_shaped(aud, **claims):
     """An unsigned JWT-shaped access token: the fake checks tokens by lookup, the client reads `aud` (specs/008)."""
     part = lambda obj: base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
-    return part({"alg": "none"}) + "." + part({"aud": aud, "jti": secrets.token_urlsafe(9)}) + ".x"
+    return part({"alg": "none"}) + "." + part(dict({"aud": aud, "jti": secrets.token_urlsafe(9)}, **claims)) + ".x"
 
 
 def issue(identity, with_refresh, renewed=False, aud="duckdb-secrets"):
@@ -617,6 +618,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(size))
             self.end_headers()
             return
+        if urllib.parse.urlparse(self.path).path == "/_page_token":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(PAGE_TOKEN_SIZE))
+            self.end_headers()
+            return
         if urllib.parse.urlparse(self.path).path.startswith("/dynbucket/"):
             self.s3(True)
             return
@@ -638,6 +645,18 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 refresh = issue(PERSON, True)["refresh_token"]
             self.send(200, {"refresh_token": refresh})
+            return
+        if url.path == "/_page_token":  # specs/043: the access token a web page holds - its claims as asked
+            query = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+            claims = {"iss": query.get("iss", self.base() + "/idp"), "exp": int(time.time()) + int(query.get("ttl", 300))}
+            if query.get("opaque"):
+                token = "opaque-" + secrets.token_urlsafe(12)
+            else:
+                token = jwt_shaped(query.get("aud", "duckdb-secrets"), **claims)
+            if not query.get("unknown"):  # unknown: a token the service will refuse (401)
+                with LOCK:
+                    TOKENS[token] = {"identity": PERSON, "uses": 0, "renewed": False}
+            self.send(200, json.dumps({"access_token": token}).encode().ljust(PAGE_TOKEN_SIZE))
             return
         if url.path == "/_stats":  # specs/012: what the IdP saw, for the tests
             with LOCK:

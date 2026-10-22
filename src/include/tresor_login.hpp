@@ -57,6 +57,16 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 //! up, so the ATTACH renews it and nothing else. Returns that key.
 LoginKey HandOverLogin(ClientContext &context, const AttachRequest &request, const string &refresh_token);
 
+//! tresor_web_token (specs/043): the page's access token for `request`'s service, kept (memory only) for the ATTACH and
+//! every call of a session attached on it. Discovery and the issuer as the ATTACH would choose them; a JWT for another
+//! audience or issuer, or expired, is refused.
+struct PageTokenHandOver {
+	string issuer;
+	string service;
+	int64_t expires_at = 0;
+};
+PageTokenHandOver HandOverPageToken(ClientContext &context, const AttachRequest &request, const string &access_token);
+
 //! tresor_login (specs/025): a person's login answered at once and completed in the background.
 struct PersonLoginStatus {
 	LoginKey key;
@@ -81,6 +91,15 @@ bool OpenBrowser(const std::string &url);
 //! The `aud` of a JWT (payload only - no signature check; for checking where a token is meant to go);
 //! `is_jwt` false for an opaque token.
 vector<string> JwtAudiences(const string &token, bool &is_jwt);
+//! What a JWT's payload says of where it goes and how long it lives - unverified: for refusing to send a token where
+//! it is not meant to go, never for trusting it. `is_jwt` false (and nothing else set) for an opaque token.
+struct JwtClaims {
+	bool is_jwt = false;
+	vector<string> audiences;
+	string issuer;
+	int64_t expires_at = 0; // `exp`; 0 when absent
+};
+JwtClaims ReadJwtClaims(const string &token);
 
 //! The service's error body (RFC 9457) in a line fit for a message: `type: detail`.
 string DescribeProblem(int status, const string &body);

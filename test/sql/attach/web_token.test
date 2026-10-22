@@ -1,0 +1,221 @@
+# name: test/sql/attach/web_token.test
+# description: tresor_web_token - the access token a web page holds, handed over, and each renewed one; no login of tresor's own (specs/043)
+# group: [attach]
+
+require-env TRESOR_TEST_PORT
+
+require httpfs
+
+require acl_stub
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+CREATE MACRO idp(what) AS (SELECT regexp_extract(content, '"' || what || '": ([^,}]*)', 1) FROM read_text('http://127.0.0.1:{TRESOR_TEST_PORT}/_stats'));
+
+# the page's access token, as its OIDC library holds it (the fake mints one for the person with the claims asked)
+statement ok
+CREATE MACRO page_token(query) AS (SELECT regexp_extract(content, '"access_token": "([^"]*)"', 1) FROM read_text('http://127.0.0.1:{TRESOR_TEST_PORT}/_page_token?' || query));
+
+statement ok
+SET VARIABLE page_at = page_token('');
+
+# --- refusals, before anything is kept -------------------------------------------------------------------------
+
+statement error
+FROM tresor_web_token('tresor:127.0.0.1:{TRESOR_TEST_PORT}', NULL);
+----
+must not be NULL
+
+statement error
+FROM tresor_web_token('tresor:127.0.0.1:{TRESOR_TEST_PORT}', '', insecure_http := true);
+----
+no access token
+
+# ATTACH's rules: a service named without a scheme
+statement error
+FROM tresor_web_token('https://127.0.0.1:{TRESOR_TEST_PORT}', getvariable('page_at'));
+----
+without a scheme
+
+statement ok
+SET VARIABLE pt = page_token('aud=payroll-api');
+
+# an IdP token goes only to its audience: a token for another audience, or from another issuer, is never kept
+statement error
+FROM tresor_web_token('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('pt'), insecure_http := true);
+----
+not for 127.0.0.1:{TRESOR_TEST_PORT}'s audience 'duckdb-secrets'
+
+statement ok
+SET VARIABLE pt = page_token('iss=https://elsewhere.example/idp');
+
+statement error
+FROM tresor_web_token('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('pt'), insecure_http := true);
+----
+from another identity provider
+
+statement ok
+SET VARIABLE pt = page_token('ttl=-10');
+
+statement error
+FROM tresor_web_token('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('pt'), insecure_http := true);
+----
+has expired
+
+# not for a statement run for someone else (specs/008)
+statement ok
+SET acl_stub_session = 'alice';
+
+statement error
+FROM tresor_web_token('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('page_at'), insecure_http := true);
+----
+not under a duckdb-acl session
+
+statement ok
+RESET acl_stub_session;
+
+# --- the hand-over, then the ATTACH: no login, no refresh, nothing remembered -----------------------------------
+
+statement ok
+CREATE TABLE seen AS SELECT idp('authorize')::INT AS authorize, idp('refresh')::INT AS refresh;
+
+# exactly as the page's helper (web/src/attach.ts) calls it: a prepared statement, the token a parameter
+statement ok
+PREPARE hand_token AS FROM tresor_web_token(?, ?, insecure_http := true);
+
+query III
+SELECT service = '127.0.0.1:{TRESOR_TEST_PORT}', issuer LIKE 'http://127.0.0.1:%/idp', expires_at > now() FROM tresor_web_token('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('page_at'), insecure_http := true);
+----
+true	true	true
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true);
+
+query III
+SELECT login, subject LIKE '%alice', name FROM corp.whoami();
+----
+page	true	alice@corp.example
+
+query II
+SELECT idp('authorize')::INT - authorize, idp('refresh')::INT - refresh FROM seen;
+----
+0	0
+
+query I
+SELECT count(*) > 0 FROM corp.secrets();
+----
+true
+
+query I
+SELECT corp.variable('lake_bucket');
+----
+s3://corp-lake
+
+# --- the page renews its login: each new token handed over, the attached session takes it at its next call -------
+
+statement ok
+SET VARIABLE pt = page_token('unknown=1');
+
+# a token the service refuses (revoked at the IdP, say): the next call says what the page must do
+statement ok
+EXECUTE hand_token('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('pt'));
+
+statement error
+FROM corp.secrets();
+----
+the page hands over a new one
+
+statement ok
+SET VARIABLE pt = page_token('');
+
+# the page's next token: the same session, no ATTACH again
+statement ok
+EXECUTE hand_token('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('pt'));
+
+query I
+SELECT count(*) > 0 FROM corp.secrets();
+----
+true
+
+statement ok
+SET VARIABLE pt = page_token('opaque=1');
+
+# an opaque token is the page's word alone: kept, with no expiry known
+query I
+SELECT expires_at IS NULL FROM tresor_web_token('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('pt'), insecure_http := true);
+----
+true
+
+query I
+SELECT login FROM corp.whoami();
+----
+page
+
+statement ok
+SET VARIABLE pt = page_token('ttl=2');
+
+# a token that runs out with no new one: refused before it is sent
+statement ok
+EXECUTE hand_token('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('pt'));
+
+sleep 3 seconds
+
+statement error
+FROM corp.secrets();
+----
+has expired or was refused
+
+statement ok
+SET VARIABLE pt = page_token('');
+
+statement ok
+EXECUTE hand_token('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('pt'));
+
+query I
+SELECT count(*) > 0 FROM corp.secrets();
+----
+true
+
+# --- the page logs its user out ---------------------------------------------------------------------------------
+
+# the token forgotten, the catalog kept: it waits for the page's next login
+query IIII
+SELECT service = '127.0.0.1:{TRESOR_TEST_PORT}', removed, revoked, detached FROM tresor_logoff('corp', detach := false);
+----
+true	true	false	0
+
+statement error
+FROM corp.secrets();
+----
+logged off from 127.0.0.1:{TRESOR_TEST_PORT} - the page hands over a token
+
+statement ok
+SET VARIABLE pt = page_token('');
+
+statement ok
+EXECUTE hand_token('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('pt'));
+
+query I
+SELECT count(*) > 0 FROM corp.secrets();
+----
+true
+
+# every login here: the page's too, and its catalog goes
+query III
+SELECT removed, revoked, detached FROM tresor_logoff();
+----
+true	false	1
+
+# nothing handed over: a native ATTACH logs the person in itself (in wasm, the page must hand a token over)
+statement ok
+CREATE TABLE before_login AS SELECT idp('authorize')::INT AS authorize;
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true, REMEMBER false);
+
+query II
+SELECT login, idp('authorize')::INT - authorize FROM corp.whoami(), before_login;
+----
+browser	1

@@ -29,6 +29,8 @@ void RegisterTresorSecretParam(ExtensionLoader &loader);
 void RegisterTresorLogoff(ExtensionLoader &loader);
 //! tresor_web_login (specs/020): a login a web page made, handed over
 void RegisterTresorWebLogin(ExtensionLoader &loader);
+//! tresor_web_token (specs/043): a web page's access token handed over, and each renewed one
+void RegisterTresorWebToken(ExtensionLoader &loader);
 //! tresor_login (specs/025): a person's login answered at once, completed in the background
 void RegisterTresorLogin(ExtensionLoader &loader);
 

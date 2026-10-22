@@ -39,6 +39,8 @@ string LoginFlowName(LoginFlow flow) {
 		return "federated";
 	case LoginFlow::MANAGED_IDENTITY:
 		return "managed_identity";
+	case LoginFlow::PAGE:
+		return "page";
 	}
 	return "unknown";
 }
@@ -62,6 +64,9 @@ string TresorSession::AccessToken(bool force) {
 	}
 	if (taken_up) {
 		force = true; // the remembered refresh token taken up: renewed before anything else (again, after a failure)
+	}
+	if (flow == LoginFlow::PAGE) {
+		return PageAccessToken(force);
 	}
 	// renew a minute ahead - or at half-life, for tokens that live two minutes or less
 	auto margin = MinValue<int64_t>(RENEW_MARGIN_SECONDS, MaxValue<int64_t>(0, (tokens.expires_at - issued_at) / 2));
@@ -136,6 +141,7 @@ string TresorSession::AccessToken(bool force) {
 		renewed = credential.Mint(info.endpoints, info.scope, extra);
 		break;
 	}
+	case LoginFlow::PAGE: // PageAccessToken, above
 	case LoginFlow::TOKEN:
 		throw InvalidInputException("tresor: the token of the tresor secret for %s has expired or was refused - "
 		                            "replace the secret and ATTACH again",
@@ -301,6 +307,31 @@ oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bo
 	WipeAuth(auth);
 	proof.Wipe();
 	return out;
+}
+
+string TresorSession::PageAccessToken(bool refused) {
+	// the page's newest: it renews its own login and hands each token over; tresor never renews it
+	auto store = page_tokens.lock();
+	PageToken newest;
+	if (!store || !store->Find(Key().issuer, info.host, newest)) {
+		// forgotten (tresor_logoff): this login is over until the page hands over a token again
+		throw InvalidInputException("tresor: logged off from %s - the page hands over a token: FROM "
+		                            "tresor_web_token('tresor:%s', ?)",
+		                            info.host, info.host);
+	}
+	if (newest.token != tokens.access_token) {
+		std::fill(tokens.access_token.begin(), tokens.access_token.end(), '\0');
+		tokens.access_token = std::move(newest.token);
+		tokens.expires_at = newest.expires_at;
+		refused = false; // a token the service has not refused yet
+	}
+	std::fill(newest.token.begin(), newest.token.end(), '\0');
+	if (refused || (tokens.expires_at != 0 && tokens.expires_at <= NowSeconds())) {
+		throw InvalidInputException("tresor: the page's token for %s has expired or was refused - the page hands over "
+		                            "a new one: FROM tresor_web_token('tresor:%s', ?)",
+		                            info.host, info.host);
+	}
+	return tokens.access_token;
 }
 
 vector<string> TresorSession::OwnAudiences(bool &is_jwt) {

@@ -60,3 +60,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | [040](040-device-pkce/spec.md) | a person's device login at a Keycloak that enforces PKCE (duckdb-ext-common spec 017) | implemented |
 | [041](041-whoami-name/spec.md) | whoami names the person - an optional `name`, for people to read | implemented |
 | [042](042-wasm-build/spec.md) | the wasm build that loads - no OpenSSL, no sockets; proven in DuckDB-wasm's shell | implemented |
+| [043](043-page-token/spec.md) | the application's own login - its access token handed over (`tresor_web_token`), no second login | implemented |

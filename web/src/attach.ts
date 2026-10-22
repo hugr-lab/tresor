@@ -1,6 +1,13 @@
-// attachTresor (tresor specs/020): what a web page calls to have tresor attached in its DuckDB-wasm as the person
+// attachTresor (tresor specs/020, 043): what a web page calls to have tresor attached in its DuckDB-wasm as the person
 // logged in to the organisation's identity provider. After it, everything is as in the CLI - corp.secrets(),
-// corp.whoami(), variables, the secrets in DuckDB's lookup - and tresor renews the login itself.
+// corp.whoami(), variables, the secrets in DuckDB's lookup.
+//
+// Two ways to hand the person's login over:
+//   - `token` (specs/043): the page already logged its user in (oidc-client-ts, MSAL) and holds an access token for
+//     the service's audience. No login of the helper's own, no second login for the user: the token is handed over,
+//     and each one the page renews after it (`onTokenChange`). The page's refresh token never leaves the page.
+//   - otherwise (specs/020): the helper logs the person in itself (authorization code with PKCE, as the service's
+//     people's client), hands the refresh token to tresor, and tresor renews the login.
 //
 // The order:
 //   - the service's discovery (small) and its issuer;
@@ -25,6 +32,20 @@ export interface AttachOptions extends LoginOptions {
 	issuer?: string;
 	/** A loopback service (and repository) over plain http: development only. */
 	insecureHttp?: boolean;
+	/**
+	 * The page's own login (specs/043): the access token it holds for the service's audience, or how to get it. With
+	 * it the helper logs nobody in and never redirects.
+	 */
+	token?: string | (() => string | Promise<string>);
+	/**
+	 * With `token`: how the page tells of its next token. Called once with `push`, which hands a token over (a promise:
+	 * the page may await it); it may return an unsubscribe, called when `signal` aborts. With oidc-client-ts:
+	 * `(push) => { const on = (u) => push(u.access_token); manager.events.addUserLoaded(on);
+	 * return () => manager.events.removeUserLoaded(on); }`
+	 */
+	onTokenChange?: (push: (token: string) => Promise<void>) => (() => void) | void;
+	/** Ends `onTokenChange`'s subscription. */
+	signal?: AbortSignal;
 	/** For tests and unusual hosts: the fetch, the login, the repository's revision and platform. */
 	fetch?: Fetch;
 	login?: PageLogin;
@@ -66,8 +87,10 @@ async function attachOnce(db: Database, path: string, options: AttachOptions): P
 	const discovery = await readDiscovery(service, insecureHttp, fetchImpl);
 	const issuer = chooseIssuer(discovery, options.issuer, serviceHost(path));
 	checkTransport("issuer", issuer.issuer, insecureHttp);
-	const refresh = await login.complete(issuer, options);
-	if (refresh === null) {
+	// the page's own login (specs/043), or the helper's (specs/020)
+	const pageToken = options.token === undefined ? null : await currentToken(options.token);
+	const refresh = pageToken === null ? await login.complete(issuer, options) : null;
+	if (pageToken === null && refresh === null) {
 		await login.start(issuer, options);
 		return "redirecting";
 	}
@@ -83,15 +106,56 @@ async function attachOnce(db: Database, path: string, options: AttachOptions): P
 			};
 			await loadTresor(db, conn, options.from, load);
 		}
-		await handOver(conn, service, refresh, issuer.issuer, insecureHttp);
+		if (pageToken !== null) {
+			await handOverToken(conn, service, pageToken, issuer.issuer, insecureHttp);
+		} else {
+			await handOver(conn, service, refresh as string, issuer.issuer, insecureHttp);
+		}
 		const attachOptions = [`ISSUER ${literal(issuer.issuer)}`];
 		if (insecureHttp) {
 			attachOptions.push("INSECURE_HTTP true");
 		}
 		await conn.query(`ATTACH ${literal(service)} AS ${identifier(options.as)} (${attachOptions.join(", ")})`);
-		return "attached";
 	} finally {
 		await conn.close();
+	}
+	if (pageToken !== null && options.onTokenChange && !options.signal?.aborted) {
+		// each token the page renews, handed over on a connection of its own; the attached session takes it at its
+		// next call
+		const push = async (token: string) => {
+			if (options.signal?.aborted) {
+				return;
+			}
+			const pushConn = await db.connect();
+			try {
+				await handOverToken(pushConn, service, token, issuer.issuer, insecureHttp);
+			} finally {
+				await pushConn.close();
+			}
+		};
+		const unsubscribe = options.onTokenChange(push);
+		if (unsubscribe && options.signal) {
+			options.signal.addEventListener("abort", () => unsubscribe(), { once: true });
+		}
+	}
+	return "attached";
+}
+
+async function currentToken(token: string | (() => string | Promise<string>)): Promise<string> {
+	const value = typeof token === "function" ? await token() : token;
+	if (!value) {
+		throw new Error("attachTresor: the page's token is empty - is the user logged in?");
+	}
+	return value;
+}
+
+/** The page's access token handed to tresor (specs/043): a prepared statement, the token a parameter. */
+async function handOverToken(conn: Connection, service: string, token: string, issuer: string, insecureHttp: boolean) {
+	const statement = await conn.prepare("FROM tresor_web_token(?, ?, issuer := ?, insecure_http := ?)");
+	try {
+		await statement.query(service, token, issuer, insecureHttp);
+	} finally {
+		await statement.close();
 	}
 }
 

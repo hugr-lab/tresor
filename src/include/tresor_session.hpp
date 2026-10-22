@@ -11,6 +11,7 @@
 #include "oidc_core.hpp"
 #include "tresor_credentials.hpp"
 #include "tresor_http.hpp"
+#include "tresor_page_tokens.hpp"
 #include "tresor_remember.hpp"
 
 #include <atomic>
@@ -23,7 +24,17 @@ namespace tresor {
 constexpr int64_t DEFAULT_GRANT_WAIT_SECONDS = 10;
 
 //! How the session logged in; `browser` and `device` are people, the rest services.
-enum class LoginFlow : uint8_t { BROWSER, DEVICE, CLIENT_CREDENTIALS, TOKEN, REMEMBERED, FEDERATED, MANAGED_IDENTITY };
+//! `page`: a web page's access token, handed over (specs/043).
+enum class LoginFlow : uint8_t {
+	BROWSER,
+	DEVICE,
+	CLIENT_CREDENTIALS,
+	TOKEN,
+	REMEMBERED,
+	FEDERATED,
+	MANAGED_IDENTITY,
+	PAGE
+};
 
 string LoginFlowName(LoginFlow flow);
 
@@ -114,6 +125,12 @@ public:
 		http_client = std::move(client);
 	}
 
+	//! A page's login (specs/043): where the page's next token is, read at every call. Set once, before the session
+	//! is shared.
+	void UsePageTokens(const shared_ptr<PageTokens> &store) {
+		page_tokens = store;
+	}
+
 	//! DETACH: drop the tokens. Calls after this fail.
 	void Close();
 	//! A DETACH begins: a call waiting for a login in progress stops waiting (before the actor is stopped).
@@ -160,6 +177,9 @@ private:
 	//! A usable access token, renewing it when it has less than a minute left; `force` renews anyway
 	//! (after a 401). Called with the lock held.
 	string AccessToken(bool force);
+	//! A page's login (specs/043): its newest token; `refused` after a 401 - a token the service refused is not
+	//! sent again. Called with the lock held.
+	string PageAccessToken(bool refused);
 	//! After a logoff: a login remembered under this session's key since, taken up (specs/025) - its refresh token,
 	//! renewed by AccessToken before anything else. With the lock held.
 	bool TakeUpLogin();
@@ -203,6 +223,7 @@ private:
 	std::function<bool(const LoginKey &key)> pending_probe;
 	KeychainMode remember_mode = KeychainMode::OFF; // the mode it was remembered in: stored only while it holds
 	string remember_subject;                        // whose login it is: another person's stored since is not adopted
+	weak_ptr<PageTokens> page_tokens;               // specs/043: the page's tokens, the newest read at every call
 };
 
 } // namespace tresor
