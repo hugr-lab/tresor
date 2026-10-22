@@ -1,6 +1,6 @@
 // specs/042: tresor's wasm build, LOADed by DuckDB-wasm (its shell, at the commit test_wasm.sh pins) in Chromium,
 // against the fake service on the same origin: the page's login handed over (tresor_web_login), ATTACH, whoami,
-// the secrets, a variable. Run by scripts/ci/test_wasm.sh; the base URL is the fake's.
+// the secrets, a variable; then the page's own token (tresor_web_token, specs/043) and a renewed one. Run by scripts/ci/test_wasm.sh; the base URL is the fake's.
 import { chromium } from 'playwright';
 
 const base = process.argv[2];
@@ -79,6 +79,23 @@ try {
 	check(!refused.ok, "a person's login of tresor's own is refused in wasm (the page logs in)", refused.error);
 	const detached = await run('DETACH corp');
 	check(detached.ok, 'DETACH', detached.error);
+
+	// specs/043: the page's own login - its access token handed over, no login of tresor's own, no refresh token
+	const access = await page.evaluate(async () => (await (await fetch('/_page_token')).json()).access_token);
+	const tokenHanded = await value(
+		`SELECT count(*) FROM tresor_web_token('tresor:${host}', '${access}', insecure_http := true)`,
+	);
+	check(tokenHanded.ok && tokenHanded.value === '1', "tresor_web_token hands the page's token over", tokenHanded.error);
+	const pageAttached = await run(`ATTACH 'tresor:${host}' AS page_corp (INSECURE_HTTP true)`);
+	check(pageAttached.ok, "ATTACH on the page's token", pageAttached.error);
+	const pageLogin = await value('SELECT login FROM page_corp.whoami()');
+	check(pageLogin.ok && pageLogin.value === 'page', "whoami: the page's login", pageLogin.error || pageLogin.value);
+	const pageSecrets = await value('SELECT count(*) FROM page_corp.secrets()');
+	check(pageSecrets.ok && Number(pageSecrets.value) > 0, "the secrets, on the page's token", pageSecrets.error || pageSecrets.value);
+	const renewed = await page.evaluate(async () => (await (await fetch('/_page_token')).json()).access_token);
+	await value(`SELECT count(*) FROM tresor_web_token('tresor:${host}', '${renewed}', insecure_http := true)`);
+	const afterRenewal = await value('SELECT count(*) FROM page_corp.secrets()');
+	check(afterRenewal.ok && Number(afterRenewal.value) > 0, "the page's renewed token, taken at the next call", afterRenewal.error);
 } catch (e) {
 	console.log('  FAIL ' + e.message);
 	failures++;

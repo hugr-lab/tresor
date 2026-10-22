@@ -15,6 +15,10 @@ All notable changes to tresor are documented here. The format follows
   DuckDB-wasm's own shell: the page's login handed over, ATTACH, whoami, the secrets, a variable. The distribution
   builds `wasm_eh`, `wasm_mvp` and `wasm_threads` (specs/042, duckdb-ext-common spec 018).
 
+- **The application's own login in a browser**: a web application that logs its users in hands tresor its access
+  token for the service, and each renewed one, with `tresor_web_token` - no second login, and its refresh token never
+  leaves it. `attachTresor` takes `token`, `onTokenChange`, `signal`; `whoami().login` is `page` (specs/043).
+
 ### Fixed
 
 - **The wasm build could not load**: it imported OpenSSL and sockets, which DuckDB-wasm does not have. A wasm build

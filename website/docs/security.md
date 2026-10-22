@@ -69,7 +69,8 @@ one setting covers tresor's whole trust, on both clients (specs/030):
   certificates **in addition to** the system's roots, so a node reaches a public identity provider
   such as Entra and a private service at once. A file that cannot be read, or holds no certificate,
   fails the request. An attached catalog keeps the file it attached with, for its renewals, calls and
-  the actor's exchanges; `tresor_login`, `tresor_web_login` and `tresor_logoff` read it when they run;
+  the actor's exchanges; `tresor_login`, `tresor_web_login`, `tresor_web_token` and `tresor_logoff` read it when
+  they run;
 - **DuckDB's client** (`tresor_http_client = 'duckdb'`, httpfs) uses the file **instead of** the
   system's roots, as for any other httpfs request: there the file must hold the public roots too
   where a public endpoint is called. It reads the global value only - set it with `SET GLOBAL`.
@@ -106,7 +107,9 @@ The same sandbox already bounds the files a login reads (`ASSERTION_FILE`, `PRIV
 - Services log in with their own credentials — client credentials, a private-key JWT, a federated
   workload assertion, an Azure managed identity, or a token they hold (`FLOW 'token'`) — never with a
   stored person's token. In a web application the page logs the person in and hands the login over
-  (`tresor_web_login`).
+  (`tresor_web_login`), or hands over the access token it holds for the service and each renewed one
+  (`tresor_web_token`): kept in memory only, refused when it names another audience or issuer, and the
+  application's refresh token never reaches tresor.
 - **A person's refresh token is kept in the OS credential store** (specs/012), and only that: never
   a file, never an access token, never a service's credential. It goes to its identity provider only,
   both for a refresh and for a revocation.

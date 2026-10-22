@@ -39,6 +39,8 @@ string LoginFlowName(LoginFlow flow) {
 		return "federated";
 	case LoginFlow::MANAGED_IDENTITY:
 		return "managed_identity";
+	case LoginFlow::PAGE:
+		return "page";
 	}
 	return "unknown";
 }
@@ -52,6 +54,9 @@ TresorSession::TresorSession(ServiceInfo info_p, LoginFlow flow_p, oidc::TokenSe
 string TresorSession::AccessToken(bool force) {
 	if (closed) {
 		throw InvalidInputException("tresor: the session to %s is closed (DETACHed)", info.host);
+	}
+	if (flow == LoginFlow::PAGE) {
+		return PageAccessToken(force); // its own logoff and take-up: the page's tokens
 	}
 	if (logged_off && !taken_up && !TakeUpLogin()) {
 		throw InvalidInputException("tresor: logged off from %s - log in: FROM tresor_login('%s')", info.host,
@@ -136,6 +141,7 @@ string TresorSession::AccessToken(bool force) {
 		renewed = credential.Mint(info.endpoints, info.scope, extra);
 		break;
 	}
+	case LoginFlow::PAGE: // PageAccessToken, above
 	case LoginFlow::TOKEN:
 		throw InvalidInputException("tresor: the token of the tresor secret for %s has expired or was refused - "
 		                            "replace the secret and ATTACH again",
@@ -301,6 +307,70 @@ oidc::TokenSet TresorSession::ExchangeForService(const string &subject_token, bo
 	WipeAuth(auth);
 	proof.Wipe();
 	return out;
+}
+
+namespace {
+
+//! Whose a page's token is, as far as it says: `iss|sub` of a JWT; empty for an opaque one (unknown).
+string PagePrincipal(const string &token) {
+	auto claims = ReadJwtClaims(token);
+	return claims.is_jwt && !claims.subject.empty() ? claims.issuer + "|" + claims.subject : string();
+}
+
+} // namespace
+
+void TresorSession::UsePageTokens(const shared_ptr<PageTokens> &store) {
+	lock_guard<mutex> guard(lock);
+	page_tokens = store;
+	page_principal = PagePrincipal(tokens.access_token);
+}
+
+string TresorSession::PageAccessToken(bool refused) {
+	// the page's newest: it renews its own login and hands each token over; tresor never renews it
+	if (refused && !tokens.access_token.empty()) {
+		page_refused = std::hash<string>()(tokens.access_token); // not sent again
+	}
+	auto store = page_tokens.lock();
+	PageToken newest;
+	if (!store || !store->Find(Key().issuer, info.host, newest)) {
+		// forgotten (tresor_logoff): this login is over until the page hands over a token again
+		throw InvalidInputException("tresor: logged off from %s - the page hands over a token: FROM "
+		                            "tresor_web_token('tresor:%s', ?)",
+		                            info.host, info.host);
+	}
+	if (newest.token != tokens.access_token) {
+		auto principal = PagePrincipal(newest.token);
+		// after a logoff, or a token that does not say it is the same person's: whoami names who it is before the
+		// next call goes on, and everything held for the previous one goes (the catalog's on_resumed) - another
+		// user of the application must never be served the previous one's secrets (specs/043)
+		auto someone_else = logged_off || principal.empty() || principal != page_principal;
+		std::fill(tokens.access_token.begin(), tokens.access_token.end(), '\0');
+		tokens.access_token = std::move(newest.token);
+		tokens.expires_at = newest.expires_at;
+		page_principal = principal;
+		if (someone_else) {
+			logged_off = false;
+			logged_off_seen = false;
+			logged_out = false;
+			resumed = true;
+			previous_subject = subject;
+			subject.clear();
+			take_ups++;
+		}
+	}
+	std::fill(newest.token.begin(), newest.token.end(), '\0');
+	if (logged_off) {
+		throw InvalidInputException("tresor: logged off from %s - the page hands over a token: FROM "
+		                            "tresor_web_token('tresor:%s', ?)",
+		                            info.host, info.host);
+	}
+	if ((page_refused != 0 && std::hash<string>()(tokens.access_token) == page_refused) ||
+	    (tokens.expires_at != 0 && tokens.expires_at <= NowSeconds())) {
+		throw InvalidInputException("tresor: the page's token for %s has expired or was refused - the page hands over "
+		                            "a new one: FROM tresor_web_token('tresor:%s', ?)",
+		                            info.host, info.host);
+	}
+	return tokens.access_token;
 }
 
 vector<string> TresorSession::OwnAudiences(bool &is_jwt) {

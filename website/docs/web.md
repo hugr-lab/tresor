@@ -8,16 +8,82 @@ title: In a web application
 A web application runs DuckDB in the browser (DuckDB-wasm), and its users are already logged in to the
 organisation's identity provider. tresor attaches the secrets service **as that user**, with nothing
 for them to do. After that it works as in the CLI: `corp.secrets()`, `corp.whoami()`, variables, and
-the secrets in DuckDB's lookup. tresor renews the login itself.
+the secrets in DuckDB's lookup.
+
+There are two ways to hand the user's login to tresor:
+
+- **The application's own login** (recommended when the application logs its users in already - an SPA with
+  oidc-client-ts or MSAL): it hands tresor the **access token** it holds for the secrets service's audience, and a new
+  one each time it renews its own. No second login, no redirect, and the application's refresh token never leaves
+  it. [The application's token](#the-applications-token).
+- **The helper's login**: `attachTresor` logs the user in itself, as the service's people's client, and tresor renews
+  the login from the refresh token. [The page](#the-page).
 
 :::note In a browser
 tresor's wasm build loads in DuckDB-wasm on DuckDB v2.0. CI runs it in a browser, in DuckDB-wasm's own shell (the
-build behind shell.duckdb.org): the page's login handed over with `tresor_web_login`, `ATTACH`, `whoami`, the
-secrets, a variable. Still to come:
+build behind shell.duckdb.org): the page's login handed over with `tresor_web_login`, or its token with
+`tresor_web_token`, `ATTACH`, `whoami`, the secrets, a variable. Still to come:
 - the npm package `@duckdb/duckdb-wasm` on DuckDB 2.0, which a page builds on (not published yet);
 - the helper `@hugr-lab/tresor-web`, tested in Node so far;
 - the wasm build in DuckDB's community repository, with the first release after 0.1.0.
 :::
+
+## The application's token
+
+The application logs the user in with its identity provider, as it does already, and asks for a token the secrets
+service accepts: its `aud` must be the `audience` of the service's discovery.
+
+- **Keycloak**: an *audience* mapper on the application's client (or a client scope it requests) adds the service's
+  audience to the application's own access token - one token serves both.
+- **Microsoft Entra ID**: a token has one audience. The application asks for a second one, silently, with the
+  service's scope (MSAL `acquireTokenSilent({ scopes: ["api://duckdb-secrets/access_as_user"] })`). The service's
+  API registration issues v2.0 tokens (`accessTokenAcceptedVersion: 2`, as the [Entra setup](entra.md) has it): a
+  v1.0 token's issuer (`sts.windows.net`) is not the discovery's, and tresor refuses it.
+
+Then:
+
+```js
+import { attachTresor } from "@hugr-lab/tresor-web";
+
+const user = await userManager.getUser();          // oidc-client-ts: the application's login
+await attachTresor(db, "tresor:secrets.corp.example", {
+  as: "corp",
+  from: "https://ext.corp.example",
+  publicKey: "-----BEGIN PUBLIC KEY-----…",
+  token: user.access_token,                        // or a function returning it
+  // each renewed token, handed over; the attached catalog takes it at its next query
+  onTokenChange: (push) => {
+    const on = (u) => push(u.access_token);
+    userManager.events.addUserLoaded(on);
+    return () => userManager.events.removeUserLoaded(on);
+  },
+  signal: controller.signal,                       // ends the subscription
+});
+```
+
+Without the helper, the same in SQL - the token a prepared statement's parameter, never in a statement's text:
+
+```sql
+FROM tresor_web_token($1, $2);        -- 'tresor:secrets.corp.example', the access token; again on each renewal
+ATTACH 'tresor:secrets.corp.example' AS corp;
+```
+
+- tresor keeps the token in this instance's memory only, one per service (and issuer). Each call of the attached
+  catalog uses the newest; tresor never renews it and never sees the application's refresh token.
+- A token that says it is for another audience, from another issuer, or already expired, is refused at
+  `tresor_web_token` and never sent. An opaque token is taken as the application's word.
+- When the token expires (or the service refuses it) and no new one was handed over, queries fail with *the
+  page's token … has expired or was refused - the page hands over a new one*. With oidc-client-ts's automatic silent
+  renewal and `onTokenChange`, that does not happen while the application's own login lives.
+- **Another user, or a token that does not say whose it is** (an opaque one): the catalog asks the service who it is
+  before going on, and everything held for the previous user goes - nothing of one user is served to the next.
+- The application logs its user out: `FROM tresor_logoff('corp')` forgets the token and empties the catalog of
+  everything held for that login (and detaches; `detach := false` keeps the catalog until the next token).
+  `tresor_logoff()` forgets every page token. Stop `onTokenChange` (its `signal`) too: a token pushed after the
+  logoff logs the catalog in again. A logoff by service, issuer and client id concerns remembered logins only.
+- A failed push (an expired token, one refused) rejects its promise and is reported to `onTokenError` (else
+  `console.error`).
+- `whoami().login` is `page`.
 
 ## The page
 
@@ -74,6 +140,7 @@ again.
 | | |
 | --- | --- |
 | `tresor_http_client` | `duckdb` in wasm (the only client there): DuckDB's HTTP client, the browser's underneath. Natively `builtin` (the default) or `duckdb` (httpfs). |
+| `FROM tresor_web_token(service, access_token [, issuer := …, insecure_http := …])` | The application's access token for the service, handed over - and again on each renewal: kept in this instance's memory, the newest used by every call of a catalog attached on it. Never under a duckdb-acl session. Returns `service`, `issuer`, `expires_at`. |
 | `FROM tresor_web_login(service, refresh_token [, issuer := …, insecure_http := …])` | A login made elsewhere, handed over: remembered in this instance's memory for the next `ATTACH`. Only with `tresor_keychain = 'memory'` (the wasm default), and never under a duckdb-acl session. |
 | `tresor_keychain` | `memory` in wasm: a tab has no credential store, and the login lives as long as the tab. |
 

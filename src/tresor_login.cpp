@@ -1,6 +1,7 @@
 #include "tresor_login.hpp"
 #include "tresor_actor.hpp"
 #include "tresor_http.hpp"
+#include "tresor_page_tokens.hpp"
 #include "tresor_pending.hpp"
 #include "tresor_remember.hpp"
 
@@ -339,7 +340,8 @@ oidc::TokenSet PersonLogin(ClientContext &context, const AttachRequest &request,
 #ifdef __EMSCRIPTEN__
 	// a worker opens no window and listens on no port: in a browser the page logs in (specs/020)
 	throw InvalidInputException("tresor: a new login to %s is needed - in a browser the page logs in with the identity "
-	                            "provider and hands it over with tresor_web_login",
+	                            "provider and hands over its access token with tresor_web_token (or its login with "
+	                            "tresor_web_login)",
 	                            request.host);
 #endif
 	flow = ChoosePersonFlow(request, info, issuer);
@@ -581,9 +583,8 @@ string DescribeProblem(int status, const string &body) {
 	return out;
 }
 
-vector<string> JwtAudiences(const string &token, bool &is_jwt) {
-	is_jwt = false;
-	vector<string> out;
+JwtClaims ReadJwtClaims(const string &token) {
+	JwtClaims out;
 	auto first = token.find('.');
 	auto second = first == string::npos ? string::npos : token.find('.', first + 1);
 	if (second == string::npos) {
@@ -618,17 +619,31 @@ vector<string> JwtAudiences(const string &token, bool &is_jwt) {
 		}
 	}
 	JsonDoc doc(payload);
+	std::fill(payload.begin(), payload.end(), '\0');
 	auto root = doc.Root();
 	if (!root || !yyjson_is_obj(root)) {
 		return out;
 	}
-	is_jwt = true;
+	out.is_jwt = true;
 	auto aud = yyjson_obj_get(root, "aud");
 	if (aud && yyjson_is_str(aud)) {
-		out.emplace_back(yyjson_get_str(aud));
+		out.audiences.emplace_back(yyjson_get_str(aud));
+	} else if (aud && yyjson_is_arr(aud)) {
+		out.audiences = StrList(root, "aud");
 	}
-	out = aud && yyjson_is_arr(aud) ? StrList(root, "aud") : out;
+	out.issuer = Str(root, "iss");
+	out.subject = Str(root, "sub");
+	auto exp = yyjson_obj_get(root, "exp");
+	if (exp && yyjson_is_num(exp)) {
+		out.expires_at = int64_t(yyjson_get_num(exp));
+	}
 	return out;
+}
+
+vector<string> JwtAudiences(const string &token, bool &is_jwt) {
+	auto claims = ReadJwtClaims(token);
+	is_jwt = claims.is_jwt;
+	return claims.audiences;
 }
 
 bool ParseExchange(const string &value) {
@@ -649,7 +664,8 @@ int64_t ParseGrantWait(int64_t seconds) {
 PersonLoginStatus StartPersonLogin(ClientContext &context, const AttachRequest &request, const string &prompt,
                                    bool remember) {
 #ifdef __EMSCRIPTEN__
-	throw InvalidInputException("tresor_login: in a browser the page logs in, and hands it over with tresor_web_login");
+	throw InvalidInputException("tresor_login: in a browser the page logs in, and hands over its access token with "
+	                            "tresor_web_token (or its login with tresor_web_login)");
 #endif
 	auto client = HttpClientFor(context);
 	HttpScope http(client);
@@ -921,6 +937,57 @@ LoginKey HandOverLogin(ClientContext &context, const AttachRequest &request, con
 	return key;
 }
 
+//! The page's token for this service and issuer (specs/043), into `tokens`.
+static bool FindPageToken(ClientContext &context, const ServiceInfo &info, oidc::TokenSet &tokens) {
+	PageToken held;
+	if (!PageTokens::Get(*context.db)->Find(StripSlashes(info.issuer), info.host, held)) {
+		return false;
+	}
+	if (held.expires_at != 0 && held.expires_at <= NowSeconds()) {
+		// one the page let run out: not attached on (natively the person logs in; in wasm the page is asked for one)
+		std::fill(held.token.begin(), held.token.end(), '\0');
+		return false;
+	}
+	tokens.access_token = std::move(held.token);
+	tokens.expires_at = held.expires_at;
+	return true;
+}
+
+PageTokenHandOver HandOverPageToken(ClientContext &context, const AttachRequest &request, const string &access_token) {
+	if (access_token.empty()) {
+		throw InvalidInputException("tresor_web_token: no access token");
+	}
+	HttpScope http(HttpClientFor(context));
+	string discovery;
+	auto discovered = Discover(request, discovery);
+	auto &issuer = ChooseIssuer(request, discovered, request.issuer);
+	CheckTransport(request, "issuer", issuer.issuer);
+	// an IdP token goes only to its audience: a JWT that says it is for another audience, or from another issuer,
+	// is refused here - before it is kept, so no ATTACH ever sends it (an opaque token is the page's word alone)
+	auto claims = ReadJwtClaims(access_token);
+	if (claims.is_jwt) {
+		if (!claims.issuer.empty() && StripSlashes(claims.issuer) != StripSlashes(issuer.issuer)) {
+			throw InvalidInputException("tresor_web_token: the token is from another identity provider than %s's "
+			                            "issuer %s - it is not sent there",
+			                            request.host, issuer.issuer);
+		}
+		if (!issuer.audience.empty() && !Contains(claims.audiences, issuer.audience)) {
+			throw InvalidInputException("tresor_web_token: the token is not for %s's audience '%s' - it is not sent "
+			                            "there (the page asks its identity provider for a token with that audience)",
+			                            request.host, issuer.audience);
+		}
+		if (claims.expires_at != 0 && claims.expires_at <= NowSeconds()) {
+			throw InvalidInputException("tresor_web_token: the token has expired - the page hands over a fresh one");
+		}
+	}
+	PageTokenHandOver out;
+	out.issuer = StripSlashes(issuer.issuer);
+	out.service = request.host;
+	out.expires_at = claims.expires_at;
+	PageTokens::Get(*context.db)->Set(out.issuer, out.service, PageToken {access_token, claims.expires_at});
+	return out;
+}
+
 shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &request) {
 	// every request of the login - discovery, the IdP's flows, the first whoami - on the client the setting names
 	auto client = HttpClientFor(context);
@@ -1045,6 +1112,11 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 				throw InvalidInputException("tresor: the %s login to %s failed: %s", LoginFlowName(flow), request.host,
 				                            tokens.error);
 			}
+		} else if (!request.mode_given && FindPageToken(context, info, tokens)) {
+			// the page's login (specs/043): its access token, handed over - no login of tresor's own, nothing
+			// remembered, and the page's refresh chain never touched
+			flow = LoginFlow::PAGE;
+			remember = false;
 		} else {
 			info.client_id = issuer.client_id;
 			if (info.client_id.empty()) {
@@ -1126,6 +1198,9 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 
 	auto session = make_shared_ptr<TresorSession>(std::move(info), flow, std::move(tokens), std::move(credential));
 	session->SetHttpClient(client); // and every one after, renewals included
+	if (flow == LoginFlow::PAGE) {
+		session->UsePageTokens(PageTokens::Get(*context.db)); // the page's next token, read at every call
+	}
 	// the login is proven only when the service accepts it: fail closed at ATTACH, not at first use
 	auto whoami = session->Call("GET", "/v1/whoami");
 	if (whoami.status != 200) {

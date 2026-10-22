@@ -3,6 +3,7 @@
 #include "tresor_extension.hpp"
 #include "tresor_login.hpp"
 #include "tresor_http.hpp"
+#include "tresor_page_tokens.hpp"
 #include "tresor_pending.hpp"
 #include "tresor_remember.hpp"
 
@@ -16,6 +17,8 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+
+#include <map>
 
 // tresor_logoff (specs/012): a person's remembered login forgotten - removed from the keychain, revoked at the
 // identity provider when it offers RFC 7009, and ended in every attachment that runs on it. Nothing it returns
@@ -258,6 +261,8 @@ void LogoffScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 		tresor::HttpScope http(tresor::HttpClient {transport, tresor::CaBundleFor(context)});
 		auto &data = input.bind_data->Cast<LogoffBindData>();
 		auto attached = Attached(context);
+		// a page's logins named by catalog (specs/043): (service, issuer)
+		vector<std::pair<string, string>> page_logins;
 		vector<tresor::LoginKey> keys;
 		auto add = [&](const tresor::LoginKey &key) {
 			for (auto &known : keys) {
@@ -277,6 +282,12 @@ void LogoffScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 				}
 				named_found = true;
 				auto &session = *entry.second;
+				if (session.Flow() == LoginFlow::PAGE) {
+					if (!data.catalog.empty()) {
+						page_logins.emplace_back(StringUtil::Lower(session.Info().host), session.Key().issuer);
+					}
+					continue; // every page login is forgotten below
+				}
 				if (!IsPerson(session.Flow())) {
 					if (!data.catalog.empty()) {
 						throw InvalidInputException("tresor_logoff: %s is a service's login - nothing of it is "
@@ -303,6 +314,44 @@ void LogoffScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 			// is discarded, so nothing reaches the store after the removal below
 			pending->Cancel(key, "logged off");
 			state.rows.push_back(Forget(context, key, attached));
+		}
+		if (data.key.service.empty()) {
+			// the page's logins (specs/043): their tokens forgotten, and every catalog on one logged off at once - its
+			// caches emptied, as a person's logoff does - until the page hands over a token again. Nothing to revoke:
+			// the refresh chain is the page's.
+			auto page = tresor::PageTokens::Get(*context.db);
+			std::map<std::pair<string, string>, bool> logins; // (service, issuer) -> a token forgotten now
+			if (data.catalog.empty()) {
+				for (auto &forgotten : page->Forget(string(), string())) {
+					logins[forgotten] = true;
+				}
+			}
+			for (auto &named : page_logins) {
+				auto forgotten = !page->Forget(named.first, named.second).empty();
+				logins[named] = logins[named] || forgotten;
+			}
+			for (auto &login : logins) {
+				Row row;
+				row.key.service = login.first.first;
+				row.key.issuer = login.first.second;
+				row.removed = login.second;
+				for (auto &entry : attached) {
+					auto &session = *entry.second;
+					if (session.Flow() == LoginFlow::PAGE &&
+					    StringUtil::Lower(session.Info().host) == row.key.service &&
+					    session.Key().issuer == row.key.issuer) {
+						session.LogOff();
+						row.catalogs.push_back(entry.first);
+					}
+				}
+				if (row.removed) {
+					tresor::Audited audited(tresor::TresorAudit::Get(*context.db), "logout", &context);
+					audited.event.host = row.key.service;
+					audited.event.login = "page";
+					audited.Detail("logoff").Ok();
+				}
+				state.rows.push_back(std::move(row));
+			}
 		}
 		if (data.detach) {
 			// the catalogs on a login that is over go (specs/025); one DuckDB will not detach in this statement (the

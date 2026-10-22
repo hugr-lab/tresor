@@ -313,3 +313,106 @@ describe("the running DuckDB's place in a repository", () => {
 		assert.deepEqual(await runningDuckDB(conn("v2.0.0-rc1")), { revision: "v2.0.0-rc1", platform: "wasm_mvp" });
 	});
 });
+
+describe("attachTresor with the page's own login (specs/043)", () => {
+	const ACCESS = "at-the-access-token-of-the-page";
+
+	it("hands the page's token over as a parameter and attaches - no login of its own, no redirect", async () => {
+		const { w, db, options } = world();
+		assert.equal(await attachTresor(db, SERVICE, { ...options, token: ACCESS }), "attached");
+		assert.equal(w.logins.length, 0, "the helper logs nobody in");
+		assert.ok(!w.events.includes("login start"));
+		assert.deepEqual(w.prepared, [
+			{
+				sql: "FROM tresor_web_token(?, ?, issuer := ?, insecure_http := ?)",
+				params: [SERVICE, ACCESS, ISSUER, false],
+			},
+		]);
+		assert.ok(!w.queries.some((sql) => sql.includes(ACCESS)), "never in a statement's text");
+		const attach = w.queries.find((sql) => sql.startsWith("ATTACH"));
+		assert.equal(attach, `ATTACH '${SERVICE}' AS "corp" (ISSUER '${ISSUER}')`);
+		assert.ok(w.events.indexOf("hand over") > w.events.findIndex((e) => e.startsWith("query LOAD")));
+	});
+
+	it("asks a token function, awaited", async () => {
+		const { w, db, options } = world();
+		await attachTresor(db, SERVICE, { ...options, token: async () => ACCESS });
+		assert.equal(w.prepared[0].params[1], ACCESS);
+	});
+
+	it("refuses an empty token before anything is loaded", async () => {
+		const { w, db, options } = world();
+		await assert.rejects(attachTresor(db, SERVICE, { ...options, token: () => "" }), /token is empty/);
+		assert.equal(w.registered.length, 0);
+		assert.equal(w.prepared.length, 0);
+	});
+
+	it("hands each renewed token over, until the signal aborts", async () => {
+		const { w, db, options } = world();
+		const controller = new AbortController();
+		let push: ((token: string) => Promise<void>) | undefined;
+		let unsubscribed = 0;
+		await attachTresor(db, SERVICE, {
+			...options,
+			token: ACCESS,
+			signal: controller.signal,
+			onTokenChange: (p) => {
+				push = p;
+				return () => unsubscribed++;
+			},
+		});
+		assert.ok(push, "subscribed once attached");
+		await push("at-renewed");
+		assert.equal(w.prepared.length, 2);
+		assert.deepEqual(w.prepared[1].params, [SERVICE, "at-renewed", ISSUER, false]);
+		controller.abort();
+		assert.equal(unsubscribed, 1);
+		await push("at-after-abort");
+		assert.equal(w.prepared.length, 2, "nothing handed over after the abort");
+	});
+});
+
+describe("attachTresor's token pushes (specs/043, the review)", () => {
+	it("reports a push that fails, even when the page drops the promise", async () => {
+		const { db, options } = world();
+		let push: ((token: string) => Promise<void>) | undefined;
+		const errors: unknown[] = [];
+		await attachTresor(db, SERVICE, {
+			...options,
+			token: "at-1",
+			onTokenChange: (p) => {
+				push = p;
+			},
+			onTokenError: (e) => errors.push(e),
+		});
+		const failing: Database = {
+			...db,
+			connect: async () => {
+				throw new Error("closed");
+			},
+		};
+		// the same push, its database gone: rejected to whoever awaits, and reported
+		Object.assign(db, failing);
+		await assert.rejects(push!("at-2"), /closed/);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(errors.length, 1);
+	});
+
+	it("hands over a token renewed while it attached", async () => {
+		const { w, db, options } = world();
+		let current = "at-1";
+		await attachTresor(db, SERVICE, {
+			...options,
+			token: () => {
+				const value = current;
+				current = "at-2"; // the page renewed meanwhile
+				return value;
+			},
+			onTokenChange: () => {},
+		});
+		assert.deepEqual(
+			w.prepared.map((p) => p.params[1]),
+			["at-1", "at-2"],
+		);
+	});
+});

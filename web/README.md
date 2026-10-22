@@ -41,6 +41,33 @@ What it does, in this order:
 
 One call at a time per service and catalog: a second call while one runs shares its outcome.
 
+## The application's own login (specs/043)
+
+An application that logs its users in already (oidc-client-ts, MSAL) passes the access token it holds for the
+service's audience instead - no login of the helper's own, no redirect, no second login for the user, and its refresh
+token never leaves it:
+
+```js
+await attachTresor(db, "tresor:secrets.corp.example", {
+  as: "corp",
+  from: "https://ext.hugr-lab.example",
+  publicKey: "-----BEGIN PUBLIC KEY-----…",
+  token: (await userManager.getUser()).access_token,  // or () => a promise of it
+  onTokenChange: (push) => {                          // each renewed token, handed over
+    const on = (u) => push(u.access_token);
+    userManager.events.addUserLoaded(on);
+    return () => userManager.events.removeUserLoaded(on);
+  },
+  signal: controller.signal,                          // ends the subscription
+});
+```
+
+Steps 2 and 4 above become: the token handed over with `FROM tresor_web_token(?, ?, issuer := ?, insecure_http := ?)`,
+a prepared statement's parameter; each one `push` gets, on a connection of its own. tresor uses the newest at every
+call and never renews it; a token of another user empties the catalog of the previous one's first. A failed push
+rejects its promise and goes to `onTokenError` (else `console.error`). The token's `aud` must be the discovery's
+`audience` (a Keycloak audience mapper; with Entra, a v2.0 token acquired silently for the service's scope).
+
 ## Trusting the extension
 
 DuckDB pins a repository's keys once, at `CREATE EXTENSION REPOSITORY`. A page has nothing to pin them
@@ -65,8 +92,9 @@ with `allowUnsignedExtensions`, and this check is the only one.
 ## Status
 
 Tested in Node: the signature against DuckDB's own signing, `attachTresor` against stubs of
-DuckDB-wasm, `fetch` and the login, and the types against `@duckdb/duckdb-wasm`'s. Not yet run in a
-browser - that waits for duckdb-wasm on DuckDB v2.0; the object-URL `LOAD` above is to be proven there.
+DuckDB-wasm, `fetch` and the login, and the types against `@duckdb/duckdb-wasm`'s. tresor itself runs in a browser
+(DuckDB-wasm's shell, in tresor's CI: `tresor_web_login` and `tresor_web_token`); the helper's own browser run - and
+the object-URL `LOAD` above - waits for `@duckdb/duckdb-wasm` on DuckDB v2.0 on npm.
 
 ```sh
 npm ci && npm test    # needs the duckdb submodule (its signing script)
