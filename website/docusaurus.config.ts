@@ -23,7 +23,7 @@ const canonicalBase = ionos ? '' : process.env.DOCS_CANONICAL ?? '';
 const config: Config = {
   title: 'tresor',
   tagline: 'One OIDC login, role-based secrets for DuckDB - attach your company\'s secrets service.',
-  favicon: 'img/favicon.ico',
+  favicon: 'img/tresor-favicon.svg',
 
   url: site.url,
   baseUrl: site.baseUrl,
@@ -76,6 +76,12 @@ const config: Config = {
     },
   },
 
+  headTags: [
+    // the tresor mark (hugr's ring, a keyhole): PNGs beside the SVG favicon, for browsers and home screens
+    {tagName: 'link', attributes: {rel: 'icon', type: 'image/png', sizes: '32x32', href: `${site.baseUrl}img/tresor-favicon-32.png`}},
+    {tagName: 'link', attributes: {rel: 'apple-touch-icon', sizes: '192x192', href: `${site.baseUrl}img/tresor-favicon-192.png`}},
+  ],
+
   themeConfig: {
     metadata: [
       {name: 'keywords', content: 'DuckDB, secrets, OIDC, SSO, Keycloak, Entra ID, Okta, delegation, extension'},
@@ -84,8 +90,9 @@ const config: Config = {
     navbar: {
       title: 'tresor',
       logo: {
-        alt: 'Hugr Lab',
-        src: 'img/logo-circle.svg',
+        alt: 'tresor',
+        src: 'img/tresor-icon.svg',
+        srcDark: 'img/tresor-icon-dark.svg',
         href: '/',
       },
       items: [
