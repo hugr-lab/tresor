@@ -93,6 +93,70 @@ jobs:
           npm test 2>&1 | tee test.log
           grep -q '^# skipped 0$' test.log   # the signing cross-check must not skip here
 
+  # specs/042: the wasm build (wasm_eh, as distribution builds it: emsdk 6.0.9, no OpenSSL, no sockets) and a real
+  # browser run - DuckDB-wasm's own shell (DuckDB v2.0.0) LOADs it and attaches the fake service (test_wasm.sh)
+  wasm:
+    name: wasm (wasm_eh, in a browser)
+    runs-on: ubuntu-24.04
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ccache
+      # the version distribution builds as: a shallow submodule has no tag, and DuckDB-wasm refuses an extension
+      # stamped with another
+      - name: The DuckDB version
+        run: |
+          echo "OVERRIDE_GIT_DESCRIBE=$(sed -n 's/^ *duckdb_version: *//p' .github/workflows/distribution.yml)" >>"$GITHUB_ENV"
+      - name: Setup vcpkg
+        run: make vcpkg-setup
+      - name: Setup / Emscripten (extension-ci-tools' version)
+        uses: emscripten-core/setup-emsdk@4528d102f7230f0e7b276855c01ea1159be0e984 # v16
+        with:
+          version: 6.0.9
+      # restored always, saved off pull requests only: a key per run would crowd out the native jobs' caches
+      - name: Restore ccache
+        uses: actions/cache/restore@v6
+        with:
+          path: .ccache
+          key: ccache-wasm_eh-${{ hashFiles('.gitmodules') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-wasm_eh-${{ hashFiles('.gitmodules') }}-
+            ccache-wasm_eh-
+      - name: Build
+        run: |
+          EXT_FLAGS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache" make wasm_eh
+          ccache -s
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: test/wasm/package-lock.json
+      - name: Playwright's Chromium
+        working-directory: test/wasm
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: In DuckDB-wasm's shell
+        run: scripts/ci/test_wasm.sh
+      - name: Save ccache
+        if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .ccache
+          key: ccache-wasm_eh-${{ hashFiles('.gitmodules') }}-${{ github.sha }}
+      - name: Upload extension artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: tresor-wasm_eh
+          path: build/wasm_eh/extension/tresor/tresor.duckdb_extension.wasm
+
   build-test-linux:
     name: Build + test (linux_amd64)
     runs-on: ubuntu-24.04

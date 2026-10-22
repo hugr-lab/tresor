@@ -59,3 +59,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | [039](039-release-0.1.0/spec.md) | the first release - tresor 0.1.0 for DuckDB 2.0.0, the protocol's version 1 | accepted |
 | [040](040-device-pkce/spec.md) | a person's device login at a Keycloak that enforces PKCE (duckdb-ext-common spec 017) | implemented |
 | [041](041-whoami-name/spec.md) | whoami names the person - an optional `name`, for people to read | implemented |
+| [042](042-wasm-build/spec.md) | the wasm build that loads - no OpenSSL, no sockets; proven in DuckDB-wasm's shell | implemented |

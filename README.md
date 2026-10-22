@@ -30,8 +30,8 @@ CREATE PERSISTENT SECRET lake_rw IN corp (TYPE s3, …); -- stored in the servic
 - an audit for DuckDB's log and OpenTelemetry.
 
 A web application's path - the page's login handed over (`tresor_web_login`, on DuckDB's HTTP client) and
-the helper `@hugr-lab/tresor-web` - is implemented and tested natively and in Node; a browser needs
-DuckDB-wasm on DuckDB 2.0.
+the helper `@hugr-lab/tresor-web`: tresor's wasm build loads in DuckDB-wasm on DuckDB 2.0, proven in a browser in
+CI (specs/042).
 
 Install it from DuckDB's community extensions (`INSTALL tresor FROM community;`, DuckDB 2.0), or build it
 from source (below). See the [CHANGELOG](CHANGELOG.md), the design
