@@ -20,8 +20,8 @@ FROM 's3://lake/sales/*.parquet';                      -- found by scope, like a
 ```
 
 :::note Status
-Everything on this site works today, except what is marked for the next release (an application's own token, and
-the browser, which also needs DuckDB-wasm on 2.0 - see [In a web application](./web.md)): attaching, the logins of people (from any client) and of
+Everything on this site works today (in a browser, with DuckDB-wasm on 2.0 - see
+[In a web application](./web.md)): attaching, the logins of people (from any client) and of
 services and pipelines, the secrets in DuckDB's lookup, writes and grants, variables, dynamic
 secrets, acting for duckdb-acl's sessions and the audit. Released: tresor 0.1.0, for DuckDB 2.0.0
 (`INSTALL tresor FROM community;`), and the [protocol](./protocol.md) is version 1.

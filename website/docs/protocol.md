@@ -6,7 +6,7 @@ title: Protocol — duckdb-secrets/1
 # The `duckdb-secrets/1` protocol
 
 :::info Version 1
-This is version 1 of `duckdb-secrets`, normative since tresor 0.1.0 (2026-10-21). An addition that
+This is version 1 of `duckdb-secrets`, normative since tresor 0.1.0 (2026-10-22). An addition that
 a client or a service may ignore - an optional field, an optional resource a service advertises in
 its discovery - keeps the version; any other change is a new version.
 :::

@@ -89,7 +89,7 @@ Secret Service on Linux do not ask.
 
 A program that has already logged its user in (MSAL, an OIDC library) does not log them in again: it hands tresor
 its access token for the service with `tresor_web_token`, and each renewed one ([In your
-application](./embedding.md); from the first release after 0.1.0).
+application](./embedding.md)).
 
 ## Pipelines are not people
 

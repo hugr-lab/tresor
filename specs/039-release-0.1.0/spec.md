@@ -41,6 +41,15 @@ specs/017's checklist, run. Its first item (the pins) was specs/038; this spec d
 
 Steps 5 and 6 are outward and not undone: each waits for the owner's word, as this PR does.
 
+## The tag moved (2026-10-22)
+
+Before the publishing (step 6), the owner had `v0.1.0` re-tagged on a later commit of `main`, so the first published
+release carries what landed the day after the first tag: PKCE on the device flow (specs/040), `whoami`'s `name`
+(041), the wasm build that loads (042, duckdb-ext-common v0.15.0), the application's own login `tresor_web_token`
+(043) and `wasm_threads` with shared memory (044). CHANGELOG folds them into `[0.1.0] - 2026-10-22`, the protocol's
+banner says 2026-10-22, and `description.yml` drops the wasm exclusion. The first tag (6507567, on 550791c) was never
+published: no community build and no GitHub Release used it. The docs site is deployed again from the moved tag.
+
 ## Testing
 
 Docs only here: the docs build (`onBrokenLinks: throw`) and `check_docs_links.py`.
