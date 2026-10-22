@@ -57,7 +57,8 @@ may put roles in the token that mean nothing to the service - Keycloak's `defaul
 `offline_access`, `uma_authorization` - and they show up there too, harmless as long as no grant and no
 administrator rule names them. To keep the list to the roles that matter, limit what the token carries
 on the clients that log in (DuckDB's, each service account's) - Keycloak: turn off *Full scope allowed*
-on the client and add only the service's roles to its scope - or filter them in the service.
+on the client and add only the service's roles to its scope - or filter them in the service
+(tresor-server: the issuer's `ignore_roles`, glob patterns such as `default-roles-*`).
 
 A scheduled job is a caller of its own: it logs in as a service, with a role, never with a person's
 login ([Pipelines](./pipelines.md)).
