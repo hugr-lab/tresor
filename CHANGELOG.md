@@ -7,6 +7,11 @@ All notable changes to tresor are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`whoami` names the person**: a `name` column (the token's user name, else name, else email) for people to
+  read; the protocol's `whoami` may carry it (specs/041).
+
 ### Fixed
 
 - **The device login at a Keycloak that enforces PKCE** (a public client's common setting) failed with

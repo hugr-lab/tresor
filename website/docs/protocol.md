@@ -124,6 +124,7 @@ fixes only what a client sees.
 {
   "issuer": "https://idp.corp.example/realms/main",
   "subject": "7f9c…",
+  "name": "alice@corp.example",
   "roles": ["role:analysts", "group:sales"],
   "actor": null,
   "expires_at": "2026-09-18T17:00:00Z",
@@ -131,6 +132,10 @@ fixes only what a client sees.
 }
 ```
 
+`name` (optional) is for people to read: who the subject is, as the token says it - a user name, an
+email or a full name (tresor-server and the reference server: `preferred_username`, else `name`, else
+`email`). It identifies nothing: grants and the audit go by `subject`. Absent when the token carries
+none (a service's, often), and under delegation it is the user's.
 `actor` is set when the call is made by a server on a user's behalf ([delegation](#delegation)).
 `roles` lists the caller's principals other than its `subject:` (`role:`, `group:`, and `client:`
 for a service). `permissions.create` is `true`, `false`, or a list of name patterns the caller may

@@ -65,10 +65,10 @@ SELECT acl_stub_open('kc-1', '{TRESOR_KC_DOOR_TOKEN}', '{TRESOR_KC_ISSUER}', 300
 statement ok
 SET acl_stub_session = 'kc-1';
 
-query III
-SELECT list_contains(roles, 'role:analysts'), list_contains(roles, 'client:acl-node'), actor FROM node.whoami();
+query IIII
+SELECT list_contains(roles, 'role:analysts'), list_contains(roles, 'client:acl-node'), actor, name FROM node.whoami();
 ----
-true	false	client:acl-node
+true	false	client:acl-node	alice
 
 # under her grant the node's own rights apply (specs/009): its secret, served for her statement
 query II

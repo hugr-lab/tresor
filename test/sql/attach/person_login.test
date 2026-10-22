@@ -26,6 +26,12 @@ SELECT expires_at = TIMESTAMPTZ '2030-01-01 00:00:00+00' FROM corp.whoami();
 ----
 true
 
+# who the subject is, for people to read (specs/041): the service's optional name
+query I
+SELECT name FROM corp.whoami();
+----
+alice@corp.example
+
 # the catalog is read-only: tables, views and writes are refused by duckdb's own check
 statement error
 CREATE TABLE corp.t (i INTEGER);

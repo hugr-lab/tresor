@@ -37,6 +37,7 @@ unique_ptr<FunctionData> WhoamiBind(ClientContext &context, TableFunctionBindInp
 	add("service", LogicalType::VARCHAR);
 	add("issuer", LogicalType::VARCHAR);
 	add("subject", LogicalType::VARCHAR);
+	add("name", LogicalType::VARCHAR); // for people to read (specs/041); NULL when the service gives none
 	add("roles", LogicalType::LIST(LogicalType::VARCHAR));
 	add("actor", LogicalType::VARCHAR);
 	add("expires_at", LogicalType::TIMESTAMP_TZ);
@@ -112,11 +113,12 @@ void WhoamiScan(ClientContext &context, TableFunctionInput &data, DataChunk &out
 	output.data[0].Append(Value(session.Info().api));
 	output.data[1].Append(StringOrNull(root, "issuer"));
 	output.data[2].Append(StringOrNull(root, "subject"));
-	output.data[3].Append(StringList(yyjson_obj_get(root, "roles")));
-	output.data[4].Append(StringOrNull(root, "actor"));
-	output.data[5].Append(expires_at);
-	output.data[6].Append(can_create);
-	output.data[7].Append(Value(session.LoginName()));
+	output.data[3].Append(StringOrNull(root, "name"));
+	output.data[4].Append(StringList(yyjson_obj_get(root, "roles")));
+	output.data[5].Append(StringOrNull(root, "actor"));
+	output.data[6].Append(expires_at);
+	output.data[7].Append(can_create);
+	output.data[8].Append(Value(session.LoginName()));
 }
 
 } // namespace

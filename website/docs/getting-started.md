@@ -88,7 +88,7 @@ CALL tresor_logoff();                                       -- forget it, revoke
 A service's login (a tresor secret) is never remembered: it logs in again from its secret.
 
 ```sql
-FROM corp.whoami();      -- service, issuer, subject, roles, token expiry, what you may create, login flow
+FROM corp.whoami();      -- service, issuer, subject, name, roles, token expiry, what you may create, login flow
 FROM corp.secrets();     -- the secrets you may see, with what you may do with each (no material)
 ```
 

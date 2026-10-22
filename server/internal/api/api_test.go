@@ -157,6 +157,23 @@ func TestDiscoveryAndWhoami(t *testing.T) {
 		if roles := w["roles"].([]any); len(roles) != 1 || roles[0] != "role:analysts" {
 			t.Fatalf("roles: %v", roles)
 		}
+		// name, for people to read (tresor specs/041): preferred_username, else name, else email; absent without
+		if w["name"] != "alice" {
+			t.Fatalf("alice's preferred_username: %v", w)
+		}
+		if c := f.do("GET", "/v1/whoami", f.carol, "").json(t); c["name"] != nil {
+			t.Fatalf("a token with no name claim gives no name: %v", c)
+		}
+		for want, claims := range map[string]testidp.Claims{
+			"dave":              {"preferred_username": "dave", "name": "Dave D", "email": "dave@corp.example"},
+			"Dave D":            {"name": "Dave D", "email": "dave@corp.example"},
+			"dave@corp.example": {"email": "dave@corp.example"},
+		} {
+			claims["sub"], claims["aud"] = "dave-id", "duckdb-secrets"
+			if w := f.do("GET", "/v1/whoami", f.idp.Token(t, claims), "").json(t); w["name"] != want || w["subject"] != "dave-id" {
+				t.Fatalf("name %q: %v", want, w)
+			}
+		}
 		// only admins create (specs/009)
 		for name, token := range map[string]string{"alice": f.alice, "carol": f.carol} {
 			if w := f.do("GET", "/v1/whoami", token, "").json(t); w["permissions"].(map[string]any)["create"] != false {
