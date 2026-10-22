@@ -25,7 +25,12 @@ flow had been tested against the fake IdP only.
 - `scripts/ci/test_keycloak.sh` now logs a person in by the device flow at the real Keycloak (its `duckdb` client
   enforces PKCE): `ATTACH … (LOGIN 'device')`, the code approved by `test/keycloak/device.py` through the link
   with the code (Keycloak's form takes no typed code outside a browser session), then `whoami` says `device`.
-- The fake service's device tests (no PKCE advertised) are unchanged.
+- The fake IdP behaves as Keycloak with PKCE enforced: its discovery lists S256, its device endpoint refuses a
+  request without an S256 challenge, and the device grant checks the verifier. So every device test of the attach
+  suites - `ATTACH … (LOGIN 'device')` and `tresor_login(…, login := 'device')`'s background thread alike - proves
+  the challenge sent and the verifier passed on, in normal CI.
+- The core's API takes the verifier as a required parameter (duckdb-ext-common spec 017): a caller that forgot it
+  would not compile - Keycloak checks the verifier for every client once a challenge was sent.
 
 ## Follow-ups
 

@@ -58,6 +58,7 @@ REFRESH = {}   # refresh token -> identity
 PAGE_LOGIN_SHAPE = {"refresh_token": "rt-" + "x" * 16}  # /_page_login's answer, for its size (specs/020)
 CODES = {}     # authorization code -> (challenge, redirect_uri, identity)
 DEVICES = {}   # device code -> pending polls left before approval
+DEVICE_CHALLENGES = {}  # device code -> its PKCE challenge (S256)
 
 PERSON = {"subject": "alice", "roles": ["role:analysts", "group:sales"], "create": ["team_a_*"]}
 # specs/025: who logs in when the IdP is asked to pick the account (prompt=select_account) - another person
@@ -693,6 +694,8 @@ class Handler(BaseHTTPRequestHandler):
                     "token_endpoint": base + "/" + realm + "/token",
                     "device_authorization_endpoint": base + "/" + realm + "/device",
                     "revocation_endpoint": base + "/" + realm + "/revoke",
+                    # as Keycloak: S256 listed, and the device flow then requires it (duckdb-ext-common spec 017)
+                    "code_challenge_methods_supported": ["plain", "S256"],
                 })
             elif rest == "/authorize":
                 if query.get("client_id") != "duckdb" or query.get("code_challenge_method") != "S256":
@@ -1227,10 +1230,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send(404, {"type": "not_found"})
             return
         if rest == "/device":
+            # as Keycloak with PKCE enforced (tresor specs/040): an S256 challenge is required, its verifier checked
+            if form.get("code_challenge_method") != "S256" or not form.get("code_challenge"):
+                self.send(400, {"error": "invalid_request",
+                                "error_description": "Missing parameter: code_challenge_method"})
+                return
             code = "dev-" + secrets.token_urlsafe(8)
             with LOCK:
                 IDP_STATS["device_audience"] = form.get("audience", "")
                 DEVICES[code] = 1  # one authorization_pending, then approved
+                DEVICE_CHALLENGES[code] = form["code_challenge"]
             self.send(200, {
                 "device_code": code, "user_code": "ABCD-EFGH",
                 "verification_uri": self.base() + "/" + realm + "/activate", "interval": 1, "expires_in": 60,
@@ -1301,8 +1310,12 @@ class Handler(BaseHTTPRequestHandler):
                         self.send(200, dict(issue(NODE_TOKENS[subject], False, aud=aud), issued_token_type=at))
             elif grant == "urn:ietf:params:oauth:grant-type:device_code":
                 code = form.get("device_code")
+                verifier = form.get("code_verifier", "")
                 if code not in DEVICES:
                     self.send(400, {"error": "access_denied"})
+                elif base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode() \
+                        != DEVICE_CHALLENGES.get(code):
+                    self.send(400, {"error": "invalid_grant", "error_description": "PKCE verification failed"})
                 elif DEVICES[code] > 0:
                     DEVICES[code] -= 1
                     self.send(400, {"error": "authorization_pending"})

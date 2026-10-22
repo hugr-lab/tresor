@@ -65,7 +65,7 @@ def main():
     if 'name="accept"' in page:
         action, hidden = form_of(page)
         page = submit(action, dict(hidden, accept="Yes"))
-    if "Device Login Successful" not in page and "successfully" not in page.lower():
+    if "Device Login Successful" not in page:
         print("device.py: the device login was not approved", file=sys.stderr)
         return 1
     return 0

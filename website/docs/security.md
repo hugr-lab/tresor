@@ -100,7 +100,7 @@ The same sandbox already bounds the files a login reads (`ASSERTION_FILE`, `PRIV
 ## Logins
 
 - People log in directly with the identity provider — authorization code with PKCE and a loopback
-  redirect, or a device code. The secrets service is not a login hub: other servers (a DuckDB node
+  redirect, or a device code (with PKCE too where the identity provider advertises it, as Keycloak does). The secrets service is not a login hub: other servers (a DuckDB node
   behind a gateway, a data platform) need identity-provider tokens too, and one login mints them for
   each audience.
 - Services log in with their own credentials — client credentials, a private-key JWT, a federated

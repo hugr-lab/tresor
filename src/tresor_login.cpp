@@ -375,8 +375,8 @@ oidc::TokenSet PersonLogin(ClientContext &context, const AttachRequest &request,
 		                   " and enter the code " + begun.user_code +
 		                   (where == begun.verification_uri ? "" : "\n  or open " + where));
 		auto device_deadline = MinValue<int64_t>(deadline, NowSeconds() + begun.expires_in);
-		tokens = oidc::DevicePoll(info.endpoints, info.client_id, begun.device_code, begun.interval, device_deadline,
-		                          cancelled, begun.code_verifier);
+		tokens = oidc::DevicePoll(info.endpoints, info.client_id, begun.device_code, begun.code_verifier,
+		                          begun.interval, device_deadline, cancelled);
 	}
 	if (!tokens.Ok()) {
 		if (tokens.error_code == "cancelled") {
@@ -774,9 +774,8 @@ PersonLoginStatus StartPersonLogin(ClientContext &context, const AttachRequest &
 			auto until = MinValue<int64_t>(deadline, NowSeconds() + begun.expires_in);
 			auto raw = login.get();
 			run = [endpoints, client_id, device_code, interval, until, raw, verifier]() {
-				return oidc::DevicePoll(
-				    endpoints, client_id, device_code, interval, until, [raw] { return raw->cancelled.load(); },
-				    verifier);
+				return oidc::DevicePoll(endpoints, client_id, device_code, verifier, interval, until,
+				                        [raw] { return raw->cancelled.load(); });
 			};
 		} else {
 			auto endpoints = info.endpoints;
