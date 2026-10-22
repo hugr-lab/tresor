@@ -40,3 +40,6 @@ web/build/
 
 # drafts of announcements (LinkedIn post, article, screenshots) - local only
 posts/
+
+# the wasm browser test (specs/042): playwright, installed locally
+test/wasm/node_modules/

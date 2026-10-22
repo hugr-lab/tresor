@@ -1,7 +1,8 @@
 # Spec 020: tresor in a web application - DuckDB-wasm, the page's login, `attachTresor`
 
-- **Status**: tresor's side and the helper (`web/`) implemented and tested natively and in Node; a browser run
-  waits for duckdb-wasm on DuckDB v2.0
+- **Status**: tresor's side implemented, and run in a browser since specs/042 (DuckDB-wasm's shell on DuckDB v2.0:
+  the wasm build loads, the page's login handed over); the helper (`web/`) tested in Node, a browser run waits for
+  `@duckdb/duckdb-wasm` on 2.0 on npm
 - **Date**: 2026-10-05
 - **Author**: hugr lab
 

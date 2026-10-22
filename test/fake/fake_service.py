@@ -68,6 +68,9 @@ OTHER_PERSON = {"subject": "bob", "name": "Bob", "roles": ["role:analysts"], "cr
 NOT_FOR_OTHER_PERSON = {"alice_lake"}
 SERVICE = {"subject": "client:etl", "roles": ["role:etl"], "create": True}
 CLIENTS = {"etl": "s3cr3t"}
+# specs/042: a directory served under /web/ - DuckDB-wasm's shell and tresor's wasm build, on the service's own origin
+WEB_DIR = None
+WEB_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript", ".wasm": "application/wasm"}
 STATIC_TOKENS = {"static-token": {"subject": "client:static", "roles": [], "create": False}}
 REALMS = {"", "multi", "wrong", "expiring", "revoking", "noflows", "broken", "nolist", "acting", "shifty", "picky",
           "second", "auth0", "novars", "consumers"}
@@ -623,6 +626,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
+        if WEB_DIR and url.path.startswith("/web/"):
+            path = os.path.realpath(os.path.join(WEB_DIR, url.path[len("/web/") :] or "index.html"))
+            if not path.startswith(os.path.realpath(WEB_DIR) + os.sep) or not os.path.isfile(path):
+                self.send(404, b"", "text/plain")
+                return
+            with open(path, "rb") as f:
+                self.send(200, f.read(), WEB_TYPES.get(os.path.splitext(path)[1], "application/octet-stream"))
+            return
         if url.path == "/_page_login":  # specs/020: the login a web page made with the IdP - its refresh token
             with LOCK:
                 refresh = issue(PERSON, True)["refresh_token"]
@@ -1335,7 +1346,10 @@ def main():
     parser.add_argument("--tls-port-file")
     parser.add_argument("--tls-cert")
     parser.add_argument("--tls-key")
+    parser.add_argument("--web-dir")
     args = parser.parse_args()
+    global WEB_DIR
+    WEB_DIR = args.web_dir
     if args.tls_port_file:
         # the same handler over https (specs/030): its base URLs say https, so every endpoint it names does too
         tls = ThreadingHTTPServer(("127.0.0.1", 0), Handler)

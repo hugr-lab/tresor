@@ -11,9 +11,15 @@ All notable changes to tresor are documented here. The format follows
 
 - **`whoami` names the person**: a `name` column (the token's user name, else name, else email) for people to
   read; the protocol's `whoami` may carry it (specs/041).
+- **wasm**: tresor builds for `wasm_eh`, `wasm_mvp` and `wasm_threads` and LOADs in DuckDB-wasm on DuckDB 2.0 -
+  proven in CI in a browser, in DuckDB-wasm's own shell: the page's login handed over, ATTACH, whoami, the secrets,
+  a variable (specs/042, duckdb-ext-common spec 018).
 
 ### Fixed
 
+- **The wasm build could not load**: it imported OpenSSL and sockets, which DuckDB-wasm does not have. A wasm build
+  now has no built-in HTTP client, so no OpenSSL, sockets or threads of its own; every request goes through DuckDB's
+  client, the browser's (specs/042).
 - **The device login at a Keycloak that enforces PKCE** (a public client's common setting) failed with
   `Missing parameter: code_challenge_method`: the device request now carries PKCE where the issuer advertises it
   (specs/040, duckdb-ext-common spec 017).

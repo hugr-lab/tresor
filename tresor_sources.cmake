@@ -61,7 +61,16 @@ set(TRESOR_SOURCES
 # two the other's names. A source's definitions come after its target's on the command line, so these win on
 # tresor's sources even where an embedder's target defines another namespace.
 set_property(SOURCE ${TRESOR_SOURCES} APPEND PROPERTY COMPILE_DEFINITIONS DUCKDB_EXT_COMMON_OIDC_NAMESPACE=tresor
-             DUCKDB_EXT_COMMON_OIDC_TLS=1 DUCKDB_EXT_COMMON_KEYCHAIN_NAMESPACE=tresor)
+             DUCKDB_EXT_COMMON_KEYCHAIN_NAMESPACE=tresor)
+# The OIDC core's built-in client speaks TLS through OpenSSL. A wasm build has no built-in client (duckdb-ext-common
+# spec 018: no sockets, no threads in a page) - every request goes through DuckDB's HTTPUtil, the browser's - so it
+# compiles and links no OpenSSL (specs/042).
+if(EMSCRIPTEN)
+    set(TRESOR_TLS OFF)
+else()
+    set(TRESOR_TLS ON)
+    set_property(SOURCE ${TRESOR_SOURCES} APPEND PROPERTY COMPILE_DEFINITIONS DUCKDB_EXT_COMMON_OIDC_TLS=1)
+endif()
 
 # Built into another extension (specs/024): tresor's entry point and TresorExtension are not compiled (the
 # embedder's entry is the one), and tresor_version() answers tresor's own version - duckdb defines
@@ -80,14 +89,16 @@ endif()
 
 # https is not optional: the protocol is https, and so is every identity provider. OpenSSL comes from
 # vcpkg (vcpkg.json), static, as in duckdb-acl; the machine's own prefixes are kept out of the search
-# so the artifact never depends on a homebrew library.
-set(OPENSSL_USE_STATIC_LIBS ON)
-foreach(system_prefix "/opt/homebrew" "/usr/local")
-    if(EXISTS "${system_prefix}")
-        list(APPEND CMAKE_IGNORE_PREFIX_PATH "${system_prefix}")
-    endif()
-endforeach()
-find_package(OpenSSL REQUIRED)
+# so the artifact never depends on a homebrew library. Not in wasm, whose https is the browser's.
+if(TRESOR_TLS)
+    set(OPENSSL_USE_STATIC_LIBS ON)
+    foreach(system_prefix "/opt/homebrew" "/usr/local")
+        if(EXISTS "${system_prefix}")
+            list(APPEND CMAKE_IGNORE_PREFIX_PATH "${system_prefix}")
+        endif()
+    endforeach()
+    find_package(OpenSSL REQUIRED)
+endif()
 
 # Built in beside duckdb-acl (acl_sources.cmake, ACL_ROOT): one directory, so whichever duckdb-ext-common the
 # include directories name first serves its headers - the OIDC core's, the contracts - to both halves. They must be
@@ -114,7 +125,10 @@ endfunction()
 function(tresor_configure_targets)
     tresor_check_shared_headers()
     foreach(target ${ARGN})
-        target_link_libraries(${target} OpenSSL::SSL OpenSSL::Crypto ${TRESOR_KEYCHAIN_LIBS})
+        if(TRESOR_TLS)
+            target_link_libraries(${target} OpenSSL::SSL OpenSSL::Crypto)
+        endif()
+        target_link_libraries(${target} ${TRESOR_KEYCHAIN_LIBS})
         # the bundled httplib reads the OS trust store: the Security framework on macOS; winsock and
         # crypt32 (OpenSSL's RNG) on Windows, which MinGW does not pick up from httplib's pragmas
         if(APPLE)

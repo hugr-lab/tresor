@@ -30,8 +30,10 @@ ATTACH prefix works).
   (duckdb-ext-common `oidc/`, compiled in as `duckdb::tresor::oidc` with `DUCKDB_EXT_COMMON_OIDC_TLS=1`),
   which is tresor's HTTP transport (the IdP's flows and the service's API, specs/002) unless
   `tresor_http_client = 'duckdb'` puts DuckDB's HTTPUtil under it (specs/020; the only one in wasm).
-- **Platforms**: Linux, macOS, Windows. wasm (specs/020) compiles (`make wasm_eh`, no `GEN=ninja`) and runs on
-  DuckDB's HTTP client with the page's login (`tresor_web_login`); not in CI until duckdb-wasm is on 2.0.
+- **Platforms**: Linux, macOS, Windows, wasm. wasm (specs/020, 042: `make wasm_eh`, no `GEN=ninja`, emsdk 6.0.9 as
+  extension-ci-tools, `OVERRIDE_GIT_DESCRIBE=v2.0.0` locally) has no built-in client - no OpenSSL, sockets or threads
+  of its own - and runs on DuckDB's HTTP client with the page's login (`tresor_web_login`); CI LOADs it in
+  DuckDB-wasm's own shell in Chromium (`scripts/ci/test_wasm.sh`).
 
 ## Project structure
 
@@ -49,10 +51,12 @@ test/fake/                  # fake duckdb-secrets service + IdP (Python stdlib) 
 test/extension/acl_stub/    # test-only extension: duckdb-acl's side of acl_connection.hpp (specs/008)
 test/extension/tresor_embedder/  # test-only extension that builds tresor in, as hugr-node does (specs/024)
 test/extension/typed_secret_stub/  # test-only extension: secret types of their own classes, as bigquery's (specs/032)
+test/wasm/                  # the wasm build in DuckDB-wasm's shell, in Chromium (shell.mjs, playwright; specs/042)
 test/acl/actor.sql          # the actor against real duckdb-acl (test_keycloak.sh, TRESOR_ACL_EXTENSION)
 test/keycloak/browser.py    # fills Keycloak's login form: the person's browser in the Keycloak tests
 test/keycloak/device.py     # approves a device login at Keycloak (the link with the code, the login form)
-scripts/ci/                 # smoke_load.sh, test_attach.sh, assert_ran.sh, check_docs_links.py, check_extension_pins.sh
+scripts/ci/                 # smoke_load.sh, test_attach.sh, test_wasm.sh, wasm_imports.py, assert_ran.sh,
+                            #   check_docs_links.py, check_extension_pins.sh
 specs/                      # one lightweight spec per feature (see specs/README.md)
 design/                     # LOCAL, gitignored research
 ```
@@ -66,6 +70,8 @@ TRESOR_TEST_HTTPFS=1 GEN=ninja make         # release: duckdb (2.0) + tresor (+ 
 TRESOR_TEST_HTTPFS=1 build/release/test/unittest 'test/sql/*'   # sqllogictests (attach/* skip without TRESOR_TEST_PORT)
 TRESOR_TEST_HTTPFS=1 scripts/ci/test_attach.sh                  # attach/login tests against test/fake/fake_service.py
 TRESOR_HTTP_CLIENT=duckdb scripts/ci/test_attach.sh   # the same on DuckDB's HTTP client (httpfs), as wasm has
+OVERRIDE_GIT_DESCRIBE=v2.0.0 make wasm_eh   # with emsdk 6.0.9 active; then (npm ci + npx playwright install chromium in test/wasm):
+scripts/ci/test_wasm.sh                     # DuckDB-wasm's shell LOADs it in Chromium, against the fake service (specs/042)
 TRESOR_TEST_HTTPFS=1 TRESOR_TEST_CONSUMERS=1 GEN=ninja make     # + postgres_scanner, iceberg, avro (specs/033)
 docker run -d -e POSTGRES_USER=tresor_pg -e POSTGRES_PASSWORD=pg-s3cret -p 127.0.0.1:55433:5432 postgres:17-alpine
 TRESOR_TEST_CONSUMERS=1 TRESOR_TEST_PG_PORT=55433 scripts/ci/test_attach.sh "" 'test/sql/consumers/*'

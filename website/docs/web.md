@@ -10,11 +10,13 @@ organisation's identity provider. tresor attaches the secrets service **as that 
 for them to do. After that it works as in the CLI: `corp.secrets()`, `corp.whoami()`, variables, and
 the secrets in DuckDB's lookup. tresor renews the login itself.
 
-:::caution Not yet in a browser
-Everything below is implemented and tested in Node and natively. A browser needs DuckDB-wasm on
-DuckDB v2.0, which tresor is built for
-([duckdb-wasm#2262](https://github.com/duckdb/duckdb-wasm/issues/2262)). Until then this page is the
-contract, not a recipe that runs.
+:::note In a browser
+tresor's wasm build loads in DuckDB-wasm on DuckDB v2.0. CI runs it in a browser, in DuckDB-wasm's own shell (the
+build behind shell.duckdb.org): the page's login handed over with `tresor_web_login`, `ATTACH`, `whoami`, the
+secrets, a variable. Still to come:
+- the npm package `@duckdb/duckdb-wasm` on DuckDB 2.0, which a page builds on (not published yet);
+- the helper `@hugr-lab/tresor-web`, tested in Node so far;
+- the wasm build in DuckDB's community repository, with the first release after 0.1.0.
 :::
 
 ## The page
