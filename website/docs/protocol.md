@@ -132,10 +132,13 @@ fixes only what a client sees.
 }
 ```
 
-`name` (optional) is for people to read: who the subject is, as the token says it - a user name, an
-email or a full name (tresor-server and the reference server: `preferred_username`, else `name`, else
-`email`). It identifies nothing: grants and the audit go by `subject`. Absent when the token carries
-none (a service's, often), and under delegation it is the user's.
+A service **MAY** include `name`: who the subject is, for people to read - a user name, an email or a
+full name, as the token says it (for example, the reference server: `preferred_username`, else `name`,
+else `email`). It is not trustworthy: a user can often change it at the identity provider, and an
+email may be unverified. A client **MUST NOT** use it to identify the caller, key anything by it
+(remembered logins, ownership) or decide anything by it; a service **MUST NOT** grant, own or audit by
+it. Identity, ownership and the audit go by `subject`; grants go by roles and groups. Absent when the
+token carries none (a service's, often); under delegation it is the user's.
 `actor` is set when the call is made by a server on a user's behalf ([delegation](#delegation)).
 `roles` lists the caller's principals other than its `subject:` (`role:`, `group:`, and `client:`
 for a service). `permissions.create` is `true`, `false`, or a list of name patterns the caller may

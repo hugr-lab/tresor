@@ -165,9 +165,11 @@ func TestDiscoveryAndWhoami(t *testing.T) {
 			t.Fatalf("a token with no name claim gives no name: %v", c)
 		}
 		for want, claims := range map[string]testidp.Claims{
-			"dave":              {"preferred_username": "dave", "name": "Dave D", "email": "dave@corp.example"},
-			"Dave D":            {"name": "Dave D", "email": "dave@corp.example"},
-			"dave@corp.example": {"email": "dave@corp.example"},
+			"dave":                      {"preferred_username": "dave", "name": "Dave D", "email": "dave@corp.example"},
+			"Dave D":                    {"name": "Dave D", "email": "dave@corp.example"},
+			"dave@corp.example":         {"email": "dave@corp.example"},
+			"dave@corp.onmicrosoft.com": {"upn": "dave@corp.onmicrosoft.com"},
+			"Dave Trimmed":              {"preferred_username": "  ", "name": " Dave Trimmed "},
 		} {
 			claims["sub"], claims["aud"] = "dave-id", "duckdb-secrets"
 			if w := f.do("GET", "/v1/whoami", f.idp.Token(t, claims), "").json(t); w["name"] != want || w["subject"] != "dave-id" {

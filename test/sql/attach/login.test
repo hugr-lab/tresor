@@ -170,10 +170,10 @@ SELECT count(*) FROM which_secret('s3://alice-lake/x.parquet', 's3') WHERE stora
 ----
 0
 
-query I
-SELECT subject LIKE '%bob' FROM corp.whoami();
+query IT
+SELECT subject LIKE '%bob', name FROM corp.whoami();
 ----
-true
+true	Bob
 
 query I
 SELECT count(*) FROM duckdb_logs_parsed('tresor') WHERE kind = 'login' AND detail = 'resumed_other';

@@ -435,11 +435,12 @@ func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, body)
 }
 
-// displayName is who a token's subject is, for people to read: preferred_username, else name, else email.
+// displayName is who a token's subject is, for people to read: preferred_username, else name, else email, else
+// upn (Entra's v1 tokens). Never an identity (the protocol forbids deciding anything by it).
 func displayName(claims map[string]any) string {
-	for _, claim := range []string{"preferred_username", "name", "email"} {
+	for _, claim := range []string{"preferred_username", "name", "email", "upn"} {
 		if v, ok := claims[claim].(string); ok && strings.TrimSpace(v) != "" {
-			return v
+			return strings.TrimSpace(v)
 		}
 	}
 	return ""

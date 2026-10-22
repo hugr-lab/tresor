@@ -51,12 +51,13 @@ Two kinds of callers, and one rule each:
 Nobody but an administrator can put a secret where your lookups find it, so nobody can plant one on
 your paths.
 
-`corp.whoami()` shows who you are to the service: your `subject` (what grants go by), a `name` to read
-when the service gives one, and your `roles`. An identity provider may put roles in the token that mean
-nothing to the service - Keycloak's `default-roles-<realm>`, `offline_access`, `uma_authorization` -
-and they show up there too, harmless (only granted roles count). To keep the list to the roles that
-matter, give the service's client a role mapper that emits only those (Keycloak: a client scope with a
-"realm roles" mapper limited to them), or filter them in the service.
+`corp.whoami()` shows who you are to the service: your `subject` (who you are to it: what you own, what
+the audit records), a `name` to read when the service gives one, and your `roles`. An identity provider
+may put roles in the token that mean nothing to the service - Keycloak's `default-roles-<realm>`,
+`offline_access`, `uma_authorization` - and they show up there too, harmless as long as no grant and no
+administrator rule names them. To keep the list to the roles that matter, limit what the token carries
+on the clients that log in (DuckDB's, each service account's) - Keycloak: turn off *Full scope allowed*
+on the client and add only the service's roles to its scope - or filter them in the service.
 
 A scheduled job is a caller of its own: it logs in as a service, with a role, never with a person's
 login ([Pipelines](./pipelines.md)).

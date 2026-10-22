@@ -10,13 +10,17 @@
 
 - **Protocol** (an addition version 1 allows: a field a client may ignore): `GET /v1/whoami` MAY carry
   `name`, who the subject is for people to read (tresor-server and the reference server: the token's
-  `preferred_username`, else `name`, else `email`). It identifies nothing - grants and the audit go by
-  `subject` - is absent when the token carries none, and under delegation is the user's.
-- **Client**: `corp.whoami()` gains a `name` column after `subject` (VARCHAR, NULL when the service gives none).
-- **Reference server**: `name` from the verified token's claims, in that order.
+  `preferred_username`, else `name`, else `email`, else Entra v1's `upn`). Not trustworthy (a user can often
+  change it at the IdP): a client MUST NOT identify, key or decide by it, a service MUST NOT grant, own or audit
+  by it - identity, ownership and the audit go by `subject`, grants by roles and groups. Absent when the token
+  carries none; under delegation the user's.
+- **Client**: `corp.whoami()` gains a `name` column, the last (VARCHAR, NULL when the service gives none): the
+  columns before keep their places.
+- **Reference server**: `name` from the verified token's claims, in that order, trimmed.
 - **Docs**: `concepts.md` says what whoami shows, and how to keep an identity provider's extra roles (Keycloak's
-  `default-roles-<realm>`, `offline_access`, `uma_authorization`) out of the list - a client role mapper, or
-  the service's filter (tresor-server's to offer). `clients.md` suggests the device flow in DuckDB UI, where a
+  `default-roles-<realm>`, `offline_access`, `uma_authorization`) out of the list - on the clients that log in,
+  Keycloak's *Full scope allowed* off and only the service's roles in their scope - or the service's filter
+  (tresor-server's to offer). `clients.md` suggests the device flow in DuckDB UI, where a
   short URL and a code read better than the browser flow's long link (now that the device flow works at
   Keycloak, specs/040).
 
@@ -29,4 +33,5 @@ The audit is unchanged (TRSA: its principal stays the subject; adding a name wou
 - Real Keycloak (`test_keycloak.sh`): `reference_server/keycloak.test` - alice is `alice`, the etl service account
   `service-account-etl`; `reference_server/actor.test` - under alice's delegation grant the node's whoami names
   alice.
-- The reference server's Go test: `preferred_username` before `name` before `email`; absent without them.
+- The reference server's Go test: `preferred_username` before `name` before `email` before `upn`, trimmed;
+  absent without them.
