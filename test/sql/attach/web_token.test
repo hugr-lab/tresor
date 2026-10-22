@@ -180,11 +180,23 @@ true
 
 # --- the page logs its user out ---------------------------------------------------------------------------------
 
+# alice's own secret, served (and cached) on her token
+query I
+SELECT name FROM which_secret('s3://alice-lake/x.parquet', 's3') WHERE storage = 'corp';
+----
+alice_lake
+
 # the token forgotten, the catalog kept: it waits for the page's next login
 query IIII
 SELECT service = '127.0.0.1:{TRESOR_TEST_PORT}', removed, revoked, detached FROM tresor_logoff('corp', detach := false);
 ----
 true	true	false	0
+
+# logged off: nothing of alice's is served any more - not from the cache either
+query I
+SELECT count(*) FROM which_secret('s3://alice-lake/x.parquet', 's3') WHERE storage = 'corp';
+----
+0
 
 statement error
 FROM corp.secrets();
@@ -197,10 +209,56 @@ SET VARIABLE pt = page_token('');
 statement ok
 EXECUTE hand_token('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('pt'));
 
+query II
+SELECT login, name FROM corp.whoami();
+----
+page	alice@corp.example
+
+query I
+SELECT name FROM which_secret('s3://alice-lake/x.parquet', 's3') WHERE storage = 'corp';
+----
+alice_lake
+
+# --- another user of the application: the next token is bob's, with no logoff between -------------------------
+
+statement ok
+SET VARIABLE pt = page_token('who=bob');
+
+statement ok
+EXECUTE hand_token('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('pt'));
+
+# whoami names bob, and nothing alice's is served to him - not from the cache either
+query II
+SELECT login, name FROM corp.whoami();
+----
+page	Bob
+
+query I
+SELECT count(*) FROM which_secret('s3://alice-lake/x.parquet', 's3') WHERE storage = 'corp';
+----
+0
+
 query I
 SELECT count(*) > 0 FROM corp.secrets();
 ----
 true
+
+# --- only the service it was handed over for --------------------------------------------------------------------
+
+# another service behind the same issuer gets none of it: its ATTACH logs the person in itself
+statement ok
+CREATE TABLE before_second AS SELECT idp('authorize')::INT AS authorize;
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}/second' AS second (INSECURE_HTTP true, REMEMBER false);
+
+query II
+SELECT login, idp('authorize')::INT - authorize FROM second.whoami(), before_second;
+----
+browser	1
+
+statement ok
+DETACH second;
 
 # every login here: the page's too, and its catalog goes
 query III
@@ -219,3 +277,23 @@ query II
 SELECT login, idp('authorize')::INT - authorize FROM corp.whoami(), before_login;
 ----
 browser	1
+
+statement ok
+DETACH corp;
+
+# a token the page let run out is not attached on: natively the person logs in
+statement ok
+SET VARIABLE pt = page_token('ttl=2');
+
+statement ok
+EXECUTE hand_token('tresor:127.0.0.1:{TRESOR_TEST_PORT}', getvariable('pt'));
+
+sleep 3 seconds
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS corp (INSECURE_HTTP true, REMEMBER false);
+
+query II
+SELECT login, idp('authorize')::INT - authorize FROM corp.whoami(), before_login;
+----
+browser	2

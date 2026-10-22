@@ -46,6 +46,8 @@ export interface AttachOptions extends LoginOptions {
 	onTokenChange?: (push: (token: string) => Promise<void>) => (() => void) | void;
 	/** Ends `onTokenChange`'s subscription. */
 	signal?: AbortSignal;
+	/** A token `push` could not hand over (expired, refused, the database closed). Without it: `console.error`. */
+	onTokenError?: (error: unknown) => void;
 	/** For tests and unusual hosts: the fetch, the login, the repository's revision and platform. */
 	fetch?: Fetch;
 	login?: PageLogin;
@@ -56,7 +58,8 @@ export interface AttachOptions extends LoginOptions {
 export type AttachOutcome = "attached" | "redirecting";
 
 // one attach of a service into a catalog at a time per database: a second call (React's StrictMode, a double
-// click) gets the first one's outcome instead of consuming the IdP's answer twice
+// click) gets the first one's outcome instead of consuming the IdP's answer twice - its own options (onTokenChange
+// included) are not used
 const inFlight = new WeakMap<Database, Map<string, Promise<AttachOutcome>>>();
 
 /**
@@ -122,10 +125,7 @@ async function attachOnce(db: Database, path: string, options: AttachOptions): P
 	if (pageToken !== null && options.onTokenChange && !options.signal?.aborted) {
 		// each token the page renews, handed over on a connection of its own; the attached session takes it at its
 		// next call
-		const push = async (token: string) => {
-			if (options.signal?.aborted) {
-				return;
-			}
+		const handOverPushed = async (token: string) => {
 			const pushConn = await db.connect();
 			try {
 				await handOverToken(pushConn, service, token, issuer.issuer, insecureHttp);
@@ -133,9 +133,25 @@ async function attachOnce(db: Database, path: string, options: AttachOptions): P
 				await pushConn.close();
 			}
 		};
+		// the promise the page may await - and a failure reported even when it does not (a listener drops it)
+		const push = (token: string): Promise<void> => {
+			if (options.signal?.aborted) {
+				return Promise.resolve();
+			}
+			const handed = handOverPushed(token);
+			handed.catch((error) => (options.onTokenError ?? console.error)(error));
+			return handed;
+		};
 		const unsubscribe = options.onTokenChange(push);
 		if (unsubscribe && options.signal) {
 			options.signal.addEventListener("abort", () => unsubscribe(), { once: true });
+		}
+		// a renewal while tresor loaded and attached went to no one: the token as it is now, if it changed
+		if (typeof options.token === "function") {
+			const now = await options.token();
+			if (now && now !== pageToken) {
+				await push(now);
+			}
 		}
 	}
 	return "attached";

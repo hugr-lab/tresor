@@ -42,15 +42,16 @@ public:
 	void Set(const string &issuer, const string &service, PageToken token);
 	//! The token held for them; false when there is none (never handed over, or forgotten).
 	bool Find(const string &issuer, const string &service, PageToken &out);
-	//! Forget the service's tokens (from any issuer); every service's with an empty one. The services forgotten.
-	vector<string> Forget(const string &service);
+	//! Forget the service's token from that issuer (an empty service: every token; an empty issuer: the service's
+	//! from any). What was forgotten: (service, issuer), the service lower-cased.
+	vector<std::pair<string, string>> Forget(const string &service, const string &issuer);
 	~PageTokens() override;
 
 private:
 	static string Key(const string &issuer, const string &service);
 	mutex lock;
-	unordered_map<string, PageToken> tokens;  // by Key
-	unordered_map<string, string> service_of; // Key -> service, for Forget
+	unordered_map<string, PageToken> tokens;                   // by Key
+	unordered_map<string, std::pair<string, string>> login_of; // Key -> (service, issuer), for Forget
 };
 
 } // namespace tresor

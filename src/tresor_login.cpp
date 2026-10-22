@@ -632,6 +632,7 @@ JwtClaims ReadJwtClaims(const string &token) {
 		out.audiences = StrList(root, "aud");
 	}
 	out.issuer = Str(root, "iss");
+	out.subject = Str(root, "sub");
 	auto exp = yyjson_obj_get(root, "exp");
 	if (exp && yyjson_is_num(exp)) {
 		out.expires_at = int64_t(yyjson_get_num(exp));
@@ -940,6 +941,11 @@ LoginKey HandOverLogin(ClientContext &context, const AttachRequest &request, con
 static bool FindPageToken(ClientContext &context, const ServiceInfo &info, oidc::TokenSet &tokens) {
 	PageToken held;
 	if (!PageTokens::Get(*context.db)->Find(StripSlashes(info.issuer), info.host, held)) {
+		return false;
+	}
+	if (held.expires_at != 0 && held.expires_at <= NowSeconds()) {
+		// one the page let run out: not attached on (natively the person logs in; in wasm the page is asked for one)
+		std::fill(held.token.begin(), held.token.end(), '\0');
 		return false;
 	}
 	tokens.access_token = std::move(held.token);

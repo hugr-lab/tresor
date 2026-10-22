@@ -127,9 +127,7 @@ public:
 
 	//! A page's login (specs/043): where the page's next token is, read at every call. Set once, before the session
 	//! is shared.
-	void UsePageTokens(const shared_ptr<PageTokens> &store) {
-		page_tokens = store;
-	}
+	void UsePageTokens(const shared_ptr<PageTokens> &store);
 
 	//! DETACH: drop the tokens. Calls after this fail.
 	void Close();
@@ -224,6 +222,8 @@ private:
 	KeychainMode remember_mode = KeychainMode::OFF; // the mode it was remembered in: stored only while it holds
 	string remember_subject;                        // whose login it is: another person's stored since is not adopted
 	weak_ptr<PageTokens> page_tokens;               // specs/043: the page's tokens, the newest read at every call
+	string page_principal;   // whose the page's token in use says it is (iss|sub; empty: unknown)
+	size_t page_refused = 0; // the hash of a page token the service refused: not sent again
 };
 
 } // namespace tresor

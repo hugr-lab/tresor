@@ -36,7 +36,9 @@ service accepts: its `aud` must be the `audience` of the service's discovery.
 - **Keycloak**: an *audience* mapper on the application's client (or a client scope it requests) adds the service's
   audience to the application's own access token - one token serves both.
 - **Microsoft Entra ID**: a token has one audience. The application asks for a second one, silently, with the
-  service's scope (MSAL `acquireTokenSilent({ scopes: ["api://duckdb-secrets/access_as_user"] })`).
+  service's scope (MSAL `acquireTokenSilent({ scopes: ["api://duckdb-secrets/access_as_user"] })`). The service's
+  API registration issues v2.0 tokens (`accessTokenAcceptedVersion: 2`, as the [Entra setup](entra.md) has it): a
+  v1.0 token's issuer (`sts.windows.net`) is not the discovery's, and tresor refuses it.
 
 Then:
 
@@ -73,8 +75,14 @@ ATTACH 'tresor:secrets.corp.example' AS corp;
 - When the token expires (or the service refuses it) and no new one was handed over, queries fail with *the
   page's token … has expired or was refused - the page hands over a new one*. With oidc-client-ts's automatic silent
   renewal and `onTokenChange`, that does not happen while the application's own login lives.
-- The application logs its user out: `FROM tresor_logoff('corp')` forgets the token (and detaches; `detach := false`
-  keeps the catalog until the next token).
+- **Another user, or a token that does not say whose it is** (an opaque one): the catalog asks the service who it is
+  before going on, and everything held for the previous user goes - nothing of one user is served to the next.
+- The application logs its user out: `FROM tresor_logoff('corp')` forgets the token and empties the catalog of
+  everything held for that login (and detaches; `detach := false` keeps the catalog until the next token).
+  `tresor_logoff()` forgets every page token. Stop `onTokenChange` (its `signal`) too: a token pushed after the
+  logoff logs the catalog in again. A logoff by service, issuer and client id concerns remembered logins only.
+- A failed push (an expired token, one refused) rejects its promise and is reported to `onTokenError` (else
+  `console.error`).
 - `whoami().login` is `page`.
 
 ## The page

@@ -648,14 +648,16 @@ class Handler(BaseHTTPRequestHandler):
             return
         if url.path == "/_page_token":  # specs/043: the access token a web page holds - its claims as asked
             query = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
-            claims = {"iss": query.get("iss", self.base() + "/idp"), "exp": int(time.time()) + int(query.get("ttl", 300))}
+            identity = OTHER_PERSON if query.get("who") == "bob" else PERSON
+            claims = {"iss": query.get("iss", self.base() + "/idp"), "exp": int(time.time()) + int(query.get("ttl", 300)),
+                      "sub": identity["subject"]}
             if query.get("opaque"):
                 token = "opaque-" + secrets.token_urlsafe(12)
             else:
                 token = jwt_shaped(query.get("aud", "duckdb-secrets"), **claims)
             if not query.get("unknown"):  # unknown: a token the service will refuse (401)
                 with LOCK:
-                    TOKENS[token] = {"identity": PERSON, "uses": 0, "renewed": False}
+                    TOKENS[token] = {"identity": identity, "uses": 0, "renewed": False}
             self.send(200, json.dumps({"access_token": token}).encode().ljust(PAGE_TOKEN_SIZE))
             return
         if url.path == "/_stats":  # specs/012: what the IdP saw, for the tests

@@ -40,15 +40,23 @@ and every call uses the newest. tresor never renews it and never sees the applic
   on it: login flow **`page`** (`whoami().login`), nothing remembered, no login of tresor's own. Without one, as before
   (natively the person's login; in wasm "the page hands over its access token with tresor_web_token").
 - **Every call** of a `page` session reads the newest token (a lookup in memory): a token handed over after the ATTACH
-  is used from the next call. A token past its `exp`, or one the service refused (401), is not sent again: "the
-  page's token … has expired or was refused - the page hands over a new one".
-- **`tresor_logoff`**: `tresor_logoff('corp')` on a `page` catalog forgets its service's token (and detaches, unless
-  `detach := false` - then the catalog waits for the page's next token); `tresor_logoff()` forgets every page token.
-  Nothing is revoked: the refresh chain is the application's. A `page` session whose token was forgotten says
-  "logged off … the page hands over a token".
+  is used from the next call. A token past its `exp`, or one the service refused (401, remembered by its hash), is not
+  sent again: "the page's token … has expired or was refused - the page hands over a new one". An expired token is
+  not attached on either (natively the person logs in; in wasm the page is asked for one).
+- **Another user**: a new token whose `iss|sub` differs from the one in use, or that names none (opaque), is taken
+  up as a person's login is after a logoff (specs/025): the next call asks whoami first, and the catalog drops
+  everything held for the previous user (descriptors, material, variables) and audits `resumed` / `resumed_other`.
+  The same person's renewed token changes nothing.
+- **`tresor_logoff`**: `tresor_logoff('corp')` on a `page` catalog forgets the token of its service and issuer, and
+  logs off every catalog on it - emptied of everything held for that login, as a person's logoff does (detached,
+  unless `detach := false`: then the catalog waits for the page's next token, taken up as another user's would be).
+  `tresor_logoff()` forgets every page token. Nothing is revoked: the refresh chain is the application's. A logoff
+  by service, issuer and client id is a remembered login's only (a page has no client id).
 - **The helper** (`web/`): `token` (a string, or a function of one), `onTokenChange(push)` (the helper subscribes
-  after the ATTACH; `push` hands a token over on a connection of its own; the subscription's unsubscribe runs when
-  `signal` aborts). With `token` the helper neither logs in nor redirects.
+  after the ATTACH, then reads a token function once more and hands over one renewed meanwhile; `push` hands a token
+  over on a connection of its own, and its failure rejects the promise and goes to `onTokenError`, else
+  `console.error`; the subscription's unsubscribe runs when `signal` aborts). With `token` the helper neither logs in
+  nor redirects.
 - **No protocol change**: the service receives a bearer token as from any client.
 
 ## Enforcement & security
@@ -66,14 +74,20 @@ and every call uses the newest. tresor never renews it and never sees the applic
 - `test/sql/attach/web_token.test` (both HTTP clients): refusals (NULL, empty, a scheme, another audience, another
   issuer, expired, an acl session); the hand-over as the helper prepares it, `ATTACH` with no authorize and no
   refresh at the IdP, `whoami` (`page`, the person), the secrets, a variable; a refused token, then a new one taken by
-  the same session; an opaque token; a token expiring with none newer; `tresor_logoff('corp', detach := false)`
-  (logged off, then resumed by a new token); `tresor_logoff()`; an ATTACH with nothing handed over logs the person in.
+  the same session; an opaque token; a token expiring with none newer; `tresor_logoff('corp', detach := false)` (alice's
+  cached secret no longer served, then resumed by a new token); bob's token with no logoff between (whoami names bob,
+  alice's secret not served from the cache); another service behind the same issuer gets no page token;
+  `tresor_logoff()`; an ATTACH with nothing handed over, and one with an expired token, log the person in.
   The fake's `/_page_token` mints the person's token with the claims asked (`aud`, `iss`, `ttl`, `opaque`,
   `unknown`).
 - `test/wasm/shell.mjs` (in a browser, specs/042): the page's token handed over, ATTACH, `whoami` `page`, the secrets,
   a renewed token taken at the next call.
 - `web/test/attach.test.ts`: the token handed over as a parameter with no login or redirect, a token function, an
-  empty token refused before loading, each pushed token handed over until the signal aborts.
+  empty token refused before loading, each pushed token handed over until the signal aborts, a failed push reported,
+  a token renewed during the attach handed over.
+- The review's findings (an independent agent) are covered above: the cached secrets after a logoff and across users,
+  an expired token at ATTACH, the forget scoped to the catalog's issuer, the refused token not resent, the helper's
+  dropped push promise and its renewal gap.
 
 ## Alternatives considered
 

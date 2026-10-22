@@ -43,7 +43,7 @@ void PageTokens::Set(const string &issuer, const string &service, PageToken toke
 	auto &held = tokens[key];
 	std::fill(held.token.begin(), held.token.end(), '\0');
 	held = std::move(token);
-	service_of[key] = StringUtil::Lower(service);
+	login_of[key] = std::make_pair(StringUtil::Lower(service), issuer);
 }
 
 bool PageTokens::Find(const string &issuer, const string &service, PageToken &out) {
@@ -56,19 +56,19 @@ bool PageTokens::Find(const string &issuer, const string &service, PageToken &ou
 	return true;
 }
 
-vector<string> PageTokens::Forget(const string &service) {
+vector<std::pair<string, string>> PageTokens::Forget(const string &service, const string &issuer) {
 	lock_guard<mutex> guard(lock);
-	vector<string> forgotten;
+	vector<std::pair<string, string>> forgotten;
 	auto wanted = StringUtil::Lower(service);
 	for (auto entry = tokens.begin(); entry != tokens.end();) {
-		auto &name = service_of[entry->first];
-		if (!wanted.empty() && name != wanted) {
+		auto login = login_of[entry->first];
+		if ((!wanted.empty() && login.first != wanted) || (!issuer.empty() && login.second != issuer)) {
 			++entry;
 			continue;
 		}
-		forgotten.push_back(name);
+		forgotten.push_back(login);
 		std::fill(entry->second.token.begin(), entry->second.token.end(), '\0');
-		service_of.erase(entry->first);
+		login_of.erase(entry->first);
 		entry = tokens.erase(entry);
 	}
 	return forgotten;

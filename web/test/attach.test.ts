@@ -371,3 +371,48 @@ describe("attachTresor with the page's own login (specs/043)", () => {
 		assert.equal(w.prepared.length, 2, "nothing handed over after the abort");
 	});
 });
+
+describe("attachTresor's token pushes (specs/043, the review)", () => {
+	it("reports a push that fails, even when the page drops the promise", async () => {
+		const { db, options } = world();
+		let push: ((token: string) => Promise<void>) | undefined;
+		const errors: unknown[] = [];
+		await attachTresor(db, SERVICE, {
+			...options,
+			token: "at-1",
+			onTokenChange: (p) => {
+				push = p;
+			},
+			onTokenError: (e) => errors.push(e),
+		});
+		const failing: Database = {
+			...db,
+			connect: async () => {
+				throw new Error("closed");
+			},
+		};
+		// the same push, its database gone: rejected to whoever awaits, and reported
+		Object.assign(db, failing);
+		await assert.rejects(push!("at-2"), /closed/);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(errors.length, 1);
+	});
+
+	it("hands over a token renewed while it attached", async () => {
+		const { w, db, options } = world();
+		let current = "at-1";
+		await attachTresor(db, SERVICE, {
+			...options,
+			token: () => {
+				const value = current;
+				current = "at-2"; // the page renewed meanwhile
+				return value;
+			},
+			onTokenChange: () => {},
+		});
+		assert.deepEqual(
+			w.prepared.map((p) => p.params[1]),
+			["at-1", "at-2"],
+		);
+	});
+});

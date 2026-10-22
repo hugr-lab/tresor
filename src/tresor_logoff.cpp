@@ -261,9 +261,8 @@ void LogoffScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 		tresor::HttpScope http(tresor::HttpClient {transport, tresor::CaBundleFor(context)});
 		auto &data = input.bind_data->Cast<LogoffBindData>();
 		auto attached = Attached(context);
-		// a page's logins (specs/043): its tokens, by service; the catalogs attached on them
-		unordered_map<string, vector<string>> page_catalogs;
-		unordered_map<string, string> page_issuers;
+		// a page's logins named by catalog (specs/043): (service, issuer)
+		vector<std::pair<string, string>> page_logins;
 		vector<tresor::LoginKey> keys;
 		auto add = [&](const tresor::LoginKey &key) {
 			for (auto &known : keys) {
@@ -284,10 +283,10 @@ void LogoffScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 				named_found = true;
 				auto &session = *entry.second;
 				if (session.Flow() == LoginFlow::PAGE) {
-					auto service = StringUtil::Lower(session.Info().host);
-					page_catalogs[service].push_back(entry.first);
-					page_issuers[service] = session.Key().issuer;
-					continue;
+					if (!data.catalog.empty()) {
+						page_logins.emplace_back(StringUtil::Lower(session.Info().host), session.Key().issuer);
+					}
+					continue; // every page login is forgotten below
 				}
 				if (!IsPerson(session.Flow())) {
 					if (!data.catalog.empty()) {
@@ -317,29 +316,37 @@ void LogoffScan(ClientContext &context, TableFunctionInput &input, DataChunk &ou
 			state.rows.push_back(Forget(context, key, attached));
 		}
 		if (data.key.service.empty()) {
-			// the page's tokens forgotten: the sessions on them stop at their next call, until the page hands over a
-			// token again (nothing to revoke - the page's refresh chain is the page's)
+			// the page's logins (specs/043): their tokens forgotten, and every catalog on one logged off at once - its
+			// caches emptied, as a person's logoff does - until the page hands over a token again. Nothing to revoke:
+			// the refresh chain is the page's.
 			auto page = tresor::PageTokens::Get(*context.db);
-			std::map<string, bool> removed; // by service: a token forgotten now (false: a catalog on one gone before)
+			std::map<std::pair<string, string>, bool> logins; // (service, issuer) -> a token forgotten now
 			if (data.catalog.empty()) {
-				for (auto &service : page->Forget(string())) {
-					removed[service] = true;
+				for (auto &forgotten : page->Forget(string(), string())) {
+					logins[forgotten] = true;
 				}
 			}
-			for (auto &entry : page_catalogs) {
-				auto forgotten = !page->Forget(entry.first).empty();
-				removed[entry.first] = removed[entry.first] || forgotten;
+			for (auto &named : page_logins) {
+				auto forgotten = !page->Forget(named.first, named.second).empty();
+				logins[named] = logins[named] || forgotten;
 			}
-			for (auto &entry : removed) {
-				auto &service = entry.first;
+			for (auto &login : logins) {
 				Row row;
-				row.key.service = service;
-				row.key.issuer = page_issuers[service];
-				row.removed = entry.second;
-				row.catalogs = page_catalogs[service];
+				row.key.service = login.first.first;
+				row.key.issuer = login.first.second;
+				row.removed = login.second;
+				for (auto &entry : attached) {
+					auto &session = *entry.second;
+					if (session.Flow() == LoginFlow::PAGE &&
+					    StringUtil::Lower(session.Info().host) == row.key.service &&
+					    session.Key().issuer == row.key.issuer) {
+						session.LogOff();
+						row.catalogs.push_back(entry.first);
+					}
+				}
 				if (row.removed) {
 					tresor::Audited audited(tresor::TresorAudit::Get(*context.db), "logout", &context);
-					audited.event.host = service;
+					audited.event.host = row.key.service;
 					audited.event.login = "page";
 					audited.Detail("logoff").Ok();
 				}

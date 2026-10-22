@@ -97,6 +97,7 @@ struct JwtClaims {
 	bool is_jwt = false;
 	vector<string> audiences;
 	string issuer;
+	string subject;         // `sub`
 	int64_t expires_at = 0; // `exp`; 0 when absent
 };
 JwtClaims ReadJwtClaims(const string &token);

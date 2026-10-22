@@ -64,8 +64,9 @@ await attachTresor(db, "tresor:secrets.corp.example", {
 
 Steps 2 and 4 above become: the token handed over with `FROM tresor_web_token(?, ?, issuer := ?, insecure_http := ?)`,
 a prepared statement's parameter; each one `push` gets, on a connection of its own. tresor uses the newest at every
-call and never renews it. The token's `aud` must be the discovery's `audience` (a Keycloak audience mapper; with
-Entra, a second token acquired silently for the service's scope).
+call and never renews it; a token of another user empties the catalog of the previous one's first. A failed push
+rejects its promise and goes to `onTokenError` (else `console.error`). The token's `aud` must be the discovery's
+`audience` (a Keycloak audience mapper; with Entra, a v2.0 token acquired silently for the service's scope).
 
 ## Trusting the extension
 
