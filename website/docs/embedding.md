@@ -5,8 +5,9 @@ title: In your application
 
 # tresor in your application
 
-Any program that embeds DuckDB 2.0 can use tresor the same way the CLI does. That includes Python, Go, Rust, .NET, Java
-(JDBC) and a web page (DuckDB-wasm). It loads tresor, logs in once and attaches the secrets service. From then on its
+Any program that embeds DuckDB 2.0 can use tresor the same way the CLI does: Python, Go, Rust and Java (JDBC) today,
+.NET and a web page (DuckDB-wasm) as their packages reach 2.0. It loads tresor, logs in once and attaches the secrets
+service. From then on its
 queries find the right secret by scope (`FROM 's3://lake/…'`, `ATTACH 'postgres:…'`), and nothing secret lives in the
 application's configuration.
 
@@ -29,6 +30,11 @@ be 2.0:
 | .NET | DuckDB.NET: not yet on 2.0 (1.5.x); the code below waits for it |
 | Browser | DuckDB-wasm on 2.0: not on npm yet, see [In a web application](./web.md) |
 
+:::note Release
+The application's own login (`tresor_web_token`), `whoami`'s `name` and the login `page` come with the first release
+after 0.1.0; until then, build tresor from `main`. The other logins below work with 0.1.0.
+:::
+
 ## Which login
 
 | Who uses the application | The login | |
@@ -49,12 +55,16 @@ discovery. Then it passes that token to tresor:
   query. tresor never renews the token, and the application's refresh token never reaches it;
 - **to one DuckDB instance per user**: the token is kept in that instance's memory, for that service.
 
-A token for another audience or issuer, or one already expired, is refused and never sent. When a token of another
-user arrives, the catalog empties itself of everything held for the previous one. When the user logs out, call
-`FROM tresor_logoff('corp')`. `corp.whoami()` reports the login as `page`.
+A JWT for another audience or issuer, or one already expired, is refused and never sent; an opaque token is taken as
+the application's word. When a token of another user arrives, the catalog empties itself of everything held for the
+previous one. When the user logs out, call `FROM tresor_logoff('corp')`: it forgets the token and detaches `corp`
+(`detach := false` keeps the catalog for the next token). `corp.whoami()` reports the login as `page`.
 
-The examples below are the whole flow. The extension is installed from DuckDB's community repository, and `token`
-comes from the application's login.
+Hand over a valid token **before** the `ATTACH`: an ATTACH with no valid token for the service (none yet, or an expired
+one) is a person's login instead - in a backend, a browser that never opens. A backend sets `LOGIN` nowhere: an ATTACH
+that names a login mode logs a person in and ignores the token.
+
+The examples below are the whole flow; `token` comes from the application's login.
 
 ### Python
 
@@ -82,7 +92,7 @@ import (
 )
 
 db, err := sql.Open("duckdb", "")
-// LOAD and SET apply to the instance, ATTACH to its databases; one connection keeps it simple
+// a plain SET is per connection, and database/sql pools them: one connection keeps settings in one place
 db.SetMaxOpenConns(1)
 _, err = db.Exec("INSTALL tresor FROM community")
 _, err = db.Exec("LOAD tresor")

@@ -20,8 +20,8 @@ FROM 's3://lake/sales/*.parquet';                      -- found by scope, like a
 ```
 
 :::note Status
-Everything on this site works today (in a browser, from the first release after 0.1.0 and DuckDB-wasm on
-2.0 - see [In a web application](./web.md)): attaching, the logins of people (from any client) and of
+Everything on this site works today, except what is marked for the next release (an application's own token, and
+the browser, which also needs DuckDB-wasm on 2.0 - see [In a web application](./web.md)): attaching, the logins of people (from any client) and of
 services and pipelines, the secrets in DuckDB's lookup, writes and grants, variables, dynamic
 secrets, acting for duckdb-acl's sessions and the audit. Released: tresor 0.1.0, for DuckDB 2.0.0
 (`INSTALL tresor FROM community;`), and the [protocol](./protocol.md) is version 1.
@@ -43,8 +43,8 @@ secrets, acting for duckdb-acl's sessions and the audit. Released: tresor 0.1.0,
 ## Where to next
 
 - [Getting started](./getting-started.md) — the first attach, for a person and for a service.
-- [In your application](./embedding.md) — tresor in a program that embeds DuckDB (Python, Go, Rust, .NET, the
-  browser), with the application's own login.
+- [In your application](./embedding.md) — tresor in a program that embeds DuckDB (Python, Go, Rust, Java; .NET
+  and the browser as they reach 2.0), with the application's own login.
 - [From DuckDB UI, Python and IDEs](./clients.md) and [Pipelines](./pipelines.md) — logging in where
   you run DuckDB.
 - [Concepts](./concepts.md) — the attached catalog, lookup, persistence, acting for users.
