@@ -30,6 +30,7 @@ done
 cp "$extension" "$web/tresor.duckdb_extension.wasm"
 # what LOAD will resolve: every symbol tresor imports is exported by this engine (or tresor itself)
 python3 "$root/scripts/ci/wasm_imports.py" "$extension" "$web/static/assets/duckdb-eh.f88168bf7a.wasm"
+python3 "$root/scripts/ci/wasm_imports.py" --memory plain "$extension"
 
 python3 "$root/test/fake/fake_service.py" --port-file "$work/port" --web-dir "$web" &
 fake_pid=$!

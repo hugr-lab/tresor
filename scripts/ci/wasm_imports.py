@@ -2,11 +2,15 @@
 """specs/042: what a wasm extension needs from the DuckDB-wasm that loads it.
 
     wasm_imports.py <extension .wasm> <duckdb-wasm engine .wasm>
+    wasm_imports.py --memory shared|plain <extension .wasm>
 
 Every function or global the extension imports from `env` (or through `GOT.func` / `GOT.mem`) must be exported
 by the engine or by the extension itself (emscripten imports a side module's own default-visibility symbols too,
 and resolves them to its exports): what neither has cannot be resolved when the extension is LOADed - OpenSSL,
 sockets, a symbol the engine does not export. The loader's own (`__memory_base`, `__table_base`) are set by it.
+
+`--memory`: the memory the extension imports must be shared (a wasm_threads engine's is, and an extension that
+imports a plain one cannot be linked into it - specs/044) or plain (wasm_eh, wasm_mvp).
 """
 import sys
 
@@ -72,6 +76,29 @@ def imports(data):
     return out
 
 
+def imported_memory_shared(data):
+    """Is the memory the module imports shared (limits flag 0x02); None when it imports none."""
+    for section, i in sections(data):
+        if section != 2:
+            continue
+        count, i = leb(data, i)
+        for _ in range(count):
+            _, i = name(data, i)
+            _, i = name(data, i)
+            kind, i = data[i], i + 1
+            if kind == 0:
+                _, i = leb(data, i)
+            elif kind == 1:
+                i = limits(data, i + 1)
+            elif kind == 2:
+                return bool(data[i] & 0x02)
+            elif kind == 3:
+                i += 2
+            elif kind == 4:
+                _, i = leb(data, i + 1)
+    return None
+
+
 def exports(data):
     out = set()
     for section, i in sections(data):
@@ -86,6 +113,14 @@ def exports(data):
 
 
 def main():
+    if len(sys.argv) == 4 and sys.argv[1] == "--memory" and sys.argv[2] in ("shared", "plain"):
+        shared = imported_memory_shared(open(sys.argv[3], "rb").read())
+        if shared is None or shared != (sys.argv[2] == "shared"):
+            found = "no" if shared is None else "shared" if shared else "plain"
+            print("wasm_imports: the extension imports %s memory, not %s" % (found, sys.argv[2]))
+            sys.exit(1)
+        print("wasm_imports: the extension imports %s memory" % sys.argv[2])
+        return
     if len(sys.argv) != 3:
         raise SystemExit(__doc__)
     extension = open(sys.argv[1], "rb").read()

@@ -38,3 +38,22 @@ jobs:
       VCPKG_CACHING_AWS_SECRET_ACCESS_KEY: ${{ secrets.VCPKG_CACHING_AWS_SECRET_ACCESS_KEY }}
       VCPKG_CACHING_AWS_ENDPOINT_URL: ${{ secrets.VCPKG_CACHING_AWS_ENDPOINT_URL }}
       VCPKG_CACHING_AWS_DEFAULT_REGION: ${{ secrets.VCPKG_CACHING_AWS_DEFAULT_REGION }}
+
+  # specs/044: what a DuckDB-wasm will link - a wasm_threads build imports shared memory (else no threads engine
+  # loads it: USE_WASM_THREADS, the Makefile), wasm_eh and wasm_mvp a plain one
+  wasm-memory:
+    name: wasm memory
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: '*-wasm_*'
+          path: wasm
+      - name: The memory each wasm build imports
+        run: |
+          set -e
+          python3 scripts/ci/wasm_imports.py --memory shared wasm/*-wasm_threads/tresor.duckdb_extension.wasm
+          python3 scripts/ci/wasm_imports.py --memory plain wasm/*-wasm_eh/tresor.duckdb_extension.wasm
+          python3 scripts/ci/wasm_imports.py --memory plain wasm/*-wasm_mvp/tresor.duckdb_extension.wasm

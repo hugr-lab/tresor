@@ -32,8 +32,9 @@ ATTACH prefix works).
   `tresor_http_client = 'duckdb'` puts DuckDB's HTTPUtil under it (specs/020; the only one in wasm).
 - **Platforms**: Linux, macOS, Windows, wasm. wasm (specs/020, 042: `make wasm_eh`, no `GEN=ninja`, emsdk 6.0.9 as
   extension-ci-tools, `OVERRIDE_GIT_DESCRIBE=v2.0.0` locally) has no built-in client - no OpenSSL, sockets or threads
-  of its own - and runs on DuckDB's HTTP client with the page's login (`tresor_web_login`); CI LOADs it in
-  DuckDB-wasm's own shell in Chromium (`scripts/ci/test_wasm.sh`).
+  of its own - and runs on DuckDB's HTTP client with the page's login (`tresor_web_login`, or its token:
+  `tresor_web_token`, specs/043); CI LOADs it in DuckDB-wasm's own shell in Chromium (`scripts/ci/test_wasm.sh`).
+  `make wasm_threads` turns on `USE_WASM_THREADS` (the Makefile, specs/044): shared memory, or no threads build loads it.
 
 ## Project structure
 

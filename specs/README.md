@@ -61,3 +61,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | [041](041-whoami-name/spec.md) | whoami names the person - an optional `name`, for people to read | implemented |
 | [042](042-wasm-build/spec.md) | the wasm build that loads - no OpenSSL, no sockets; proven in DuckDB-wasm's shell | implemented |
 | [043](043-page-token/spec.md) | the application's own login - its access token handed over (`tresor_web_token`), no second login | implemented |
+| [044](044-wasm-threads-memory/spec.md) | wasm_threads that a threads DuckDB-wasm can load - shared memory (`USE_WASM_THREADS`) | implemented |
