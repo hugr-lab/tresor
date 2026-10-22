@@ -1,6 +1,6 @@
 # Spec 040: a person's device login at a Keycloak that enforces PKCE
 
-- **Status**: accepted (duckdb-ext-common spec 017 merged and tagged: then the pin)
+- **Status**: implemented (duckdb-ext-common v0.14.0)
 - **Date**: 2026-10-22
 - **Author**: hugr lab
 - **Asked by**: found by the owner's announcement run (2026-10-21): `tresor_login(…, login := 'device')` against
