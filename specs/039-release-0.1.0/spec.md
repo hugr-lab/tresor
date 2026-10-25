@@ -53,3 +53,11 @@ published: no community build and no GitHub Release used it. The docs site is de
 ## Testing
 
 Docs only here: the docs build (`onBrokenLinks: throw`) and `check_docs_links.py`.
+
+## 0.1.1 (2026-10-25)
+
+A pre-release review of the docs (tresor-server's session, at the owner's request) found pages missing from the
+sidebar, unlinked tresor-server pages, examples at odds with the protocol's text and no SQL reference. Fixed in #79;
+the owner chose a new version over moving `v0.1.0` again: `v0.1.1`, docs only. `description.yml` names 0.1.1 and,
+after the tag, `repo.ref` the tagged commit's full SHA (the maintainers' rule, as in mssql's descriptor); its
+extended description no longer mentions duckdb-acl, not released yet. The community PR submits 0.1.1.
