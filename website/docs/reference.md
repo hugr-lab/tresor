@@ -23,7 +23,7 @@ before tresor sees the path.
 | `SECRET` | a `tresor` secret's name | the one whose `SCOPE` covers the path | A service's login (below). Not with `LOGIN`. |
 | `INSECURE_HTTP` | boolean | `false` | Plain http, for a service on this machine only (`127.0.0.1`, `::1`, `localhost`). |
 | `LOGIN_TIMEOUT` | seconds | `300` | How long a person's login waits. |
-| `REMEMBER` | boolean | `true` | Keep a person's login in the credential store (`tresor_keychain`). Refused for a service's login. |
+| `REMEMBER` | boolean | `true` | Keep a person's login in the credential store (`tresor_keychain`). `REMEMBER true` is refused for a service's login. |
 | `ACT_FOR_SESSIONS` | boolean | `false` | On a duckdb-acl node: act for each session's user ([Concepts](./concepts.md#on-a-duckdb-acl-node)). Needs a service login of flow `client_credentials` or `federated`. |
 | `EXCHANGE` | `'token_exchange'`, `'on_behalf_of'` | `'token_exchange'` | With `ACT_FOR_SESSIONS`: RFC 8693, or Entra's On-Behalf-Of. |
 | `EXCHANGE_SCOPE` | text | — | With `ACT_FOR_SESSIONS`: the scope asked for. Required with `on_behalf_of` (`api://…/.default`). |
@@ -41,8 +41,8 @@ names. Only `FLOW` and the options of that flow are accepted:
 
 | `FLOW` | Required | One of | Optional |
 | --- | --- | --- | --- |
-| `client_credentials` | `CLIENT_ID`, `ISSUER` | `CLIENT_SECRET`, `PRIVATE_KEY_FILE` | `OAUTH_SCOPE`, `KEY_ID`, `CERTIFICATE_FILE` (with `PRIVATE_KEY_FILE`) |
-| `federated` | `CLIENT_ID`, `ISSUER` | `ASSERTION_FILE`, `ASSERTION_SOURCE` (`'github_actions'` with `ASSERTION_AUDIENCE`, `'azure_managed_identity'`) | `OAUTH_SCOPE`, `ASSERTION_AUDIENCE`, `IDENTITY_CLIENT_ID` (with `azure_managed_identity`) |
+| `client_credentials` | `CLIENT_ID`, `ISSUER` | `CLIENT_SECRET`, `PRIVATE_KEY_FILE` | `OAUTH_SCOPE`, `KEY_ID`, `CERTIFICATE_FILE` (both with `PRIVATE_KEY_FILE`) |
+| `federated` | `CLIENT_ID`, `ISSUER` | `ASSERTION_FILE`, `ASSERTION_SOURCE` (`'github_actions'` with `ASSERTION_AUDIENCE`, `'azure_managed_identity'`) | `OAUTH_SCOPE`, `ASSERTION_AUDIENCE` (with `ASSERTION_SOURCE`), `IDENTITY_CLIENT_ID` (with `azure_managed_identity`) |
 | `managed_identity` | `ISSUER`, `AUDIENCE` | — | `CLIENT_ID` (a user-assigned identity) |
 | `token` | `TOKEN` | — | — |
 
@@ -74,7 +74,7 @@ requests unless `allowed_directories` / `allowed_paths` name their URL ([Securit
 | `tresor_logoff([catalog] [, service := …, issuer := …, client_id := …, detach := …])` | `service`, `issuer`, `client_id`, `removed`, `revoked`, `detached` | Forget a login: every login attached here, the one of a catalog, or one named by service, issuer and client id (all three). Also forgets an application's tokens (`tresor_web_token`). `detach := false` keeps the catalogs, waiting for the next login. |
 | `tresor_web_login(service, refresh_token [, issuer := …, insecure_http := …])` | `service`, `issuer`, `client_id` | A login made elsewhere (a web page), handed over by its refresh token, in memory only ([In a web application](./web.md)). |
 | `tresor_web_token(service, access_token [, issuer := …, insecure_http := …])` | `service`, `issuer`, `expires_at` | The application's own access token for the service, and each renewed one ([In your application](./embedding.md)). |
-| `tresor_secret_param(secret, key)` | `VARCHAR` | One parameter of a secret as DuckDB holds it, with its type (`INTEGER 1433`). A redacted key shows its type only. Needs `allow_unredacted_secrets`. A diagnostic. |
+| `tresor_secret_param(secret, key)` | `VARCHAR` | One parameter of a secret as DuckDB holds it, with its type (`INTEGER 1433`). A redacted key shows `<TYPE> <redacted>`. Needs `allow_unredacted_secrets`. A diagnostic. |
 
 `service` is `'tresor:<host>'`, as in `ATTACH`. Pass tokens as prepared-statement parameters, never in the
 statement's text.
@@ -118,11 +118,11 @@ With `tresor_audit_level` other than `off` and DuckDB's logging on for the `tres
 | `principal`, `user` | who the call was for: the login's subject, and on a duckdb-acl node the session's user |
 | `acl_session`, `correlation_id`, `traceparent` | on a duckdb-acl node: the session, and the statement's correlation id and trace context |
 | `secret`, `secret_type` | the secret's name and type, never its material |
-| `cached` | served from tresor's memory, no service call |
+| `cached` | always false in a row: a lookup served from tresor's memory is counted, not logged |
 | `dynamic` | the secret is generated per caller |
 | `target` | `grant` / `revoke`: the `role:` or `group:` principal |
 | `duration_us` | the service calls' time; NULL when none was made |
-| `detail` | what kind of event within its `kind`: for `login` e.g. `remembered`, `web_login`, `web_token`, `act_for_sessions`, `resumed`, `resumed_other`; for `logout` `logoff` or `logoff_revoked`; for `session_grant` `obtained`, `failed`, `revoked`, `rejected`, `expired` |
+| `detail` | what kind of event within its `kind`: for `login` e.g. `remembered`, `web_login`, `web_token`, `act_for_sessions`, `resumed`, `resumed_other`; for `logout` `logoff` or `logoff_revoked` (none at DETACH); for `session_grant` `obtained`, `failed`, `revoked`, `rejected`, `expired` |
 | `seq` | per instance, increasing, in delivery order |
 
 The same events reach an exporter through the `tresor_audit` contract (acl-otel), with the same fields.
