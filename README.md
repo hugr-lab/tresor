@@ -10,7 +10,7 @@ ATTACH 'tresor:secrets.corp.example' AS corp;          -- browser login, once
 FROM corp.secrets();                                   -- what your role may use
 ATTACH '' AS crm (TYPE mssql, SECRET crm_ro);          -- a secret from the service
 FROM 's3://lake/sales/*.parquet';                      -- found by scope, like any secret
-CREATE PERSISTENT SECRET lake_rw IN corp (TYPE s3, …); -- stored in the service, if your role may
+CREATE PERSISTENT SECRET lake_rw IN corp (TYPE s3, …); -- stored in the service, by an administrator
 ```
 
 - **A client, not a vault** — the service is anything implementing the open protocol

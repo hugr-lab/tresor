@@ -36,6 +36,42 @@ tresor is never statically linked: the test shell does not contain it, so a test
 (`LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension'`) or install it from the
 build's local repository.
 
+## wasm and the web helper
+
+The wasm builds use emscripten 6.0.9, as DuckDB's extension-ci-tools does. They take no `GEN=ninja`, and
+need DuckDB's version stamp (a shallow submodule has no tag, and DuckDB-wasm refuses an extension stamped
+otherwise):
+
+```bash
+source <emsdk>/emsdk_env.sh                 # emsdk 6.0.9 active
+OVERRIDE_GIT_DESCRIBE=v2.0.0 make wasm_eh   # also wasm_mvp, wasm_threads (shared memory, specs/044)
+(cd test/wasm && npm ci && npx playwright install chromium)   # once
+scripts/ci/test_wasm.sh                     # DuckDB-wasm's own shell LOADs it in Chromium, against the fake
+(cd web && npm ci && npm test)              # the page's helper @hugr-lab/tresor-web (needs the duckdb submodule)
+```
+
+The wasm and native builds share `build/extension_configuration`: delete it when switching between
+`make wasm_*` and `GEN=ninja make`.
+
+## Building tresor into another extension
+
+An extension can carry tresor inside itself instead of loading it, as hugr-node's `hugr_node` does
+(specs/024). Its CMake sets `TRESOR_EMBEDDED` and includes `tresor_sources.cmake`, which defines
+`TRESOR_SOURCES`, the include directories and OpenSSL:
+
+```cmake
+set(TRESOR_EMBEDDED ON)
+include(<tresor>/tresor_sources.cmake)
+build_static_extension(my_ext src/my_ext.cpp ${TRESOR_SOURCES})
+build_loadable_extension(my_ext " " src/my_ext.cpp ${TRESOR_SOURCES})
+tresor_configure_targets(my_ext_extension my_ext_loadable_extension)
+```
+
+Its own entry point calls `duckdb::LoadTresorCore(loader)` (`tresor_extension.hpp`). tresor's entry
+point is not compiled then, and `tresor_version()` still answers tresor's version.
+`test/extension/tresor_embedder/` is the tested example. Built beside duckdb-acl in one image, both must
+carry the same duckdb-ext-common headers: the build refuses otherwise.
+
 ## Pins
 
 tresor is built for **DuckDB 2.0.0** (the `v2.0.0` tag) at the same duckdb commit as

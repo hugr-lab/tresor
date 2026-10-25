@@ -58,7 +58,7 @@ The first release, with DuckDB 2.0.0. The protocol `duckdb-secrets/1` is version
   remembered in memory), CORS in the protocol and the reference server (`cors_origins`), and the page's
   helper `@hugr-lab/tresor-web` (`attachTresor`: the extension verified and loaded, the login handed over).
 - **The application's own login** (specs/043): an application that logs its users in - a web page, or any program
-  that embeds DuckDB (Python, Go, Rust, .NET) - hands tresor its access token for the service, and each renewed one,
+  that embeds DuckDB (Python, Go, Rust, Java; .NET with DuckDB.NET on 2.0) - hands tresor its access token for the service, and each renewed one,
   with `tresor_web_token`: no second login, and its refresh token never leaves it. `whoami().login` is `page`;
   another user's token empties the catalog of the previous one's; `attachTresor` takes `token`, `onTokenChange`.
 - **Log in from any client** (specs/025): `tresor_login()` answers at once with the link and device code

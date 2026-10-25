@@ -87,7 +87,7 @@ Why each matters:
   ```
 
 - **A new role** shows in the next token: DETACH and ATTACH again (a remembered login is
-  refreshed then). If it is still missing, `CALL tresor_logoff()` and ATTACH: that logs in through
+  refreshed then). If it is still missing, `FROM tresor_logoff()` and ATTACH: that logs in through
   the browser.
 - **Assignment required.** Without it, any user and any application in the tenant can get a token
   for the API. It has no roles, but it still is a `subject:` (or a `client:`) the service knows.
@@ -273,8 +273,9 @@ policy:
 - **One tenant per issuer entry.** The server matches `iss` exactly. A multi-tenant API needs an
   entry per tenant; `/common` and `/organizations` are never an issuer.
 - **Secrets that carry the caller's own token** (`mint+exchange://`,
-  [concepts](./concepts.md#a-token-for-the-caller)) do not work with Entra in the reference server
-  yet. It mints them with RFC 8693 token exchange; Entra's equivalent is On-Behalf-Of.
+  [concepts](./concepts.md#a-token-for-the-caller)) do not work with Entra in the reference server: it
+  mints them with RFC 8693 token exchange, and Entra's equivalent is On-Behalf-Of. tresor-server mints
+  them with On-Behalf-Of ([token exchange](https://hugr-lab.github.io/tresor-server/token-exchange/)).
 
 ## 6. DuckDB
 
@@ -409,6 +410,6 @@ scripts/dev/entra_live.sh
 | a managed identity: `names the audience '<client id>', but the managed identity's secret is for 'api://…'` | `AUDIENCE` is the Application ID URI | `AUDIENCE` is the API's client id, as the service's audience |
 | a person's groups are missing | the groups overage (over 200 groups) | grant through app roles |
 | an administrator does not find a secret they created | an administrator's role gives no `use` | grant `use` to a role the administrator holds |
-| whoami lacks a role just assigned | the token was issued before the assignment | DETACH and ATTACH; if still missing, `CALL tresor_logoff()` |
+| whoami lacks a role just assigned | the token was issued before the assignment | DETACH and ATTACH; if still missing, `FROM tresor_logoff()` |
 | the portal offers no role to pick | *Add user/group* takes one role, and may offer only one | the Graph call under step 1 |
 | a node has `client:…` but no `role:nodes` | the node's registration lacks the API's **application** permission (a new registration has only Graph's `User.Read`) | API permissions → Add → duckdb-secrets → **Application permissions** → `nodes`, then **Grant admin consent** |
