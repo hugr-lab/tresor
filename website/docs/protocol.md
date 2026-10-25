@@ -109,6 +109,9 @@ fixes only what a client sees.
   a client trusts it no further. A server acting for users does not take the discovery's audience
   as proof when this is set: it pins the exchange audience itself.
 - `client_id` — a **public** client for people (authorization code with PKCE, loopback redirect).
+- `capabilities.write`, `capabilities.annotate` — whether the service accepts [writes](#secrets) and
+  comments (`PATCH`). Informational: a client sends a write regardless and acts on the answer
+  (`403 no_verb`), as for any verb.
 - `capabilities.dynamic` — whether the service may serve [dynamic secrets](#dynamic-secrets).
   Informational: a client reads each descriptor's `dynamic`.
 - `capabilities.delegation` — whether the optional [delegation](#delegation) resources exist.
@@ -128,7 +131,7 @@ fixes only what a client sees.
   "roles": ["role:analysts", "group:sales"],
   "actor": null,
   "expires_at": "2026-09-18T17:00:00Z",
-  "permissions": {"create": ["team_a_*"]}
+  "permissions": {"create": false}
 }
 ```
 
@@ -261,7 +264,7 @@ principals are administrators is the service's configuration.
 
 | Verb | Level | Held by |
 | --- | --- | --- |
-| `create` | service | administrators, for secrets and variables (in `whoami`: `permissions.create` is `true` or `false`) |
+| `create` | service | administrators, for secrets and variables (in `whoami`: `permissions.create`, [above](#identity)) |
 | `use` | secret | the principals a grant names: roles and groups |
 | `update` | secret | administrators: replace params / material |
 | `delete` | secret | administrators |
@@ -329,7 +332,8 @@ secret: it takes no part in a secret lookup, and a client reads it only by name.
 - **The value is a UTF-8 string.** A service MAY refuse a longer value than it keeps (`422
   invalid_secret`); 64 KiB is always accepted.
 - **References.** A service MAY let a value name where its content lives: a vault, a key store. Its
-  syntax is the service's own (tresor-server: `ref+azkv://…`). The service resolves it when the value
+  syntax is the service's own (tresor-server: `ref+vault://…`, `ref+azkv://…`, `ref+aws://…`, `ref+gcp://…`,
+  `ref+k8s://…` - [references](https://hugr-lab.github.io/tresor-server/references/)). The service resolves it when the value
   is read, and the client receives the resolved string. A service that does not resolve references
   stores a value as it was written. Only an administrator writes a reference, and only to a store
   the service allows. A reference that does not resolve fails the read: `503 service_unavailable`

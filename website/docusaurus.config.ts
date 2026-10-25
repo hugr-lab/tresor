@@ -108,6 +108,11 @@ const config: Config = {
           position: 'left',
         },
         {
+          href: 'https://hugr-lab.github.io/tresor-server/',
+          label: 'tresor-server',
+          position: 'right',
+        },
+        {
           href: site.home,
           label: 'Hugr Lab',
           position: 'right',
@@ -148,6 +153,7 @@ const config: Config = {
           title: 'Hugr Lab',
           items: [
             {label: 'Main site', href: site.home},
+            {label: 'tresor-server', href: 'https://hugr-lab.github.io/tresor-server/'},
             {label: 'DuckDB MSSQL Extension', href: 'https://hugr-lab.github.io/mssql-extension/'},
           ],
         },

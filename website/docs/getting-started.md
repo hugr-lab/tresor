@@ -7,7 +7,7 @@ title: Getting started
 
 ## Install
 
-tresor needs DuckDB 2.0.
+tresor needs DuckDB 2.0.0 exactly: an extension loads only into the DuckDB version it was built for.
 
 ```sql
 INSTALL tresor FROM community;
@@ -34,8 +34,9 @@ provider to use, and logs you in:
 - in a browser (authorization code + PKCE, redirected back to a local port), or
 - with a device code, when there is no browser (SSH, containers) — the URL and code are printed.
 
-`LOGIN 'auto'` (the default) opens a browser when it can: always on macOS and Windows, and on Linux
-when a display is set. Otherwise it uses the device code. `LOGIN 'browser'` and `LOGIN 'device'`
+`LOGIN 'auto'` (the default) opens a browser when it can: always on Windows, on macOS unless DuckDB
+runs over SSH (`SSH_CONNECTION` or `SSH_TTY` set), on Linux when a display is set (`DISPLAY` or
+`WAYLAND_DISPLAY`), and anywhere `BROWSER` is set. Otherwise it uses the device code. `LOGIN 'browser'` and `LOGIN 'device'`
 choose explicitly. The environment variable `BROWSER` names the program to open the URL with. The
 login waits up to `LOGIN_TIMEOUT` seconds (300 by default), and Ctrl-C cancels it.
 
@@ -59,7 +60,7 @@ KWallet). It is never kept in a file.
 ATTACH 'tresor:secrets.corp.example' AS corp;               -- the browser, once
 -- ... a new DuckDB process, the next day:
 ATTACH 'tresor:secrets.corp.example' AS corp;               -- no browser
-CALL tresor_logoff();                                       -- forget it, revoke it at the IdP
+FROM tresor_logoff();                                       -- forget it, revoke it at the IdP
 ```
 
 - `REMEMBER false` on an ATTACH neither reads nor writes the store.
@@ -285,13 +286,15 @@ CALL corp.drop_variable('lake_bucket', if_exists := true);
   error, fallback or not, and so does a reference the service cannot resolve.
 - **A name is a string, sent as given:** `'Lake_Bucket'` and `'lake_bucket'` are two variables.
 - **References.** A service may let an administrator write a value that names where its content lives,
-  such as a vault (tresor-server: `ref+azkv://…`). You receive the resolved string, and such a value is
-  marked `sensitive`.
+  such as a vault (tresor-server: `ref+vault://…`, `ref+azkv://…`, `ref+aws://…`, `ref+gcp://…`,
+  `ref+k8s://…` - [references](https://hugr-lab.github.io/tresor-server/references/)). You receive the
+  resolved string, and such a value is marked `sensitive`.
 - **Sensitive values are handled as secret material.** They never reach the audit or a log, and each
   caller caches its own, for no longer than a secret's material. Other values are cached for 30
   seconds, and a write through tresor is read at once.
 - **Generated values.** A service may generate a value on each read - a token minted for you - and
-  give it an expiry, with a syntax of its own (tresor-server's `mint+…`, since its v0.6.0).
+  give it an expiry, with a syntax of its own (tresor-server's `mint+…`, since its v0.6.0:
+  [variables](https://hugr-lab.github.io/tresor-server/variables/)).
   tresor keeps it until shortly before it expires, as a dynamic secret (specs/037).
 
 ### A token in a DuckDB setting: MotherDuck

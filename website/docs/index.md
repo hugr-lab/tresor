@@ -47,6 +47,11 @@ secrets, acting for duckdb-acl's sessions and the audit. Released: tresor 0.1.0,
   and the browser as they reach 2.0), with the application's own login.
 - [From DuckDB UI, Python and IDEs](./clients.md) and [Pipelines](./pipelines.md) — logging in where
   you run DuckDB.
+- [In a web application](./web.md) — DuckDB-wasm in a page, on the page's own login.
+- [Microsoft Entra ID](./entra.md) — the app registrations and the service's issuer entry.
 - [Concepts](./concepts.md) — the attached catalog, lookup, persistence, acting for users.
+- [SQL reference](./reference.md) — ATTACH options, the `tresor` secret, settings, functions, the audit.
 - [Protocol](./protocol.md) — the specification a secrets service implements.
+- [Reference server](./reference-server.md) — the protocol in a small Go server, and the conformance suite;
+  production: [tresor-server](https://hugr-lab.github.io/tresor-server/).
 - [Security model](./security.md) — what a role can and cannot protect, and why delegation matters.

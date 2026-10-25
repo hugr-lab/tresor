@@ -9,8 +9,8 @@ title: Reference server
 protocol in Go. It exists for two reasons: tresor's end-to-end tests run against it next to a real
 Keycloak, and a company writing its own service can read it to see the protocol working end to end.
 It is **not meant for production**: one process, one encrypted file, no high availability.
-A production service is being designed separately:
-[tresor-server](https://github.com/hugr-lab/tresor-server).
+The production service is [tresor-server](https://github.com/hugr-lab/tresor-server), released separately
+([its docs](https://hugr-lab.github.io/tresor-server/)).
 
 ## What it implements
 
@@ -128,10 +128,10 @@ of a secret of any type, with the provider the consuming extension knows:
 
 | Value | Generates | Reference server |
 | --- | --- | --- |
-| `mint+exchange://<audience>[?scope=<scope>]` | a token for the caller at the identity provider, for `<audience>` (RFC 8693, [below](#a-token-for-the-caller)) | yes |
+| `mint+exchange://<audience>[?scope=<scope>]` | a token for the caller at the identity provider, for `<audience>` (RFC 8693, [below](#a-token-for-the-caller); tresor-server also by Entra On-Behalf-Of: [token exchange](https://hugr-lab.github.io/tresor-server/token-exchange/)) | yes |
 | `mint+claim://<claim>` | the text of a claim of the caller's verified token: a string as it is, a number or a boolean as its JSON text | yes |
-| `mint+login://…` | tresor-server's own (see its documentation) | no |
-| `mint+rule://…` | tresor-server's own (see its documentation) | no |
+| `mint+login://…` | tresor-server's own ([generated values](https://hugr-lab.github.io/tresor-server/generated/)) | no |
+| `mint+rule://…` | tresor-server's own ([generated values](https://hugr-lab.github.io/tresor-server/generated/)) | no |
 
 - **The audience** is everything up to the first `?`, percent-decoded (`%3F` for a `?` in it). The
   query is `scope=<scope>` and nothing else, form-encoded (`read+write` is `read write`).
@@ -238,7 +238,9 @@ deployment:
 ## Conformance
 
 tresor's repository carries the conformance suite: sqllogictests in `test/sql/conformance/`, driven
-against a service URL by environment variables. Build tresor, then:
+against a service URL by environment variables. The conformance client logs in with client credentials;
+it must be an **administrator holding at least one role** (an administrator gets `use` only through a
+role's grant), allowed to create secrets named `conformance_*`. Build tresor, then:
 
 ```bash
 TRESOR_CONFORMANCE_HOST=secrets.corp.example \
@@ -251,8 +253,16 @@ build/release/test/unittest --skip-error-messages '' 'test/sql/conformance/*'
 Set `TRESOR_CONFORMANCE_PERSON=1` and a `BROWSER` that can complete your identity provider's login
 to include the person flow. To include the secrets case, seed a secret the conformance client may
 use and name it: `TRESOR_CONFORMANCE_SECRET`, `_SECRET_TYPE`, `_SECRET_PATH` (covered by its scope),
-`_SECRET_KEY` and `_SECRET_VALUE` (a VARCHAR parameter). `scripts/ci/test_keycloak.sh` runs the whole suite against the reference
-server and Keycloak in docker.
+`_SECRET_KEY` and `_SECRET_VALUE` (a VARCHAR parameter). The optional parts run only when asked:
+
+- `TRESOR_CONFORMANCE_VARIABLES=1`: variables, for a service that advertises `capabilities.variables`.
+- `TRESOR_CONFORMANCE_GENERATORS=1`: generated parameters in the shared `mint+` syntax, with
+  `TRESOR_CONFORMANCE_ECHO` (an http API that answers whom a bearer token was minted for, like
+  `test/keycloak/echo.py`), `_EXCHANGE_AUDIENCE` (an audience the service may exchange the client's
+  token for), `_EXCHANGE_USER` (the user the exchanged token names), `_CLAIM` and `_CLAIM_VALUE` (a claim
+  of the client's token and its value).
+
+`scripts/ci/test_keycloak.sh` runs the whole suite against the reference server and Keycloak in docker.
 
 ## Entra ID
 

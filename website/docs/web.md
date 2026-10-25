@@ -24,7 +24,7 @@ tresor's wasm build loads in DuckDB-wasm on DuckDB v2.0. CI runs it in a browser
 build behind shell.duckdb.org): the page's login handed over with `tresor_web_login`, or its token with
 `tresor_web_token`, `ATTACH`, `whoami`, the secrets, a variable. Still to come:
 - the npm package `@duckdb/duckdb-wasm` on DuckDB 2.0, which a page builds on (not published yet);
-- the helper `@hugr-lab/tresor-web`, tested in Node so far;
+- the helper `@hugr-lab/tresor-web`, tested in Node so far.
 :::
 
 ## The application's token
@@ -36,7 +36,7 @@ service accepts: its `aud` must be the `audience` of the service's discovery.
   audience to the application's own access token - one token serves both.
 - **Microsoft Entra ID**: a token has one audience. The application asks for a second one, silently, with the
   service's scope (MSAL `acquireTokenSilent({ scopes: ["api://duckdb-secrets/access_as_user"] })`). The service's
-  API registration issues v2.0 tokens (`accessTokenAcceptedVersion: 2`, as the [Entra setup](entra.md) has it): a
+  API registration issues v2.0 tokens (`requestedAccessTokenVersion: 2` in the manifest, as the [Entra setup](entra.md) has it): a
   v1.0 token's issuer (`sts.windows.net`) is not the discovery's, and tresor refuses it.
 
 Then:

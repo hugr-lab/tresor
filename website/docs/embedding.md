@@ -120,6 +120,28 @@ let (login, name): (String, String) =
     conn.query_row("SELECT login, name FROM corp.whoami()", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
 ```
 
+### Java (JDBC)
+
+```java
+import java.sql.*;
+
+try (Connection conn = DriverManager.getConnection("jdbc:duckdb:");
+     Statement st = conn.createStatement()) {
+    st.execute("INSTALL tresor FROM community");
+    st.execute("LOAD tresor");
+    String service = "tresor:secrets.corp.example";
+    try (PreparedStatement hand = conn.prepareStatement("FROM tresor_web_token(?, ?)")) {   // and on each renewal
+        hand.setString(1, service);
+        hand.setString(2, token);
+        hand.executeQuery().close();
+    }
+    st.execute("ATTACH '" + service + "' AS corp");
+    try (ResultSet rs = st.executeQuery("SELECT login, name FROM corp.whoami()")) {
+        rs.next();
+    }
+}
+```
+
 ### .NET
 
 For DuckDB.NET on DuckDB 2.0 (not released yet):
@@ -150,7 +172,7 @@ loads tresor with its signature checked. See [In a web application](./web.md#the
 
 ## Notes for an application
 
-- **A backend process** keeps no person's login. Set `SET tresor_keychain = 'off'` (or `'memory'`) so nothing reaches
+- **A backend process** keeps no person's login. Run `SET tresor_keychain = 'off'` (or `'memory'`) so nothing reaches
   the machine's credential store.
 - **The extension**: `INSTALL tresor FROM community` downloads it once into DuckDB's extension directory. An
   application can ship the extension file with itself and `LOAD '<path>'` instead. Only signed extensions load unless
