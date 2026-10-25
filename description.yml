@@ -14,7 +14,7 @@ extension:
 repo:
   github: "hugr-lab/tresor"
   # v0.1.1 - the commit the tag v0.1.1 points at (a SHA rather than the tag name: a tag can be moved)
-  ref: "v0.1.1"
+  ref: b2937ac5f901908cf0de179a9027e133c6b3b37f
 
 docs:
   hello_world: |
