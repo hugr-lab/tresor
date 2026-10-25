@@ -7,6 +7,30 @@ All notable changes to tresor are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-25
+
+The docs, reviewed before publishing; no change to the extension's code.
+
+### Added
+
+- **An SQL reference** (`reference`): every ATTACH option with its default, the `tresor` secret's options per
+  `FLOW`, the settings and their environment defaults, every function with its columns, and the audit's columns,
+  kinds, outcomes and reason codes.
+- **In your application** (`embedding`, in the sidebar now): tresor from Python, Go, Rust, Java and .NET, and the
+  application's own login; a JDBC example.
+- **Development**: the wasm builds, the web helper's tests, and building tresor into another extension.
+
+### Fixed
+
+- The docs' sidebar lists every page (In your application, the SQL reference, the reference server); tresor-server
+  in the navbar and footer, its docs linked where the pages describe what it implements (references, generated
+  values, token exchange, variables).
+- The protocol page's examples agree with its text: `capabilities.write` / `annotate` are informational, and
+  whoami's `permissions.create` example is a boolean.
+- The reference server's page: tresor-server is released; the conformance suite's requirements and variables.
+- Smaller corrections: `LOGIN 'auto'` over SSH, `requestedAccessTokenVersion`, `FROM tresor_logoff()` throughout.
+- The community-extensions descriptor: a fuller description, the website link, the version 0.1.1.
+
 ## [0.1.0] - 2026-10-22
 
 The first release, with DuckDB 2.0.0. The protocol `duckdb-secrets/1` is version 1, normative from here on.
@@ -86,5 +110,6 @@ The first release, with DuckDB 2.0.0. The protocol `duckdb-secrets/1` is version
 - **Pipelines** in the docs: a job logs in as a service identity, a recipe per executor (Kubernetes,
   GitHub Actions, Azure, a key, a client secret, a token) and dbt-duckdb's profile (specs/026).
 
-[Unreleased]: https://github.com/hugr-lab/tresor/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/hugr-lab/tresor/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/hugr-lab/tresor/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/hugr-lab/tresor/releases/tag/v0.1.0
