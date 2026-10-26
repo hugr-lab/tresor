@@ -25,6 +25,9 @@ jobs:
       extension_name: tresor
       duckdb_version: v2.0.0
       ci_tools_version: main
+      # windows_arm64 is opt-in in extension-ci-tools: tresor builds and tests there unchanged (as the community build,
+      # description.yml's opt_in_platforms)
+      opt_in_archs: 'windows_arm64'
       # every platform, wasm included (specs/042: no OpenSSL, no sockets; DuckDB-wasm on 2.0 LOADs it - ci.yml's
       # wasm job proves it in a browser)
       # One vcpkg binary cache with duckdb-acl, acl-otel and hugr-node (Cloudflare R2, duckdb-acl's
