@@ -10,6 +10,8 @@ extension:
   license: "MIT"
   maintainers:
     - "VGSML"
+  # opt-in in extension-ci-tools; built and tested by tresor's own distribution workflow too
+  opt_in_platforms: "windows_arm64"
 
 repo:
   github: "hugr-lab/tresor"

@@ -7,6 +7,10 @@ All notable changes to tresor are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **windows_arm64**: built and tested by the distribution workflow, and opted into in the community descriptor.
+
 ## [0.1.1] - 2026-10-25
 
 The docs, reviewed before publishing; no change to the extension's code.
