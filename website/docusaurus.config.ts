@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
@@ -19,6 +21,16 @@ const site = ionos
 // the GitHub Pages build: its pages then name the hugr-lab.com copy as canonical
 // (src/theme/SiteMetadata) and it has no sitemap of its own.
 const canonicalBase = ionos ? '' : process.env.DOCS_CANONICAL ?? '';
+
+// Only the latest release is indexed (the owner's decision, 2026-10-26): `next` (current) and older releases
+// get noindex and drop out of the sitemap, so search engines see one copy of each page. versions.json is made
+// at deploy time from the tags (pages.yml), newest first; without it the current docs are the only version and
+// stay indexed.
+const versionsFile = path.join(__dirname, 'versions.json');
+const released: string[] = fs.existsSync(versionsFile) ? JSON.parse(fs.readFileSync(versionsFile, 'utf8')) : [];
+const noIndexVersions = Object.fromEntries(
+  released.length ? ['current', ...released.slice(1)].map((v) => [v, {noIndex: true}]) : [],
+);
 
 const config: Config = {
   title: 'tresor',
@@ -57,6 +69,7 @@ const config: Config = {
           // "Next" once a release exists.
           editUrl: 'https://github.com/hugr-lab/tresor/tree/main/website/',
           showLastUpdateTime: true,
+          versions: noIndexVersions,
         },
         blog: false,
         theme: {
