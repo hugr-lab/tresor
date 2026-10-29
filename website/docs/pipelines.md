@@ -171,8 +171,9 @@ ATTACH 'tresor:secrets.corp.example' AS corp;
 Keycloak refuses the same SVID as `jwt-bearer` (`invalid_client`). An identity provider that federates SPIRE as an
 ordinary OIDC issuer (Entra, Okta, or Keycloak's OpenID Connect provider type) takes it as `jwt-bearer`: add
 `ASSERTION_TYPE 'jwt-bearer'`, set SPIRE's `jwt_issuer`, and make its OIDC discovery reachable by the identity
-provider (with Entra, `ASSERTION_AUDIENCE 'api://AzureADTokenExchange'`, the audience its federation expects). Checked against Keycloak 26.8.1 and
-SPIRE 1.13.0 (`examples/spiffe-spike`, specs/046).
+provider (with Entra, `ASSERTION_AUDIENCE 'api://AzureADTokenExchange'`, the audience its federation expects).
+Checked against Keycloak 26.8.1 and SPIRE 1.13.0 (`scripts/live/spiffe_keycloak.sh`, and the spike in
+`examples/spiffe-spike`; specs/046).
 
 ## GitHub Actions
 

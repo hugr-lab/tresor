@@ -277,6 +277,23 @@ The part the spike showed is required, on its own:
   refusals. Live: the spike's steps "tresor with ASSERTION_SOURCE 'spiffe'" and "tresor given another workload's
   SVID", Keycloak 26.8.1.
 
+### The live check (specs/027's check 5)
+
+`scripts/live/spiffe_keycloak.sh`: the spike's compose file and configs (SPIRE, Keycloak with the realm) under a
+project and ports of their own (`tresor-spiffe-live`, Keycloak 18492), so the spike may run beside it; the reference
+server here; torn down afterwards (`KEEP_STAND=1` keeps it). It refuses to judge tresor against a Keycloak without
+its SPIFFE support (the spike's `console.py --available`), then runs `scripts/live/run.sh spiffe_keycloak`
+(`spiffe_keycloak.sql`) with the node's SVID - `check=ok`: `federated`, `role:nodes`, `client:acl-node` - and three
+that must be refused, each by its message: the node's SVID as `jwt-bearer` (Keycloak: `invalid_client`), another
+workload's SVID with the node's `SPIFFE_ID` and an SVID for another audience (tresor: "never sent"). In the image,
+`/live/check.sh spiffe` (`TRESOR_ASSERTION_FILE`, `TRESOR_SPIFFE_ID`) for a pod beside spiffe-helper.
+
+Passed 2026-10-29: SPIRE 1.13.0, Keycloak 26.8.1, Rancher Desktop (macOS, arm64).
+
+Writing it found a bug of every tresor secret: `CREATE SECRET` stored a NULL option as the string `'NULL'` (validation
+treated it as not given, the login read `'NULL'`) - here `ASSERTION_TYPE nullif(getenv(...), '')` would have sent a
+SPIFFE login as `jwt-bearer`. A NULL option is now not stored (`test/sql/attach_options.test`).
+
 ## Alternatives considered
 
 - **Do nothing; document `ASSERTION_FILE` + `spiffe-helper`** - enough for an IdP that takes `jwt-bearer`, not for
@@ -292,6 +309,6 @@ The part the spike showed is required, on its own:
   type, or Entra), and SPIRE's SPIFFE bundle endpoint in place of the OIDC `/keys`.
 - duckdb-ext-common: `ClientAuth.assertion_type` - done (its spec 019); a tag for it, and the pin moved to the tag.
 - tresor: `ASSERTION_TYPE`, `ASSERTION_SOURCE 'spiffe'`, `SPIFFE_ID`, the checks, the fake IdP's SPIFFE client, the
-  docs (`pipelines.md`'s SPIFFE section) - done. A live check of it in `scripts/live/` (as specs/027's
-  Keycloak-in-kind), from the spike, is next.
+  docs (`pipelines.md`'s SPIFFE section) - done.
+- The live check - done: specs/027's check 5, below.
 - tresor-server: path B, if the research asks for it.
