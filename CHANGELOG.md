@@ -15,7 +15,13 @@ All notable changes to tresor are documented here. The format follows
   or `ASSERTION_AUDIENCE`), its expiry - and sent as `jwt-spiffe`, as Keycloak's SPIFFE client authentication
   takes it. **`ASSERTION_TYPE`** (`'jwt-bearer'`, `'jwt-spiffe'`) names the type for any `ASSERTION_FILE`. Needs
   duckdb-ext-common spec 019 (`ClientAuth::assertion_type`). A pipelines page section on SPIFFE; the spike in
-  `examples/spiffe-spike`.
+  `examples/spiffe-spike`; a live check against SPIRE and Keycloak, `scripts/live/spiffe_keycloak.sh` (`/live/check.sh
+  spiffe` in the image).
+
+### Fixed
+
+- **A NULL option of a `tresor` secret** (`OAUTH_SCOPE NULL`, an unset `getenv(...)`) was stored as the string `'NULL'`
+  and read so at login, while `CREATE SECRET` had treated it as not given; it is now not stored (specs/046).
 
 ## [0.1.1] - 2026-10-25
 

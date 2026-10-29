@@ -169,6 +169,10 @@ unique_ptr<BaseSecret> CreateTresorSecret(ClientContext &context, CreateSecretIn
 	}
 	auto secret = make_uniq<KeyValueSecret>(scope, input.type, input.provider, input.name);
 	for (auto &option : input.options) {
+		// a NULL option is not given (as validated above): stored, it would read as the string 'NULL'
+		if (option.second.IsNull()) {
+			continue;
+		}
 		auto key = StringUtil::Lower(option.first);
 		secret->secret_map[Identifier(key)] = key == "flow" ? Value(flow) : Value(option.second.ToString());
 	}
