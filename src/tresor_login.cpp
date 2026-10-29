@@ -1059,6 +1059,10 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 			} else if (secret_flow == "federated") {
 				flow = LoginFlow::FEDERATED;
 				credential.assertion_file = SecretString(*service_secret, "assertion_file");
+				// a JWT-SVID to Keycloak's SPIFFE authentication (specs/046); jwt-bearer is the core's default
+				if (StringUtil::Lower(SecretString(*service_secret, "assertion_type")) == "jwt-spiffe") {
+					credential.assertion_type = "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe";
+				}
 				credential.assertion_audience = SecretString(*service_secret, "assertion_audience");
 				auto source = StringUtil::Lower(SecretString(*service_secret, "assertion_source"));
 				if (!credential.assertion_file.empty()) {

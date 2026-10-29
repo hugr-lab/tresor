@@ -56,8 +56,9 @@ examples/spiffe-spike/spike.sh down      # stop everything, forget the trust dom
 | Keycloak: the SVID as `jwt-spiffe` | the access token's claims (`azp`, `aud` = `duckdb-secrets`, `role:nodes`), or Keycloak's error | ok |
 | Keycloak: the SVID as `jwt-bearer` | the same, as tresor sends assertions today | a finding either way |
 | The administrator seeds a secret | `spike_lake` (s3) and its grant to `role:nodes`, through the protocol | ok |
-| tresor today | `node_today.sql`: `FLOW 'federated'`, `ASSERTION_FILE`; whoami, secrets, the audit's rows | depends on the `jwt-bearer` finding |
-| tresor as proposed | `node_proposed.sql`: `ASSERTION_SOURCE 'spiffe'`, `SPIFFE_ID`, `ASSERTION_TYPE` | refused until implemented |
+| tresor without `ASSERTION_TYPE` | `node_today.sql`: `FLOW 'federated'`, `ASSERTION_FILE`, sent as `jwt-bearer` | refused (`invalid_client`) |
+| tresor with `ASSERTION_TYPE 'jwt-spiffe'` | `node_type.sql`: whoami, secrets, the audit's rows | logged in |
+| tresor as proposed further | `node_proposed.sql`: `ASSERTION_SOURCE 'spiffe'`, `SPIFFE_ID` | refused until implemented |
 | Another workload's SVID | `spiffe://tresor.example/node/intruder`, presented as `acl-node` | refused (`invalid_client`) |
 | An SVID for another audience | the node's SVID with `aud` = `https://elsewhere.example` | refused |
 
@@ -70,6 +71,7 @@ Keycloak 26.8.1, SPIRE 1.13.0, Rancher Desktop on macOS: every step answered as 
 SPIFFE support was available, and it accepted the SVID as `jwt-spiffe` (no `iss`, no `jti` needed). It refused
 the same SVID as `jwt-bearer`, so tresor's login today fails with `invalid_client`, which is why the
 `ASSERTION_TYPE` option is needed. Another workload's SVID and an SVID made for another audience were refused.
+With `ASSERTION_TYPE 'jwt-spiffe'` (now implemented), tresor logs in and lists `spike_lake`.
 The full table is in [spec 046](../../specs/046-spiffe-node-identity/spec.md#what-the-spike-found-2026-10-29).
 
 With Rancher Desktop while Docker Desktop is the CLI's current context, run the scripts with
