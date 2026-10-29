@@ -89,3 +89,15 @@ query I
 SELECT secret_string LIKE '%client_id=etl%' FROM duckdb_secrets() WHERE name = 's';
 ----
 true
+
+# a NULL option is not given: not stored, so a login never reads it as the string 'NULL' (an optional option from
+# an unset environment variable - ASSERTION_TYPE 'NULL' would have sent a SPIFFE login as jwt-bearer)
+statement ok
+CREATE SECRET n (TYPE tresor, SCOPE 'tresor:secrets.example.invalid', FLOW 'federated', CLIENT_ID 'node',
+                 ISSUER 'https://idp.example.invalid', ASSERTION_SOURCE 'spiffe', ASSERTION_FILE '/run/svid.jwt',
+                 ASSERTION_TYPE nullif('', ''), OAUTH_SCOPE NULL);
+
+query II
+SELECT secret_string LIKE '%assertion_type%', secret_string LIKE '%oauth_scope%' FROM duckdb_secrets() WHERE name = 'n';
+----
+false	false

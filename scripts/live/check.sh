@@ -1,10 +1,12 @@
 #!/bin/sh
 # tresor live check (specs/027): one service login against the stand's service, judged by whoami.
-#   check.sh mi | fed | aks | kc
+#   check.sh mi | fed | aks | kc | spiffe
 # Env: TRESOR_URL TRESOR_ISSUER TRESOR_AUDIENCE TRESOR_API_URI TRESOR_ACL_CLIENT_ID
-#      TRESOR_MI_CLIENT_ID (mi, fed) TRESOR_ASSERTION_FILE (aks, kc)
+#      TRESOR_MI_CLIENT_ID (mi, fed) TRESOR_ASSERTION_FILE (aks, kc, spiffe) TRESOR_SPIFFE_ID (spiffe)
 # kc: Keycloak's federated client authentication - TRESOR_ISSUER the realm, TRESOR_ACL_CLIENT_ID its client
 #     (Signed JWT - Federated), TRESOR_ASSERTION_FILE the projected token with the realm as its audience
+# spiffe: a JWT-SVID (spiffe-helper's file) to Keycloak's SPIFFE authentication (specs/046), checked against
+#     TRESOR_SPIFFE_ID before it is sent
 # Exit 0 only when whoami says the expected login and role:nodes. Prints no token.
 set -u
 host="${TRESOR_URL#https://}"; host="${host%/}"
@@ -23,7 +25,10 @@ aks)
 kc)
 	want=federated
 	secret="FLOW 'federated', CLIENT_ID '$TRESOR_ACL_CLIENT_ID', ISSUER '$TRESOR_ISSUER', ASSERTION_FILE '$TRESOR_ASSERTION_FILE'" ;;
-*) echo "usage: check.sh mi|fed|aks|kc" >&2; exit 2 ;;
+spiffe)
+	want=federated
+	secret="FLOW 'federated', CLIENT_ID '$TRESOR_ACL_CLIENT_ID', ISSUER '$TRESOR_ISSUER', ASSERTION_SOURCE 'spiffe', ASSERTION_FILE '$TRESOR_ASSERTION_FILE', SPIFFE_ID '$TRESOR_SPIFFE_ID'" ;;
+*) echo "usage: check.sh mi|fed|aks|kc|spiffe" >&2; exit 2 ;;
 esac
 out="$(TRESOR_KEYCHAIN=off "$duckdb" -unsigned -no-agent -list -noheader -c "
 LOAD '$ext';

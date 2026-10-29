@@ -3,7 +3,7 @@
 # loaded, prints its check lines, and exits 0 only when the script printed check=ok and the expected login.
 # Never prints a token: anything shaped like a JWT, and the platform's identity header, are masked.
 #
-#   run.sh managed_identity | mi_federated | k8s_entra | k8s_keycloak
+#   run.sh managed_identity | mi_federated | k8s_entra | k8s_keycloak | spiffe_keycloak
 #
 # Each script's header names its environment (TRESOR_URL, TRESOR_ISSUER, ...). In the image
 # (ghcr.io/hugr-lab/tresor-live) the CLI is /usr/local/bin/duckdb, the extension /opt/tresor; elsewhere TRESOR_DUCKDB and
@@ -16,13 +16,14 @@ managed_identity) login=managed_identity required="TRESOR_URL TRESOR_ISSUER TRES
 mi_federated) login=federated required="TRESOR_URL TRESOR_ISSUER TRESOR_API_URI TRESOR_MI_CLIENT_ID" ;;
 k8s_entra) login=federated required="TRESOR_URL TRESOR_ISSUER TRESOR_API_URI" ;;
 k8s_keycloak) login=federated required="TRESOR_URL TRESOR_ISSUER" ;;
+spiffe_keycloak) login=federated required="TRESOR_URL TRESOR_ISSUER TRESOR_SPIFFE_ID" ;;
 *)
-	echo "usage: run.sh managed_identity|mi_federated|k8s_entra|k8s_keycloak" >&2
+	echo "usage: run.sh managed_identity|mi_federated|k8s_entra|k8s_keycloak|spiffe_keycloak" >&2
 	exit 2
 	;;
 esac
 case "$check" in
-mi_federated | k8s_entra | k8s_keycloak)
+mi_federated | k8s_entra | k8s_keycloak | spiffe_keycloak)
 	if [ -z "${TRESOR_CLIENT_ID:-}" ] && [ -z "${TRESOR_ACL_CLIENT_ID:-}" ]; then
 		echo "live $check: TRESOR_ACL_CLIENT_ID (or TRESOR_CLIENT_ID) is not set" >&2
 		exit 2
@@ -43,7 +44,8 @@ done
 # a service's login never touches the OS credential store; keep a person's out of it too
 export TRESOR_KEYCHAIN=memory
 
-if [ -n "${TRESOR_ASSERTION_FILE:-}" ] || [ "$check" = k8s_entra ] || [ "$check" = k8s_keycloak ]; then
+if [ -n "${TRESOR_ASSERTION_FILE:-}" ] || [ "$check" = k8s_entra ] || [ "$check" = k8s_keycloak ] ||
+	[ "$check" = spiffe_keycloak ]; then
 	token_file="${TRESOR_ASSERTION_FILE:-/var/run/secrets/tresor/token}"
 	# what the pod mounted, never what it holds: the mode tells a projected volume's defaultMode
 	if [ -e "$token_file" ]; then
