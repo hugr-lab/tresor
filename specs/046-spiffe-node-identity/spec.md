@@ -215,6 +215,28 @@ optional protocol capability of its own, a later spec.
   ID; sqllogictests for the option's validation and for each refusal before sending (`sub`, `aud`, `exp`); the
   spike becomes a live check (`scripts/live/`), as specs/027's Keycloak-in-kind.
 
+## What the spike found (2026-10-29)
+
+Keycloak 26.8.1 (`KC_FEATURES=spiffe`), SPIRE 1.13.0, the reference server, tresor at 7ace82a9b6 (this branch's
+base, unchanged); Rancher Desktop on macOS (arm64). Every step ran as the design expects:
+
+| Step | Answer |
+| --- | --- |
+| Keycloak's SPIFFE support | available: the feature `enabled (PREVIEW)`, the realm's IdP `spire` of type `spiffe` |
+| the bundle | SPIRE's OIDC discovery `/keys` (one ES256 key), read by Keycloak over http as its bundle endpoint |
+| the SVID | `sub` the node's SPIFFE ID, `aud` the realm, 5 minutes, **no `iss`, no `jti`** |
+| as `jwt-spiffe` | **accepted** - no `jti` needed; the token: `azp` `acl-node`, `aud` `duckdb-secrets`, role `nodes` |
+| as `jwt-bearer` | **refused**, `401 invalid_client` |
+| tresor today (`ASSERTION_FILE`) | **refused**: "the federated login … failed: invalid_client" - it sends `jwt-bearer` |
+| tresor as proposed | refused at `CREATE SECRET` (`Unknown parameter "spiffe_id"`) - not implemented yet |
+| another workload's SVID as the node | refused, `401 invalid_client` |
+| the node's SVID for another audience | refused, `400 invalid_client` |
+
+So with Keycloak's own support the assertion type is what stands between tresor and a SPIFFE login: the
+`ASSERTION_TYPE` option (and `ClientAuth.assertion_type` in duckdb-ext-common) is required, not optional. Keycloak
+binds the client to its SPIFFE ID and checks the audience itself; tresor's checks before sending still matter, so
+that an SVID never leaves the node for another audience or as another identity.
+
 ## Alternatives considered
 
 - **Do nothing; document `ASSERTION_FILE` + `spiffe-helper`** - enough for an IdP that takes `jwt-bearer`, not for
@@ -226,8 +248,8 @@ optional protocol capability of its own, a later spec.
 
 ## Follow-ups
 
-- The spike's findings, in this spec: which assertion type Keycloak accepts, whether an SVID without `jti` passes,
-  the bundle endpoint's format (SPIRE OIDC `/keys` vs. the SPIFFE bundle endpoint).
+- The spike's findings: above. Not tried yet: the fallback (`jwt-bearer` through Keycloak's OIDC identity provider
+  type, or Entra), and SPIRE's SPIFFE bundle endpoint in place of the OIDC `/keys`.
 - duckdb-ext-common: `ClientAuth.assertion_type`.
 - tresor: the option, its checks, the fake IdP, the docs (`pipelines.md`: a SPIFFE page beside Kubernetes').
 - tresor-server: path B, if the research asks for it.

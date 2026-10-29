@@ -64,13 +64,13 @@ examples/spiffe-spike/spike.sh down      # stop everything, forget the trust dom
 Statuses: **ok**, **expected** (a refusal the design wants), **finding** (an answer spec 046 has to take into
 account), **failed** (something is broken, or a check the design relies on did not hold).
 
-## Not verified yet
+## What the first run found (2026-10-29)
 
-The pieces were written from SPIRE's and Keycloak's documentation and have not yet been run together. Things that
-may need adjusting on the first run, each a finding for spec 046:
+Keycloak 26.8.1, SPIRE 1.13.0, Rancher Desktop on macOS: every step answered as specs/046 expects. Keycloak's
+SPIFFE support was available, and it accepted the SVID as `jwt-spiffe` (no `iss`, no `jti` needed). It refused
+the same SVID as `jwt-bearer`, so tresor's login today fails with `invalid_client`, which is why the
+`ASSERTION_TYPE` option is needed. Another workload's SVID and an SVID made for another audience were refused.
+The full table is in [spec 046](../../specs/046-spiffe-node-identity/spec.md#what-the-spike-found-2026-10-29).
 
-- the image tags (`SPIRE_VERSION` 1.13.0, `KEYCLOAK_VERSION` 26.8.1) and Keycloak's feature name (`KC_FEATURES:
-  spiffe`);
-- the realm's SPIFFE identity-provider keys (`trustDomain`, `bundleEndpoint`) and whether Keycloak accepts SPIRE's
-  `/keys` over plain http as the bundle (the realm sets `sslRequired: none`);
-- which `client_assertion_type` Keycloak takes, and whether an SVID without `jti` passes its replay check.
+With Rancher Desktop while Docker Desktop is the CLI's current context, run the scripts with
+`DOCKER_CONTEXT=rancher-desktop`.
