@@ -35,7 +35,7 @@ ATTACH 'tresor:secrets.corp.example' AS corp;   -- log in once (browser or devic
 
 FROM corp.secrets();                             -- what your roles may use
 FROM 's3://lake/sales/*.parquet';                -- the right secret is found by scope, like any secret
-ATTACH 'host=crm.corp dbname=sales' AS crm (TYPE postgres);
+ATTACH 'host=crm.corp dbname=sales' AS crm (TYPE postgres, SECRET crm);   -- or by name
 ```
 
 No key on the laptop, no `.env`, nothing to rotate by hand.
@@ -55,9 +55,10 @@ flowchart LR
 
 1. **ATTACH logs you in** directly with your identity provider, once in the browser or with a device code. The login
    is remembered in the OS keychain, so every DuckDB process you run attaches with no second sign-in.
-2. **The service answers with the secrets your roles may use.** It sends only names and scopes. DuckDB matches them
-   by scope, the same way it matches its own secrets. Only the secret a query picks is fetched, and only at that
-   moment. It is kept in memory briefly and never written to disk.
+2. **The service answers with the secrets your roles may use.** It sends only their descriptors (names, types,
+   scopes), never their values. DuckDB matches them by scope, the same way it matches its own secrets, or by name.
+   Only the secret a query picks is fetched, and only at that moment. It is kept in memory briefly and never written
+   to disk.
 3. **Administrators manage, roles use.** Administrators create secrets in the service, either from DuckDB
    (`CREATE PERSISTENT SECRET … IN corp`) or in its web console, and grant their use to roles and groups. Revoke a
    grant and the next query no longer sees the secret.
@@ -73,16 +74,15 @@ container on Azure, Kubernetes, AWS or GCP, with your database, your KMS and you
   secret type.
 - 🗝️ **Material where it already lives:** referenced in HashiCorp Vault / OpenBao, Azure Key Vault or a cloud secret
   manager, or sealed under your KMS key.
-- ⏱️ **Short-lived by design:** a parameter can be generated for each caller on each read, such as a token minted for
-  you by token exchange or a claim from your own token. It is cached only until it expires. httpfs refreshes S3
-  credentials on its own.
+- ⏱️ **Short-lived by design:** a credential can be generated for each user on each read, and cached only until it
+  expires.
 - 🤖 **Pipelines without passwords:** jobs log in with GitHub Actions OIDC, Kubernetes service accounts, Azure managed
   identities or a private key. dbt-duckdb works through its profile.
 - 🌐 **Wherever DuckDB runs:** the CLI, DuckDB UI, Jupyter, DBeaver, and your own Python, Go, Rust or Java
-  application. In the browser, an app that already signed its user in hands tresor that same token
-  (`tresor_web_token`) to DuckDB-wasm.
-- 🧾 **Audited:** every login, lookup, write and grant is an event in DuckDB's log, and can be exported over
-  OpenTelemetry.
+  application. An app that already signed its user in hands tresor that same token (`tresor_web_token`), so there is
+  no second login. That includes DuckDB-wasm in the browser, once `@duckdb/duckdb-wasm` ships on DuckDB 2.0.
+- 🧾 **Audited:** turn on `tresor_audit_level` and every login, lookup, write and grant becomes an event in DuckDB's
+  log. The service keeps its own audit too.
 
 ## Try it
 
@@ -96,7 +96,7 @@ prepare:
 | You need | Example | Where it comes from |
 | --- | --- | --- |
 | The issuer URL | `https://login.microsoftonline.com/<tenant>/v2.0` | your IdP's OIDC discovery |
-| The service's API audience | `api://duckdb-secrets` | an app registration (Entra) or client (Keycloak) for the service |
+| The service's API audience | the API's client id (Entra) or `duckdb-secrets` (Keycloak) | an app registration (Entra) or client (Keycloak) for the service |
 | A public client for people | `duckdb` (redirect to loopback) | a second app registration / client |
 | The claim with roles or groups, and the admin role | `roles`, `secrets_admin` | your IdP's token configuration |
 | A host name and TLS | `secrets.corp.example` | your DNS and certificates, or a reverse proxy |
