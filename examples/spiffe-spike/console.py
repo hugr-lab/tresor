@@ -367,22 +367,26 @@ def step_seed(cfg: Config) -> Step:
     )
 
 
-def step_tresor(cfg: Config, script: str, proposed: bool) -> Step:
+def step_tresor(cfg: Config, script: str, kind: Literal["today", "type", "proposed"]) -> Step:
     path = write_svid("acl-node", fetch_svid(cfg.node_id, cfg.issuer))
     facts = tresor_facts(run_tresor(cfg, script, path))
     logged_in = any(key == "login" for key, _ in facts)
-    title = (
-        "tresor as spec 046 proposes: ASSERTION_SOURCE 'spiffe', SPIFFE_ID, ASSERTION_TYPE 'jwt-spiffe'"
-        if proposed
-        else "tresor today: FLOW 'federated', ASSERTION_FILE (sent as jwt-bearer)"
-    )
-    match proposed, logged_in:
+    match kind:
+        case "today":
+            title = "tresor without ASSERTION_TYPE: FLOW 'federated', ASSERTION_FILE (sent as jwt-bearer)"
+        case "type":
+            title = "tresor with ASSERTION_TYPE 'jwt-spiffe' (spec 046, implemented)"
+        case "proposed":
+            title = "tresor as spec 046 proposes further: ASSERTION_SOURCE 'spiffe', SPIFFE_ID"
+    match kind, logged_in:
         case _, True:
             return Step(script, title, "ok", facts)
-        case True, False:
-            return Step(script, title, "expected", facts, "Refused until the option is implemented.")
-        case False, False:
-            return Step(script, title, "finding", facts, "Compare with Keycloak's answer to jwt-bearer above.")
+        case "proposed", False:
+            return Step(script, title, "expected", facts, "Refused until SPIFFE_ID and the source are implemented.")
+        case "today", False:
+            return Step(script, title, "expected", facts, "As Keycloak's answer to jwt-bearer above.")
+        case _:
+            return Step(script, title, "failed", facts, "ASSERTION_TYPE 'jwt-spiffe' should log in.")
 
 
 def step_intruder(cfg: Config) -> Step:
@@ -416,8 +420,9 @@ STEPS: tuple[tuple[str, str, Callable[[Config], Step]], ...] = (
     ("kc-jwt-spiffe", "Keycloak: the SVID as jwt-spiffe", lambda c: step_keycloak(c, "jwt-spiffe")),
     ("kc-jwt-bearer", "Keycloak: the SVID as jwt-bearer", lambda c: step_keycloak(c, "jwt-bearer")),
     ("seed", "The administrator puts a secret in the service", step_seed),
-    ("node_today.sql", "tresor today", lambda c: step_tresor(c, "node_today.sql", False)),
-    ("node_proposed.sql", "tresor as proposed", lambda c: step_tresor(c, "node_proposed.sql", True)),
+    ("node_today.sql", "tresor without ASSERTION_TYPE", lambda c: step_tresor(c, "node_today.sql", "today")),
+    ("node_type.sql", "tresor with ASSERTION_TYPE", lambda c: step_tresor(c, "node_type.sql", "type")),
+    ("node_proposed.sql", "tresor as proposed further", lambda c: step_tresor(c, "node_proposed.sql", "proposed")),
     ("intruder", "Another workload's SVID", step_intruder),
     ("audience", "An SVID for another audience", step_audience),
 )
