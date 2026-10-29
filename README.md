@@ -1,60 +1,142 @@
-# tresor
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="website/static/img/tresor-icon-dark.svg">
+    <img src="website/static/img/tresor-icon.svg" alt="tresor" width="96">
+  </picture>
+</p>
 
-**One OIDC login, role-based secrets for DuckDB.** tresor attaches your organisation's secrets
-service: log in once through your identity provider (Keycloak, Okta, Entra ID, any OIDC provider)
-and the secrets your role may use join DuckDB's own secret lookup.
+<h1 align="center">tresor</h1>
+
+<p align="center">
+  <b>Your company login, your role's secrets — in DuckDB.</b><br>
+  <a href="https://hugr-lab.com/tresor">Website</a> ·
+  <a href="https://hugr-lab.com/docs/tresor/">Docs</a> ·
+  <a href="https://hugr-lab.com/docs/tresor/protocol/">Protocol</a> ·
+  <a href="https://github.com/hugr-lab/tresor-server">tresor-server</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/hugr-lab/tresor/actions/workflows/ci.yml"><img src="https://github.com/hugr-lab/tresor/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/hugr-lab/tresor/releases/latest"><img src="https://img.shields.io/github/v/release/hugr-lab/tresor" alt="release"></a>
+  <a href="https://duckdb.org/community_extensions/extensions/tresor"><img src="https://img.shields.io/badge/DuckDB-community%20extension-fff000" alt="DuckDB community extension"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT"></a>
+</p>
+
+DuckDB is a joy on local files. The moment it needs corporate data — a lake on S3, a Postgres, an internal API — the
+keys start spreading: into notebook cells, `.env` files, CI variables, one shared key on the server. Every copy is one
+more thing to rotate and one more thing to leak, and nobody can say who used what.
+
+**tresor** makes your organization's secrets part of DuckDB's own secret lookup. Log in once with your company
+identity — Entra ID, Okta, Keycloak, Auth0 — and every secret your roles may use is simply there:
 
 ```sql
-ATTACH 'tresor:secrets.corp.example' AS corp;          -- browser login, once
+INSTALL tresor FROM community;
+ATTACH 'tresor:secrets.corp.example' AS corp;   -- log in once (browser or device code)
 
-FROM corp.secrets();                                   -- what your role may use
-ATTACH '' AS crm (TYPE mssql, SECRET crm_ro);          -- a secret from the service
-FROM 's3://lake/sales/*.parquet';                      -- found by scope, like any secret
-CREATE PERSISTENT SECRET lake_rw IN corp (TYPE s3, …); -- stored in the service, by an administrator
+FROM corp.secrets();                             -- what your roles may use
+FROM 's3://lake/sales/*.parquet';                -- the right secret is found by scope, like any secret
+ATTACH 'host=crm.corp dbname=sales' AS crm (TYPE postgres, SECRET crm);   -- or by name
 ```
 
-- **A client, not a vault** — the service is anything implementing the open protocol
-  [`duckdb-secrets/1`](website/docs/protocol.md); how it stores secrets is its own business.
-- **The ATTACH is the whole setup** — DuckDB loads the installed extension by the `tresor:` prefix;
-  discovery, login and mounting happen inside the ATTACH.
-- **Your role decides** what you may use; administrators manage secrets and grant their use to roles
-  — through the CLI, or through a server acting for you, which serves you its own grants.
+No key on the laptop, no `.env`, nothing to rotate by hand.
 
-**Status: released - 0.1.0, for DuckDB 2.0.0.** It covers:
-- people's and services' logins: browser and device flows, keys, federated tokens, managed identities;
-- logging in from DuckDB UI, notebooks and IDEs (`tresor_login`), and pipelines as service identities;
-- single sign-on through the OS keychain, `tresor_logoff` to forget it;
-- the service's secrets in DuckDB's lookup, writes and grants, and its optional variables;
-- dynamic secrets: any parameter generated per caller;
-- acting for [duckdb-acl](https://github.com/hugr-lab/duckdb-acl)'s sessions;
-- an audit for DuckDB's log and OpenTelemetry.
+## How it works
 
-A web application's path - the application's own access token handed over (`tresor_web_token`, no second login),
-or the page's login (`tresor_web_login`), on DuckDB's HTTP client, and the helper `@hugr-lab/tresor-web`: tresor's
-wasm build loads in DuckDB-wasm on DuckDB 2.0, proven in a browser in CI (specs/042, 043).
+```mermaid
+flowchart LR
+  duck["DuckDB + tresor<br/>CLI · UI · notebooks · apps · browser"]
+  idp["Your identity provider<br/>Entra ID · Okta · Keycloak · Auth0"]
+  svc["Secrets service<br/>(tresor-server)"]
+  store["Your database · KMS · vault"]
+  duck -- "1 · log in (OIDC)" --> idp
+  duck -- "2 · secrets by role (duckdb-secrets/1)" --> svc
+  svc --> store
+```
 
-Install it from DuckDB's community extensions (`INSTALL tresor FROM community;`, DuckDB 2.0), or build it
-from source (below). See the [CHANGELOG](CHANGELOG.md), the design
-([specs/001](specs/001-architecture/spec.md)) and the docs (<https://hugr-lab.github.io/tresor/>).
-A production service: [tresor-server](https://github.com/hugr-lab/tresor-server).
+1. **ATTACH logs you in** directly with your identity provider, once in the browser or with a device code. The login
+   is remembered in the OS keychain, so every DuckDB process you run attaches with no second sign-in.
+2. **The service answers with the secrets your roles may use.** It sends only their descriptors (names, types,
+   scopes), never their values. DuckDB matches them by scope, the same way it matches its own secrets, or by name.
+   Only the secret a query picks is fetched, and only at that moment. It is kept in memory briefly and never written
+   to disk.
+3. **Administrators manage, roles use.** Administrators create secrets in the service, either from DuckDB
+   (`CREATE PERSISTENT SECRET … IN corp`) or in its web console, and grant their use to roles and groups. Revoke a
+   grant and the next query no longer sees the secret.
 
-## Building
+The service can be anything that speaks the open protocol
+[`duckdb-secrets/1`](https://hugr-lab.com/docs/tresor/protocol/), a short HTTP spec.
+[**tresor-server**](https://github.com/hugr-lab/tresor-server) is the production implementation. It runs as one
+container on Azure, Kubernetes, AWS or GCP, with your database, your KMS and your vault.
+
+## What you get
+
+- 🔐 **Secrets by role:** S3, GCS, R2, Azure, Postgres, MySQL, HTTP APIs, Iceberg catalogs, and any other DuckDB
+  secret type.
+- 🗝️ **Material where it already lives:** referenced in HashiCorp Vault / OpenBao, Azure Key Vault or a cloud secret
+  manager, or sealed under your KMS key.
+- ⏱️ **Short-lived by design:** a credential can be generated for each user on each read, and cached only until it
+  expires.
+- 🤖 **Pipelines without passwords:** jobs log in with GitHub Actions OIDC, Kubernetes service accounts, Azure managed
+  identities or a private key. dbt-duckdb works through its profile.
+- 🌐 **Wherever DuckDB runs:** the CLI, DuckDB UI, Jupyter, DBeaver, and your own Python, Go, Rust or Java
+  application. An app that already signed its user in hands tresor that same token (`tresor_web_token`), so there is
+  no second login. That includes DuckDB-wasm in the browser, once `@duckdb/duckdb-wasm` ships on DuckDB 2.0.
+- 🧾 **Audited:** turn on `tresor_audit_level` and every login, lookup, write and grant becomes an event in DuckDB's
+  log. The service keeps its own audit too.
+
+## Try it
+
+You need a secrets service to attach to. The quickest way is **tresor-server in a container** in your own
+infrastructure, with a demo identity provider:
+[tresor-server — Getting started](https://hugr-lab.com/docs/tresor-server/getting-started/).
+
+For a trial you need only Docker and a host name that DuckDB can reach. To connect your own identity provider,
+prepare:
+
+| You need | Example | Where it comes from |
+| --- | --- | --- |
+| The issuer URL | `https://login.microsoftonline.com/<tenant>/v2.0` | your IdP's OIDC discovery |
+| The service's API audience | the API's client id (Entra) or `duckdb-secrets` (Keycloak) | an app registration (Entra) or client (Keycloak) for the service |
+| A public client for people | `duckdb` (redirect to loopback) | a second app registration / client |
+| The claim with roles or groups, and the admin role | `roles`, `secrets_admin` | your IdP's token configuration |
+| A host name and TLS | `secrets.corp.example` | your DNS and certificates, or a reverse proxy |
+
+Then, in DuckDB 2.0:
+
+```sql
+INSTALL tresor FROM community;
+ATTACH 'tresor:<your-tresor-server-host>' AS corp;
+FROM corp.whoami();
+```
+
+Next: [Getting started](https://hugr-lab.com/docs/tresor/getting-started/) ·
+[From DuckDB UI, Python and IDEs](https://hugr-lab.com/docs/tresor/clients/) ·
+[Pipelines](https://hugr-lab.com/docs/tresor/pipelines/) ·
+[In your application](https://hugr-lab.com/docs/tresor/embedding/) ·
+[In a web application](https://hugr-lab.com/docs/tresor/web/) ·
+[Microsoft Entra ID](https://hugr-lab.com/docs/tresor/entra/) ·
+[SQL reference](https://hugr-lab.com/docs/tresor/reference/)
+
+## Platforms
+
+DuckDB's community extensions serve tresor for DuckDB 2.0 on:
+
+- Linux: amd64, arm64
+- macOS: arm64
+- Windows: amd64 (MSVC and MinGW), arm64
+- WebAssembly: `wasm_eh`, `wasm_mvp`, `wasm_threads`
+
+## Building from source
 
 ```bash
-git clone --recurse-submodules https://github.com/hugr-lab/tresor.git
-cd tresor
-make vcpkg-setup          # once: OpenSSL (or VCPKG_TOOLCHAIN_PATH=<a vcpkg>/scripts/buildsystems/vcpkg.cmake)
-GEN=ninja make
+git clone --recurse-submodules https://github.com/hugr-lab/tresor.git && cd tresor
+make vcpkg-setup && GEN=ninja make            # OpenSSL from vcpkg; DuckDB 2.0 from the submodule
 build/release/test/unittest 'test/sql/*'
-scripts/ci/smoke_load.sh
 ```
 
-The full test setup (the fake service, Keycloak, duckdb-acl) is on the
-[Development](https://hugr-lab.github.io/tresor/development/) page.
-
-tresor is built for DuckDB 2.0 (the `v2.0.0` tag) at the same commit as
-[duckdb-acl](https://github.com/hugr-lab/duckdb-acl).
+The [Development](https://hugr-lab.com/docs/tresor/development/) page covers the tests (against a fake service and
+Keycloak), the wasm build and the reference server. Changes are in the [CHANGELOG](CHANGELOG.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). tresor-server is licensed separately (BUSL 1.1).

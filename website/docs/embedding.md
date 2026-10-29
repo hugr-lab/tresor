@@ -8,7 +8,7 @@ title: In your application
 Any program that embeds DuckDB 2.0 can use tresor the same way the CLI does: Python, Go, Rust and Java (JDBC) today,
 .NET and a web page (DuckDB-wasm) as their packages reach 2.0. It loads tresor, logs in once and attaches the secrets
 service. From then on its
-queries find the right secret by scope (`FROM 's3://lake/…'`, `ATTACH 'postgres:…'`), and nothing secret lives in the
+queries find the right secret by scope (`FROM 's3://lake/…'`) or by name (`ATTACH '…' (TYPE postgres, SECRET crm)`), and nothing secret lives in the
 application's configuration.
 
 ```sql
