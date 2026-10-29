@@ -42,7 +42,7 @@ names. Only `FLOW` and the options of that flow are accepted:
 | `FLOW` | Required | One of | Optional |
 | --- | --- | --- | --- |
 | `client_credentials` | `CLIENT_ID`, `ISSUER` | `CLIENT_SECRET`, `PRIVATE_KEY_FILE` | `OAUTH_SCOPE`, `KEY_ID`, `CERTIFICATE_FILE` (both with `PRIVATE_KEY_FILE`) |
-| `federated` | `CLIENT_ID`, `ISSUER` | `ASSERTION_FILE`, `ASSERTION_SOURCE` (`'github_actions'` with `ASSERTION_AUDIENCE`, `'azure_managed_identity'`) | `OAUTH_SCOPE`, `ASSERTION_AUDIENCE` (with `ASSERTION_SOURCE`), `IDENTITY_CLIENT_ID` (with `azure_managed_identity`), `ASSERTION_TYPE` (`'jwt-bearer'`, the default, or `'jwt-spiffe'` with `ASSERTION_FILE`: a JWT-SVID to Keycloak's SPIFFE authentication) |
+| `federated` | `CLIENT_ID`, `ISSUER` | `ASSERTION_FILE`, `ASSERTION_SOURCE` (`'github_actions'` with `ASSERTION_AUDIENCE`, `'azure_managed_identity'`, `'spiffe'` with `ASSERTION_FILE`: a JWT-SVID) | `OAUTH_SCOPE`, `ASSERTION_AUDIENCE` (with `ASSERTION_SOURCE`; for `spiffe` the SVID's `aud`, default the issuer), `IDENTITY_CLIENT_ID` (with `azure_managed_identity`), `SPIFFE_ID` (with `spiffe`: the SVID's `sub` must be it), `ASSERTION_TYPE` (`'jwt-bearer'` or `'jwt-spiffe'` with `ASSERTION_FILE`; default `jwt-spiffe` for `spiffe`, else `jwt-bearer`) |
 | `managed_identity` | `ISSUER`, `AUDIENCE` | — | `CLIENT_ID` (a user-assigned identity) |
 | `token` | `TOKEN` | — | — |
 

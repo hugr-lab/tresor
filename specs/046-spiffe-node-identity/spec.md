@@ -1,7 +1,8 @@
 # Spec 046: a node proves itself with SPIFFE - a JWT-SVID as its federated assertion
 
-- **Status**: partly implemented - `ASSERTION_TYPE` (2026-10-29, with duckdb-ext-common spec 019); `ASSERTION_SOURCE
-  'spiffe'`, `SPIFFE_ID` and the checks before sending are still a draft. The spike: `examples/spiffe-spike/`
+- **Status**: implemented (2026-10-29, with duckdb-ext-common spec 019) - `ASSERTION_TYPE`, `ASSERTION_SOURCE
+  'spiffe'`, `SPIFFE_ID` and the checks before sending; path B and sender-constrained tokens stay research. The
+  spike: `examples/spiffe-spike/`
 - **Date**: 2026-10-29
 - **Author**: hugr lab
 - **Asked by**: the owner (2026-10-29): "an identity framework identifying the nodes for authenticated secret
@@ -107,7 +108,7 @@ On the `tresor` secret, `FLOW 'federated'`:
 | Option | Value | Default | Meaning |
 | --- | --- | --- | --- |
 | `ASSERTION_SOURCE` | `'spiffe'` | - | the assertion is a JWT-SVID |
-| `ASSERTION_FILE` | a path | `$SPIFFE_SVID_FILE`, else required | the file `spiffe-helper` writes (`jwt_svids[].jwt_svid_file_name`) |
+| `ASSERTION_FILE` | a path | required | the file `spiffe-helper` writes (`jwt_svids[].jwt_svid_file_name`); no default from the environment, so the secret names every file a login reads |
 | `SPIFFE_ID` | `spiffe://…` | - (recommended) | the SVID's `sub` must be this, or it is never sent |
 | `ASSERTION_AUDIENCE` | text | the issuer | the SVID's `aud` must contain it, or it is never sent |
 | `ASSERTION_TYPE` | `'jwt-spiffe'`, `'jwt-bearer'` | `jwt-spiffe` with source `spiffe`, else `jwt-bearer` | the `client_assertion_type` sent |
@@ -150,7 +151,8 @@ meant to go):
   audience is never sent;
 - `exp` has not passed (so a dead helper reads as "the SVID in … expired at …", not as the IdP's `invalid_client`).
 
-**What does not change:** `whoami.login` stays `federated` (the audit's `detail` says `spiffe`); discovery's
+**What does not change:** `whoami.login` stays `federated`, and so does the audit's `login` (no `detail` for the
+source: a login's detail is not plumbed to where the credential is chosen); discovery's
 `service_flows` already lists `federated`; the keychain is never used for a service.
 
 **Not in tresor (rejected for now):** reading the SPIFFE Workload API itself (`SPIFFE_ENDPOINT_SOCKET`). It is gRPC
@@ -230,7 +232,8 @@ base, unchanged); Rancher Desktop on macOS (arm64). Every step ran as the design
 | as `jwt-bearer` | **refused**, `401 invalid_client` |
 | tresor today (`ASSERTION_FILE`) | **refused**: "the federated login … failed: invalid_client" - it sends `jwt-bearer` |
 | tresor with `ASSERTION_TYPE 'jwt-spiffe'` (implemented) | **logged in**: `client:acl-node`, `role:nodes`, `spike_lake` listed, the audit's `login ok` |
-| tresor as proposed further | refused at `CREATE SECRET` (`Unknown parameter "spiffe_id"`) - not implemented yet |
+| tresor with `ASSERTION_SOURCE 'spiffe'`, `SPIFFE_ID` (implemented) | **logged in** (jwt-spiffe by default): `client:acl-node`, `role:nodes`, `spike_lake` listed |
+| tresor given the intruder's SVID, `SPIFFE_ID` the node's | **refused by tresor**, never sent: "is spiffe://tresor.example/node/intruder, not SPIFFE_ID …" |
 | another workload's SVID as the node | refused, `401 invalid_client` |
 | the node's SVID for another audience | refused, `400 invalid_client` |
 
@@ -255,6 +258,25 @@ The part the spike showed is required, on its own:
   refusals at `CREATE SECRET`. Live: the spike's step "tresor with ASSERTION_TYPE", Keycloak 26.8.1.
 - **Pins**: the submodule moves to duckdb-ext-common's commit with spec 019, until it is tagged.
 
+### Implemented: `ASSERTION_SOURCE 'spiffe'` and `SPIFFE_ID`
+
+- **The options**: `ASSERTION_SOURCE 'spiffe'` needs `ASSERTION_FILE` (the only source that takes one: a federated
+  login names `ASSERTION_FILE` or `ASSERTION_SOURCE`, both only for `spiffe`). `SPIFFE_ID` goes with it and must be
+  a SPIFFE ID (`spiffe://…`). `ASSERTION_AUDIENCE` overrides the expected `aud` (default: the issuer, as the login's
+  discovery names it). `ASSERTION_TYPE` defaults to `jwt-spiffe` with this source; `jwt-bearer` is for an IdP that
+  federates SPIRE as an OIDC issuer.
+- **The checks**, at every login and exchange, on the file as read (unverified claims - for refusing to send, never
+  for trusting): a JWT; `sub` a SPIFFE ID, and `SPIFFE_ID` when given; `aud` containing the expected audience
+  (trailing slashes aside); `exp` present and not passed. A refusal names the file, the IDs and audiences (none is
+  secret), never the token, and says "never sent".
+- **The credential**: a kind of its own (`SPIFFE`), a `federated` login for whoami and the audit.
+- **Tests**: `service_identities.test` with SVIDs `test_attach.sh` writes for the fake's issuer (its port is known
+  only then): the node's logs in; another workload's, another audience's, an expired one, one whose `sub` is no
+  SPIFFE ID and a key file are refused before sending - the fake's assertion count does not move;
+  `ASSERTION_AUDIENCE` changes what is expected; `jwt-bearer` with the source is sent as such; the `CREATE SECRET`
+  refusals. Live: the spike's steps "tresor with ASSERTION_SOURCE 'spiffe'" and "tresor given another workload's
+  SVID", Keycloak 26.8.1.
+
 ## Alternatives considered
 
 - **Do nothing; document `ASSERTION_FILE` + `spiffe-helper`** - enough for an IdP that takes `jwt-bearer`, not for
@@ -269,6 +291,7 @@ The part the spike showed is required, on its own:
 - The spike's findings: above. Not tried yet: the fallback (`jwt-bearer` through Keycloak's OIDC identity provider
   type, or Entra), and SPIRE's SPIFFE bundle endpoint in place of the OIDC `/keys`.
 - duckdb-ext-common: `ClientAuth.assertion_type` - done (its spec 019); a tag for it, and the pin moved to the tag.
-- tresor: `ASSERTION_TYPE`, the fake IdP's SPIFFE client, the docs (`pipelines.md`'s SPIFFE section) - done;
-  `ASSERTION_SOURCE 'spiffe'`, `SPIFFE_ID` and the checks before sending - to do.
+- tresor: `ASSERTION_TYPE`, `ASSERTION_SOURCE 'spiffe'`, `SPIFFE_ID`, the checks, the fake IdP's SPIFFE client, the
+  docs (`pipelines.md`'s SPIFFE section) - done. A live check of it in `scripts/live/` (as specs/027's
+  Keycloak-in-kind), from the spike, is next.
 - tresor-server: path B, if the research asks for it.

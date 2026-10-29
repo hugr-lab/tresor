@@ -10,10 +10,12 @@ All notable changes to tresor are documented here. The format follows
 ### Added
 
 - **windows_arm64**: built and tested by the distribution workflow, and opted into in the community descriptor.
-- **`ASSERTION_TYPE`** on a `federated` service login: `'jwt-spiffe'` sends the `ASSERTION_FILE` (a SPIFFE
-  JWT-SVID) as Keycloak's SPIFFE client authentication takes it; `'jwt-bearer'` is the default, as before.
-  Needs duckdb-ext-common spec 019 (`ClientAuth::assertion_type`). A pipelines page section on SPIFFE; the spike
-  in `examples/spiffe-spike` (specs/046).
+- **A SPIFFE workload's login** (specs/046): `ASSERTION_SOURCE 'spiffe'` with `ASSERTION_FILE` (the JWT-SVID
+  spiffe-helper writes) and `SPIFFE_ID`. The SVID is checked before it is sent - its `sub`, its `aud` (the issuer,
+  or `ASSERTION_AUDIENCE`), its expiry - and sent as `jwt-spiffe`, as Keycloak's SPIFFE client authentication
+  takes it. **`ASSERTION_TYPE`** (`'jwt-bearer'`, `'jwt-spiffe'`) names the type for any `ASSERTION_FILE`. Needs
+  duckdb-ext-common spec 019 (`ClientAuth::assertion_type`). A pipelines page section on SPIFFE; the spike in
+  `examples/spiffe-spike`.
 
 ## [0.1.1] - 2026-10-25
 

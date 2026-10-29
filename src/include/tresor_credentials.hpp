@@ -24,7 +24,8 @@ struct ServiceCredential {
 		ASSERTION_FILE,
 		GITHUB_ACTIONS,
 		MANAGED_IDENTITY,
-		AZURE_MANAGED_IDENTITY_ASSERTION
+		AZURE_MANAGED_IDENTITY_ASSERTION,
+		SPIFFE // a JWT-SVID's file (specs/046): ASSERTION_FILE, checked before it is sent
 	};
 
 	Kind kind = Kind::SECRET;
@@ -33,9 +34,10 @@ struct ServiceCredential {
 	string private_key_file;   // PRIVATE_KEY
 	string key_id;             // PRIVATE_KEY, optional
 	string certificate_file;   // PRIVATE_KEY, optional
-	string assertion_file;     // ASSERTION_FILE
-	string assertion_type;     // ASSERTION_FILE: its client_assertion_type (a URN); empty: jwt-bearer (specs/046)
-	string assertion_audience; // GITHUB_ACTIONS, AZURE_MANAGED_IDENTITY_ASSERTION
+	string assertion_file;     // ASSERTION_FILE, SPIFFE
+	string assertion_type;     // ASSERTION_FILE, SPIFFE: client_assertion_type's URN; empty: jwt-bearer
+	string assertion_audience; // GITHUB_ACTIONS, AZURE_MANAGED_IDENTITY_ASSERTION; SPIFFE: the SVID's aud
+	string spiffe_id;          // SPIFFE, optional: the `sub` the SVID must be
 	string identity_client_id; // AZURE_MANAGED_IDENTITY_ASSERTION: a user-assigned identity; empty: system-assigned
 	string audience;           // MANAGED_IDENTITY: the resource its token is for - the secret's, never the service's
 
