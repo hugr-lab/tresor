@@ -24,6 +24,7 @@ an image to run them in, a test realm, and the docs' Keycloak setup.
 | 2 | an app registration (acl-node) with the identity's token as its federated assertion | `federated`, `ASSERTION_SOURCE 'azure_managed_identity'`, `IDENTITY_CLIENT_ID` | Azure: the same job | `/live/check.sh fed` |
 | 3 | a pod's projected service-account token as the app registration's assertion (Entra) | `federated`, `ASSERTION_FILE` | Azure: AKS, ServiceAccount `tresor-logins/duckdb`, projected token mode 0440, audience `api://AzureADTokenExchange` | `/live/check.sh aks` |
 | 4 | a Kubernetes token as a Keycloak client's assertion | `federated`, `ASSERTION_FILE` | local: kind + Keycloak 26.8.1 + ref-server (`scripts/live/keycloak_kind.sh`); optionally the stand's Keycloak in AKS | `/live/check.sh kc` |
+| 5 | a SPIFFE workload's JWT-SVID as a Keycloak client's assertion (added by specs/046) | `federated`, `ASSERTION_SOURCE 'spiffe'`, `SPIFFE_ID` | local: docker compose (SPIRE + Keycloak 26.8.1, the spike's) + ref-server (`scripts/live/spiffe_keycloak.sh`) | `/live/check.sh spiffe` |
 
 A check passes when whoami says the expected `login` (`managed_identity` or `federated`) and the role
 `role:nodes`, and fails with a nonzero exit otherwise.
@@ -44,6 +45,7 @@ A check passes when whoami says the expected `login` (`managed_identity` or `fed
   client principal `client:<id>` is accepted as whoami's subject (the fake, Entra) or in its roles (the
   reference server with Keycloak).
 - `keycloak_kind.sh` + `keycloak-kind.yaml`: check 4, locally (below).
+- `spiffe_keycloak.sh` + `spiffe_keycloak.sql`: check 5, locally (specs/046).
 
 Option names are `src/tresor_secret.cpp`'s. Every value goes through a `tresor` secret's options; nothing is
 written to disk but the test's own token file.

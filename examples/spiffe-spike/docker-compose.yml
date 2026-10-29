@@ -1,0 +1,50 @@
+# The SPIFFE spike (tresor specs/046): a SPIRE trust domain, Keycloak trusting it, on 127.0.0.1 only.
+# spike.sh starts it in order (the agent needs a join token the server makes). Test credentials only.
+services:
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:${SPIRE_VERSION:-1.13.0}
+    user: "0"
+    command: ["-config", "/etc/spire/server.conf"]
+    volumes:
+      - ./spire/server.conf:/etc/spire/server.conf:ro
+      - spire-server-socket:/run/spire/sockets/server
+
+  spire-agent:
+    image: ghcr.io/spiffe/spire-agent:${SPIRE_VERSION:-1.13.0}
+    # the workload is uid 0 in this container (spike.sh registers unix:uid:0)
+    user: "0"
+    command: ["-config", "/etc/spire/agent.conf", "-joinToken", "${SPIRE_JOIN_TOKEN:-unset}"]
+    depends_on: [spire-server]
+    volumes:
+      - ./spire/agent.conf:/etc/spire/agent.conf:ro
+      - spire-agent-socket:/run/spire/sockets/agent
+
+  spire-oidc:
+    image: ghcr.io/spiffe/oidc-discovery-provider:${SPIRE_VERSION:-1.13.0}
+    user: "0"
+    command: ["-config", "/etc/spire/oidc.conf"]
+    depends_on: [spire-server]
+    ports:
+      - "127.0.0.1:${SPIRE_OIDC_PORT:-18456}:8008"
+    volumes:
+      - ./spire/oidc.conf:/etc/spire/oidc.conf:ro
+      - spire-server-socket:/run/spire/sockets/server
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:${KEYCLOAK_VERSION:-26.8.1}
+    command: ["start-dev", "--import-realm", "--http-port=8080"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # SPIFFE client authentication is a preview feature
+      KC_FEATURES: spiffe
+      # the issuer the host sees, whatever network a request came from
+      KC_HOSTNAME: http://127.0.0.1:${KEYCLOAK_PORT:-18491}
+    ports:
+      - "127.0.0.1:${KEYCLOAK_PORT:-18491}:8080"
+    volumes:
+      - ./keycloak/realm-spiffe.json:/opt/keycloak/data/import/realm-spiffe.json:ro
+
+volumes:
+  spire-server-socket:
+  spire-agent-socket:

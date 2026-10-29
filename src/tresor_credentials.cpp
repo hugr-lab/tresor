@@ -4,11 +4,13 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/config.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <ctime>
 #include <fstream>
 #include <sstream>
 
@@ -173,7 +175,44 @@ bool ServiceCredential::Auth(oidc::ClientAuth &auth, string &why) const {
 			why = assertion_file + " does not hold a token (a JWT) - never sent";
 			return false;
 		}
+		auth.assertion_type = assertion_type;
 		return true;
+	case Kind::SPIFFE: {
+		// a JWT-SVID (specs/046): re-read every time (spiffe-helper rotates it in minutes), and sent only when it is
+		// the workload's, for this identity provider, and alive - an SVID is a credential wherever it is accepted
+		if (!ReadCredentialFile(assertion_file, false, true, auth.assertion, why)) {
+			return false;
+		}
+		auto claims = ReadJwtClaims(auth.assertion);
+		auto trimmed = [](string url) {
+			while (!url.empty() && url.back() == '/') {
+				url.pop_back();
+			}
+			return url;
+		};
+		auto meant = std::any_of(claims.audiences.begin(), claims.audiences.end(),
+		                         [&](const string &aud) { return trimmed(aud) == trimmed(assertion_audience); });
+		if (!JwtShaped(auth.assertion) || !claims.is_jwt) {
+			why = assertion_file + " does not hold a token (a JWT) - never sent";
+		} else if (!StringUtil::StartsWith(claims.subject, "spiffe://")) {
+			why = assertion_file + " does not hold a JWT-SVID: its sub is no SPIFFE ID - never sent";
+		} else if (!spiffe_id.empty() && claims.subject != spiffe_id) {
+			why = "the JWT-SVID in " + assertion_file + " is " + claims.subject + ", not SPIFFE_ID " + spiffe_id +
+			      " - never sent";
+		} else if (!meant) {
+			why = "the JWT-SVID in " + assertion_file + " is not meant for " + assertion_audience +
+			      " (its aud: " + StringUtil::Join(claims.audiences, ", ") + ") - never sent";
+		} else if (claims.expires_at <= int64_t(std::time(nullptr))) {
+			why = "the JWT-SVID in " + assertion_file +
+			      (claims.expires_at == 0 ? " has no expiry" : " has expired - is spiffe-helper renewing it?") +
+			      " - never sent";
+		} else {
+			auth.assertion_type = assertion_type;
+			return true;
+		}
+		WipeAuth(auth);
+		return false;
+	}
 	case Kind::GITHUB_ACTIONS: {
 		auto token = oidc::GithubActionsToken(assertion_audience);
 		if (!token.Ok()) {
@@ -250,6 +289,7 @@ string ServiceCredential::LoginName() const {
 	case Kind::PRIVATE_KEY:
 		return "private_key_jwt";
 	case Kind::ASSERTION_FILE:
+	case Kind::SPIFFE:
 	case Kind::GITHUB_ACTIONS:
 	case Kind::AZURE_MANAGED_IDENTITY_ASSERTION:
 		return "federated";
