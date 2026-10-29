@@ -1059,13 +1059,22 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 			} else if (secret_flow == "federated") {
 				flow = LoginFlow::FEDERATED;
 				credential.assertion_file = SecretString(*service_secret, "assertion_file");
-				// a JWT-SVID to Keycloak's SPIFFE authentication (specs/046); jwt-bearer is the core's default
-				if (StringUtil::Lower(SecretString(*service_secret, "assertion_type")) == "jwt-spiffe") {
-					credential.assertion_type = "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe";
-				}
 				credential.assertion_audience = SecretString(*service_secret, "assertion_audience");
 				auto source = StringUtil::Lower(SecretString(*service_secret, "assertion_source"));
-				if (!credential.assertion_file.empty()) {
+				// a JWT-SVID to Keycloak's SPIFFE authentication (specs/046) - the default for a SPIFFE source;
+				// jwt-bearer (the core's default) for an IdP that federates SPIRE as an OIDC issuer
+				auto type = StringUtil::Lower(SecretString(*service_secret, "assertion_type"));
+				if (type == "jwt-spiffe" || (type.empty() && source == "spiffe")) {
+					credential.assertion_type = "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe";
+				}
+				if (source == "spiffe") {
+					// the SVID's aud: the issuer by default, as Keycloak requires it
+					credential.kind = ServiceCredential::Kind::SPIFFE;
+					credential.spiffe_id = SecretString(*service_secret, "spiffe_id");
+					if (credential.assertion_audience.empty()) {
+						credential.assertion_audience = info.issuer;
+					}
+				} else if (!credential.assertion_file.empty()) {
 					credential.kind = ServiceCredential::Kind::ASSERTION_FILE;
 				} else if (source == "azure_managed_identity") {
 					// the platform's identity as the app registration's federated credential (specs/015)

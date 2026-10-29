@@ -367,26 +367,32 @@ def step_seed(cfg: Config) -> Step:
     )
 
 
-def step_tresor(cfg: Config, script: str, kind: Literal["today", "type", "proposed"]) -> Step:
-    path = write_svid("acl-node", fetch_svid(cfg.node_id, cfg.issuer))
+def step_tresor(cfg: Config, script: str, kind: Literal["today", "type", "spiffe", "intruder"]) -> Step:
+    workload = cfg.intruder_id if kind == "intruder" else cfg.node_id
+    path = write_svid("acl-node", fetch_svid(workload, cfg.issuer))
     facts = tresor_facts(run_tresor(cfg, script, path))
     logged_in = any(key == "login" for key, _ in facts)
+    refused_here = any(key == "error" and "never sent" in value for key, value in facts)
     match kind:
         case "today":
             title = "tresor without ASSERTION_TYPE: FLOW 'federated', ASSERTION_FILE (sent as jwt-bearer)"
         case "type":
-            title = "tresor with ASSERTION_TYPE 'jwt-spiffe' (spec 046, implemented)"
-        case "proposed":
-            title = "tresor as spec 046 proposes further: ASSERTION_SOURCE 'spiffe', SPIFFE_ID"
+            title = "tresor with ASSERTION_TYPE 'jwt-spiffe'"
+        case "spiffe":
+            title = "tresor with ASSERTION_SOURCE 'spiffe' and SPIFFE_ID (jwt-spiffe by default)"
+        case "intruder":
+            title = "tresor given another workload's SVID, with SPIFFE_ID the node's"
     match kind, logged_in:
+        case "intruder", False if refused_here:
+            return Step(script + "-intruder", title, "expected", facts, "Refused by tresor: never sent to Keycloak.")
+        case "intruder", _:
+            return Step(script + "-intruder", title, "failed", facts, "tresor should refuse it before sending.")
         case _, True:
             return Step(script, title, "ok", facts)
-        case "proposed", False:
-            return Step(script, title, "expected", facts, "Refused until SPIFFE_ID and the source are implemented.")
         case "today", False:
             return Step(script, title, "expected", facts, "As Keycloak's answer to jwt-bearer above.")
         case _:
-            return Step(script, title, "failed", facts, "ASSERTION_TYPE 'jwt-spiffe' should log in.")
+            return Step(script, title, "failed", facts, "This should log in.")
 
 
 def step_intruder(cfg: Config) -> Step:
@@ -422,7 +428,12 @@ STEPS: tuple[tuple[str, str, Callable[[Config], Step]], ...] = (
     ("seed", "The administrator puts a secret in the service", step_seed),
     ("node_today.sql", "tresor without ASSERTION_TYPE", lambda c: step_tresor(c, "node_today.sql", "today")),
     ("node_type.sql", "tresor with ASSERTION_TYPE", lambda c: step_tresor(c, "node_type.sql", "type")),
-    ("node_proposed.sql", "tresor as proposed further", lambda c: step_tresor(c, "node_proposed.sql", "proposed")),
+    ("node_spiffe.sql", "tresor with ASSERTION_SOURCE 'spiffe'", lambda c: step_tresor(c, "node_spiffe.sql", "spiffe")),
+    (
+        "node_spiffe.sql-intruder",
+        "tresor given another workload's SVID",
+        lambda c: step_tresor(c, "node_spiffe.sql", "intruder"),
+    ),
     ("intruder", "Another workload's SVID", step_intruder),
     ("audience", "An SVID for another audience", step_audience),
 )
