@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SPIFFE Spike Console</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e1dc;
+    --ok: #1f7a4d; --ok-bg: #e3f3ea; --expected: #2d5fa8; --expected-bg: #e4ecf8;
+    --finding: #9a6200; --finding-bg: #fbf0dc; --failed: #b3261e; --failed-bg: #fbe5e3;
+    --running: #6b6b66; --running-bg: #ededea; --accent: #2d5fa8;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #161615; --panel: #1f1f1d; --text: #ecebe6; --muted: #9b9a94; --line: #34332f;
+      --ok: #6fcf97; --ok-bg: #1d3327; --expected: #8db4ee; --expected-bg: #1e2a3d;
+      --finding: #f0b75c; --finding-bg: #3a2c14; --failed: #f08a82; --failed-bg: #3d1f1c;
+      --running: #9b9a94; --running-bg: #2a2a27; --accent: #8db4ee;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #161615; --panel: #1f1f1d; --text: #ecebe6; --muted: #9b9a94; --line: #34332f;
+    --ok: #6fcf97; --ok-bg: #1d3327; --expected: #8db4ee; --expected-bg: #1e2a3d;
+    --finding: #f0b75c; --finding-bg: #3a2c14; --failed: #f08a82; --failed-bg: #3d1f1c;
+    --running: #9b9a94; --running-bg: #2a2a27; --accent: #8db4ee;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding: 20px 16px 8px; max-width: 1280px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  header p { margin: 0; color: var(--muted); max-width: 820px; }
+  .bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+  button { font: inherit; padding: 8px 18px; border-radius: 6px; border: 1px solid var(--accent);
+           background: var(--accent); color: var(--bg); cursor: pointer; }
+  button:disabled { opacity: .5; cursor: progress; }
+  .cfg { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px;
+         max-width: 1280px; margin: 0 auto; padding: 8px 16px 32px; }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; min-width: 0; }
+  h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  .tabs button { background: transparent; color: var(--text); border-color: var(--line); padding: 4px 12px; }
+  .tabs button[aria-selected="true"] { border-color: var(--accent); color: var(--accent); }
+  .diagram { overflow-x: auto; }
+  .diagram svg { max-width: 100%; height: auto; }
+  .legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; margin-top: 8px; color: var(--muted); }
+  .step { border: 1px solid var(--line); border-left-width: 4px; border-radius: 6px; padding: 10px 12px; margin-bottom: 10px; }
+  .step h3 { font-size: 14px; margin: 0; display: flex; gap: 8px; align-items: baseline; justify-content: space-between; }
+  .pill { font-size: 11px; font-weight: 600; text-transform: uppercase; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+  .s-ok { border-left-color: var(--ok); } .s-ok .pill { color: var(--ok); background: var(--ok-bg); }
+  .s-expected { border-left-color: var(--expected); } .s-expected .pill { color: var(--expected); background: var(--expected-bg); }
+  .s-finding { border-left-color: var(--finding); } .s-finding .pill { color: var(--finding); background: var(--finding-bg); }
+  .s-failed { border-left-color: var(--failed); } .s-failed .pill { color: var(--failed); background: var(--failed-bg); }
+  .s-running { border-left-color: var(--running); } .s-running .pill { color: var(--running); background: var(--running-bg); }
+  dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; margin: 8px 0 0; font-size: 13px; }
+  dt { color: var(--muted); }
+  dd { margin: 0; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+  .note { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
+  .empty { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>SPIFFE spike: a node logs in with its JWT-SVID</h1>
+  <p>Each step runs against the spike's SPIRE, Keycloak and reference server (tresor specs/046). Tokens are
+     decoded to their claims and never shown. <b>Expected</b> is a refusal the design wants; a <b>finding</b> is
+     an answer the spec has to take into account.</p>
+  <div class="bar">
+    <button id="run">Run the spike</button>
+    <span class="cfg" id="cfg"></span>
+  </div>
+</header>
+<main>
+  <section>
+    <h2>Steps</h2>
+    <div id="steps"><p class="empty">Not run yet.</p></div>
+  </section>
+  <section>
+    <h2>What is happening</h2>
+    <div class="tabs" role="tablist">
+      <button role="tab" aria-selected="true" data-view="arch">Architecture</button>
+      <button role="tab" aria-selected="false" data-view="seq">Login sequence</button>
+    </div>
+    <div class="diagram" id="diagram"></div>
+    <div class="legend">Components take the colour of their latest step.</div>
+  </section>
+</main>
+<script>
+const NODES = {  // which component each step exercises
+  available: ["idp"], bundle: ["spireServer", "spireOidc"], svid: ["spireAgent", "svid"],
+  "kc-jwt-spiffe": ["idp"], "kc-jwt-bearer": ["idp"], seed: ["svc"],
+  "node_today.sql": ["duck", "svc"], "node_proposed.sql": ["duck"],
+  intruder: ["intruder", "idp"], audience: ["idp"],
+};
+
+function architecture(statuses) {
+  const cls = Object.entries(statuses).map(([node, s]) => `class ${node} st_${s};`).join("\n");
+  return `flowchart LR
+  subgraph TD1["trust domain spiffe://tresor.example"]
+    spireServer["SPIRE server"]
+    spireAgent["SPIRE agent<br/>attests workloads"]
+    spireOidc["OIDC discovery<br/>/keys"]
+    intruder["another workload<br/>.../node/intruder"]
+  end
+  subgraph NodeBox["node"]
+    svid[("svid.jwt")]
+    duck["DuckDB + tresor"]
+  end
+  subgraph Outside["identity provider and service"]
+    direction TB
+    idp["Keycloak, IdP type spiffe<br/>SVID in, access token out"]
+    svc["reference server<br/>Bearer access token"]
+  end
+  spireServer --> spireAgent
+  spireAgent -->|"JWT-SVID"| svid
+  spireAgent -.-> intruder
+  svid --> duck
+  spireServer --> spireOidc
+  spireOidc -->|"bundle"| idp
+  duck <--> idp
+  intruder -.->|"as acl-node?"| idp
+  duck --> svc
+  classDef st_ok fill:#e3f3ea,stroke:#1f7a4d,color:#1d1d1b;
+  classDef st_expected fill:#e4ecf8,stroke:#2d5fa8,color:#1d1d1b;
+  classDef st_finding fill:#fbf0dc,stroke:#9a6200,color:#1d1d1b;
+  classDef st_failed fill:#fbe5e3,stroke:#b3261e,color:#1d1d1b;
+  classDef st_running fill:#ededea,stroke:#6b6b66,stroke-dasharray:4 3,color:#1d1d1b;
+  ${cls}`;
+}
+
+const SEQUENCE = `sequenceDiagram
+  autonumber
+  participant A as SPIRE agent
+  participant T as tresor (node)
+  participant K as Keycloak
+  participant S as reference server
+  A->>T: JWT-SVID, sub spiffe://tresor.example/node/acl-node, aud the realm
+  T->>K: client_credentials, client_assertion = SVID
+  K->>K: signature against the bundle, sub = the client's jwt.credential.sub
+  K-->>T: access token, client:acl-node, role:nodes
+  T->>S: GET /v1/whoami, /v1/secrets
+  S-->>T: spike_lake, granted to role:nodes`;
+
+let view = "arch", last = "";
+const dark = () => matchMedia("(prefers-color-scheme: dark)").matches;
+mermaid.initialize({ startOnLoad: false, theme: dark() ? "dark" : "default", securityLevel: "strict" });
+
+async function draw(statuses) {
+  const text = view === "arch" ? architecture(statuses) : SEQUENCE;
+  if (text === last) return;
+  last = text;
+  const { svg } = await mermaid.render("d" + Date.now(), text);
+  document.getElementById("diagram").innerHTML = svg;
+}
+
+function card(step) {
+  const el = document.createElement("div");
+  el.className = `step s-${step.status}`;
+  const h = document.createElement("h3");
+  const t = document.createElement("span"); t.textContent = step.title;
+  const p = document.createElement("span"); p.className = "pill"; p.textContent = step.status;
+  h.append(t, p); el.append(h);
+  if (step.facts.length) {
+    const dl = document.createElement("dl");
+    for (const [k, v] of step.facts) {
+      const dt = document.createElement("dt"); dt.textContent = k;
+      const dd = document.createElement("dd"); dd.textContent = v;
+      dl.append(dt, dd);
+    }
+    el.append(dl);
+  }
+  if (step.note) { const n = document.createElement("p"); n.className = "note"; n.textContent = step.note; el.append(n); }
+  return el;
+}
+
+async function poll() {
+  try {
+    const state = await (await fetch("/state")).json();
+    document.getElementById("cfg").textContent = `${state.config.node}  →  ${state.config.issuer}  →  ${state.config.service}`;
+    document.getElementById("run").disabled = state.running;
+    const box = document.getElementById("steps");
+    if (state.steps.length) box.replaceChildren(...state.steps.map(card));
+    const statuses = {};
+    for (const s of state.steps) for (const n of NODES[s.id] || []) statuses[n] = s.status;
+    await draw(statuses);
+  } catch (e) { /* the console stopped: keep the last picture */ }
+  setTimeout(poll, 800);
+}
+
+document.getElementById("run").onclick = () => fetch("/run", { method: "POST" });
+for (const b of document.querySelectorAll(".tabs button")) {
+  b.onclick = () => {
+    view = b.dataset.view; last = "";
+    for (const o of document.querySelectorAll(".tabs button")) o.setAttribute("aria-selected", String(o === b));
+  };
+}
+poll();
+</script>
+</body>
+</html>

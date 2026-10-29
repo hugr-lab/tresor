@@ -63,3 +63,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | [043](043-page-token/spec.md) | the application's own login - its access token handed over (`tresor_web_token`), no second login | implemented |
 | [044](044-wasm-threads-memory/spec.md) | wasm_threads that a threads DuckDB-wasm can load - shared memory (`USE_WASM_THREADS`) | implemented |
 | [045](045-architecture-0.1/spec.md) | the architecture as of 0.1 - what tresor is after specs 002-044 | accepted |
+| [046](046-spiffe-node-identity/spec.md) | a node proves itself with SPIFFE - a JWT-SVID as its federated assertion (a spike) | draft |
