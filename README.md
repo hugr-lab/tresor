@@ -88,7 +88,8 @@ container on Azure, Kubernetes, AWS or GCP, with your database, your KMS and you
 
 You need a secrets service to attach to. The quickest way is **tresor-server in a container** in your own
 infrastructure, with a demo identity provider:
-[tresor-server — Getting started](https://hugr-lab.com/docs/tresor-server/getting-started/).
+[tresor-server — Quickstart](https://hugr-lab.com/docs/tresor-server/quickstart/). Administrators then manage secrets
+and grants in its web console: [Using the console](https://hugr-lab.com/docs/tresor-server/console-guide/).
 
 For a trial you need only Docker and a host name that DuckDB can reach. To connect your own identity provider,
 prepare:
