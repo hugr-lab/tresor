@@ -18,7 +18,7 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 
 | Spec | Title | Status |
 | --- | --- | --- |
-| [001](001-architecture/spec.md) | attach a secrets service, one OIDC login, role-based secrets | accepted |
+| [001](001-architecture/spec.md) | attach a secrets service, one OIDC login, role-based secrets | superseded by 045 |
 | [002](002-attach-login/spec.md) | attach — discovery, one OIDC login (people and services), `corp.whoami()` | implemented |
 | [003](003-reference-server/spec.md) | the reference server — duckdb-secrets/1 in Go, Keycloak end to end, the conformance suite | implemented |
 | [004](004-secret-storage/spec.md) | the secret storage — the service's secrets in DuckDB's lookup, `corp.secrets()` | implemented |
@@ -62,3 +62,4 @@ Research and thinking-out-loud live in the local, gitignored `design/` folder.
 | [042](042-wasm-build/spec.md) | the wasm build that loads - no OpenSSL, no sockets; proven in DuckDB-wasm's shell | implemented |
 | [043](043-page-token/spec.md) | the application's own login - its access token handed over (`tresor_web_token`), no second login | implemented |
 | [044](044-wasm-threads-memory/spec.md) | wasm_threads that a threads DuckDB-wasm can load - shared memory (`USE_WASM_THREADS`) | implemented |
+| [045](045-architecture-0.1/spec.md) | the architecture as of 0.1 - what tresor is after specs 002-044 | accepted |
