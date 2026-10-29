@@ -22,6 +22,7 @@ chmod 600 "$keys/keynode.pem" "$keys/eckeynode.pem"
 cp "$keys/keynode.pem" "$keys/keynode-open.pem"
 chmod 644 "$keys/keynode-open.pem"
 printf 'eyJhbGciOiJub25lIn0.eyJzdWIiOiJmZWRub2RlIn0.c2ln\n' >"$keys/fed.token"
+printf 'eyJhbGciOiJub25lIn0.eyJzdWIiOiJzcGlmZmU6Ly90cmVzb3IudGVzdC9ub2RlL3NwaWZmZW5vZGUifQ.c2ln\n' >"$keys/svid.token" # a JWT-SVID (specs/046)
 cp "$keys/keynode.pem" "$keys/keynode-group.pem"
 chmod 640 "$keys/keynode-group.pem"
 export TRESOR_TEST_KEYS="$keys"

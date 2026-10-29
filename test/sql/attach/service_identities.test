@@ -211,6 +211,72 @@ does not hold a token
 statement ok
 DROP SECRET fed;
 
+# --- the assertion's type: a JWT-SVID as jwt-spiffe, as Keycloak's SPIFFE authentication takes it (specs/046) -----
+
+statement error
+CREATE SECRET svid (TYPE tresor, SCOPE 'tresor:x', FLOW 'federated', CLIENT_ID 'spiffenode', ISSUER 'http://i',
+    ASSERTION_FILE '/svid.jwt', ASSERTION_TYPE 'saml2-bearer');
+----
+ASSERTION_TYPE is 'jwt-bearer' or 'jwt-spiffe', not 'saml2-bearer'
+
+statement error
+CREATE SECRET svid (TYPE tresor, SCOPE 'tresor:x', FLOW 'federated', CLIENT_ID 'spiffenode', ISSUER 'http://i',
+    ASSERTION_SOURCE 'github_actions', ASSERTION_AUDIENCE 'a', ASSERTION_TYPE 'jwt-spiffe');
+----
+ASSERTION_TYPE 'jwt-spiffe' goes with ASSERTION_FILE
+
+statement error
+CREATE SECRET svid (TYPE tresor, SCOPE 'tresor:x', FLOW 'client_credentials', CLIENT_ID 'spiffenode', ISSUER 'http://i',
+    CLIENT_SECRET 's', ASSERTION_TYPE 'jwt-spiffe');
+----
+does not take ASSERTION_TYPE
+
+# without the type the SVID goes as jwt-bearer, which the SPIFFE client refuses
+statement ok
+CREATE SECRET svid (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'federated', CLIENT_ID 'spiffenode',
+    ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_FILE '{TRESOR_TEST_KEYS}/svid.token');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true, SECRET svid);
+----
+invalid_client
+
+statement ok
+CREATE OR REPLACE SECRET svid (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'federated',
+    CLIENT_ID 'spiffenode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp',
+    ASSERTION_FILE '{TRESOR_TEST_KEYS}/svid.token', ASSERTION_TYPE 'JWT-SPIFFE');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true, SECRET svid);
+
+query II
+SELECT subject, login FROM s.whoami();
+----
+client:spiffenode	federated
+
+statement ok
+DETACH s;
+
+# jwt-bearer named is what the flow sent all along
+statement ok
+CREATE OR REPLACE SECRET svid (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'federated',
+    CLIENT_ID 'fednode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp',
+    ASSERTION_FILE '{TRESOR_TEST_KEYS}/fed.token', ASSERTION_TYPE 'jwt-bearer');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true, SECRET svid);
+
+query I
+SELECT subject FROM s.whoami();
+----
+client:fednode
+
+statement ok
+DETACH s;
+
+statement ok
+DROP SECRET svid;
+
 # --- renewal: a service's token re-minted from the secret's files, a rotated token file picked up ------------------
 
 # the expiring realm answers 401 after two uses of a token as first issued: every renewal is a new mint

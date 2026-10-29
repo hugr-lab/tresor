@@ -25,6 +25,7 @@ Best first. Use the first row that fits where the job runs.
 | --- | --- | --- |
 | [Kubernetes](#kubernetes) (AKS, EKS, GKE, any) | `federated`, the projected service-account token (`ASSERTION_FILE`) | none |
 | [GitHub Actions](#github-actions) | `federated`, `ASSERTION_SOURCE 'github_actions'` | none |
+| [A SPIFFE workload](#spiffe) (SPIRE, any platform) | `federated`, the JWT-SVID (`ASSERTION_FILE`, `ASSERTION_TYPE 'jwt-spiffe'` with Keycloak) | none |
 | [Azure](#azure-managed-identity) (VM, App Service, Functions, Container Apps) | `managed_identity`, or `federated` through it | none |
 | [A VM or a worker with no platform identity](#a-key-on-the-machine) | `client_credentials` with a private key (`private_key_jwt`) | a key file (`0600`) |
 | [Last resort](#a-client-secret) | `client_credentials` with a client secret | a shared secret |
@@ -134,6 +135,37 @@ Keycloak finds the client by the token's issuer and subject. tresor also sends `
 Keycloak refuses the login when the two do not name the same client. The test realm
 `server/testdata/keycloak/realm-federated.json` is this setup, checked against Keycloak 26.8.1
 in a kind cluster (`scripts/live/keycloak_kind.sh`).
+
+## SPIFFE
+
+A workload SPIRE attested logs in with its **JWT-SVID**. On a node with no platform identity, or across
+platforms, that identity holds no secret and is rotated by the SPIRE agent. `spiffe-helper` keeps the SVID in
+a file, with its audience the identity provider's (for Keycloak: the realm's issuer URL). tresor reads the file
+at every login, so a rotated SVID is picked up.
+
+With **Keycloak's own SPIFFE support** (26.4 or later, a preview feature: start Keycloak with
+`--features=spiffe`), the SVID is sent as `jwt-spiffe`, the only type Keycloak's SPIFFE authentication takes:
+
+1. **Identity providers → Add provider → SPIFFE**: the *Trust domain* (`spiffe://corp.example`) and its
+   *Bundle endpoint*, for example SPIRE's OIDC discovery provider's `/keys`.
+2. **The workload's client**: a confidential client with service accounts, *Client Authenticator* *Signed JWT -
+   Federated*, *Identity provider* the SPIFFE provider's alias, *Federated subject* the workload's SPIFFE ID.
+   Give it the audience mapper for the service, and its service account the role the workload uses.
+3. **SPIRE**: the SVID carries no `iss` (leave the server's `jwt_issuer` unset), as Keycloak's SPIFFE
+   authentication expects.
+
+```sql
+CREATE SECRET node (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'federated',
+    CLIENT_ID 'acl-node', ISSUER 'https://login.corp.example/realms/main',
+    ASSERTION_FILE '/run/spiffe/svid.jwt', ASSERTION_TYPE 'jwt-spiffe');
+ATTACH 'tresor:secrets.corp.example' AS corp;
+```
+
+Keycloak refuses the same SVID as `jwt-bearer` (`invalid_client`), so a SPIFFE login to Keycloak needs
+`ASSERTION_TYPE 'jwt-spiffe'`. An identity provider that federates SPIRE as an ordinary OIDC issuer (Entra,
+Okta, or Keycloak's OpenID Connect provider type) takes it as `jwt-bearer`, the default: set SPIRE's
+`jwt_issuer` and make its OIDC discovery reachable by the identity provider. Checked against Keycloak 26.8.1 and
+SPIRE 1.13.0 (`examples/spiffe-spike`, specs/046).
 
 ## GitHub Actions
 

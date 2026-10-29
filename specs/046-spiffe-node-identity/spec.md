@@ -1,6 +1,7 @@
 # Spec 046: a node proves itself with SPIFFE - a JWT-SVID as its federated assertion
 
-- **Status**: draft (a design and a spike, `examples/spiffe-spike/`; nothing in the extension changes yet)
+- **Status**: partly implemented - `ASSERTION_TYPE` (2026-10-29, with duckdb-ext-common spec 019); `ASSERTION_SOURCE
+  'spiffe'`, `SPIFFE_ID` and the checks before sending are still a draft. The spike: `examples/spiffe-spike/`
 - **Date**: 2026-10-29
 - **Author**: hugr lab
 - **Asked by**: the owner (2026-10-29): "an identity framework identifying the nodes for authenticated secret
@@ -228,7 +229,8 @@ base, unchanged); Rancher Desktop on macOS (arm64). Every step ran as the design
 | as `jwt-spiffe` | **accepted** - no `jti` needed; the token: `azp` `acl-node`, `aud` `duckdb-secrets`, role `nodes` |
 | as `jwt-bearer` | **refused**, `401 invalid_client` |
 | tresor today (`ASSERTION_FILE`) | **refused**: "the federated login … failed: invalid_client" - it sends `jwt-bearer` |
-| tresor as proposed | refused at `CREATE SECRET` (`Unknown parameter "spiffe_id"`) - not implemented yet |
+| tresor with `ASSERTION_TYPE 'jwt-spiffe'` (implemented) | **logged in**: `client:acl-node`, `role:nodes`, `spike_lake` listed, the audit's `login ok` |
+| tresor as proposed further | refused at `CREATE SECRET` (`Unknown parameter "spiffe_id"`) - not implemented yet |
 | another workload's SVID as the node | refused, `401 invalid_client` |
 | the node's SVID for another audience | refused, `400 invalid_client` |
 
@@ -236,6 +238,22 @@ So with Keycloak's own support the assertion type is what stands between tresor 
 `ASSERTION_TYPE` option (and `ClientAuth.assertion_type` in duckdb-ext-common) is required, not optional. Keycloak
 binds the client to its SPIFFE ID and checks the audience itself; tresor's checks before sending still matter, so
 that an SVID never leaves the node for another audience or as another identity.
+
+### Implemented: `ASSERTION_TYPE`
+
+The part the spike showed is required, on its own:
+- **The option**: `ASSERTION_TYPE` on `FLOW 'federated'`, `'jwt-bearer'` (the default, what was sent all along) or
+  `'jwt-spiffe'` (case-insensitive). `'jwt-spiffe'` goes with `ASSERTION_FILE` only: a platform source
+  (`github_actions`, `azure_managed_identity`) issues no SVID. Another value, or the option on another flow, is
+  refused at `CREATE SECRET`.
+- **The login**: `jwt-spiffe` becomes `urn:ietf:params:oauth:client-assertion-type:jwt-spiffe` in the
+  credential, and the OIDC core sends it as the `client_assertion_type` (duckdb-ext-common spec 019:
+  `ClientAuth::assertion_type`). The same credential serves a node's token exchanges (acting for sessions).
+  `whoami.login` stays `federated`.
+- **Tests**: `test/sql/attach/service_identities.test` against the fake's SPIFFE client (`spiffenode`, `jwt-spiffe`
+  only): without the type `invalid_client`, with it logged in; `jwt-bearer` named is the old behaviour; the
+  refusals at `CREATE SECRET`. Live: the spike's step "tresor with ASSERTION_TYPE", Keycloak 26.8.1.
+- **Pins**: the submodule moves to duckdb-ext-common's commit with spec 019, until it is tagged.
 
 ## Alternatives considered
 
@@ -250,6 +268,7 @@ that an SVID never leaves the node for another audience or as another identity.
 
 - The spike's findings: above. Not tried yet: the fallback (`jwt-bearer` through Keycloak's OIDC identity provider
   type, or Entra), and SPIRE's SPIFFE bundle endpoint in place of the OIDC `/keys`.
-- duckdb-ext-common: `ClientAuth.assertion_type`.
-- tresor: the option, its checks, the fake IdP, the docs (`pipelines.md`: a SPIFFE page beside Kubernetes').
+- duckdb-ext-common: `ClientAuth.assertion_type` - done (its spec 019); a tag for it, and the pin moved to the tag.
+- tresor: `ASSERTION_TYPE`, the fake IdP's SPIFFE client, the docs (`pipelines.md`'s SPIFFE section) - done;
+  `ASSERTION_SOURCE 'spiffe'`, `SPIFFE_ID` and the checks before sending - to do.
 - tresor-server: path B, if the research asks for it.

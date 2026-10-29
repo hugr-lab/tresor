@@ -34,6 +34,7 @@ struct ServiceCredential {
 	string key_id;             // PRIVATE_KEY, optional
 	string certificate_file;   // PRIVATE_KEY, optional
 	string assertion_file;     // ASSERTION_FILE
+	string assertion_type;     // ASSERTION_FILE: its client_assertion_type (a URN); empty: jwt-bearer (specs/046)
 	string assertion_audience; // GITHUB_ACTIONS, AZURE_MANAGED_IDENTITY_ASSERTION
 	string identity_client_id; // AZURE_MANAGED_IDENTITY_ASSERTION: a user-assigned identity; empty: system-assigned
 	string audience;           // MANAGED_IDENTITY: the resource its token is for - the secret's, never the service's

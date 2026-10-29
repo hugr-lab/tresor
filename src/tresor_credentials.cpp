@@ -173,6 +173,7 @@ bool ServiceCredential::Auth(oidc::ClientAuth &auth, string &why) const {
 			why = assertion_file + " does not hold a token (a JWT) - never sent";
 			return false;
 		}
+		auth.assertion_type = assertion_type;
 		return true;
 	case Kind::GITHUB_ACTIONS: {
 		auto token = oidc::GithubActionsToken(assertion_audience);

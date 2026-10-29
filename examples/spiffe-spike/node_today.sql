@@ -2,7 +2,7 @@
 -- FLOW 'federated', ASSERTION_FILE - which tresor sends as jwt-bearer. Run by console.py, which LOADs tresor
 -- first and masks anything token-shaped. Environment: SPIKE_HOST, SPIKE_ISSUER, SPIKE_SVID_FILE.
 SET tresor_audit_level = 'all';
-CALL enable_logging('tresor');
+CALL enable_logging('tresor', storage = 'memory'); -- the CLI's own log storage cannot be queried
 SELECT 'tresor=' || tresor_version();
 CREATE SECRET node (TYPE tresor, SCOPE 'tresor:' || getenv('SPIKE_HOST'), FLOW 'federated',
     CLIENT_ID 'acl-node', ISSUER getenv('SPIKE_ISSUER'), ASSERTION_FILE getenv('SPIKE_SVID_FILE'));

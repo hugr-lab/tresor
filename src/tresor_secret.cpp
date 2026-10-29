@@ -29,7 +29,7 @@ const FlowRule &RuleOf(const string &flow) {
 	                                          {"oauth_scope", "key_id", "certificate_file"}};
 	static const FlowRule federated {{"client_id", "issuer"},
 	                                 {{"assertion_file", "assertion_source"}},
-	                                 {"oauth_scope", "assertion_audience", "identity_client_id"}};
+	                                 {"oauth_scope", "assertion_audience", "identity_client_id", "assertion_type"}};
 	static const FlowRule managed_identity {{"issuer", "audience"}, {}, {"client_id"}};
 	static const FlowRule token {{"token"}, {}, {}};
 	if (flow == "client_credentials") {
@@ -116,6 +116,19 @@ unique_ptr<BaseSecret> CreateTresorSecret(ClientContext &context, CreateSecretIn
 	} else if (given("assertion_audience")) {
 		throw InvalidInputException("tresor secret: ASSERTION_AUDIENCE goes with ASSERTION_SOURCE");
 	}
+	// how the assertion is presented (specs/046): Keycloak's SPIFFE authentication takes a JWT-SVID as jwt-spiffe
+	if (given("assertion_type")) {
+		auto type = StringUtil::Lower(value("assertion_type"));
+		if (type != "jwt-bearer" && type != "jwt-spiffe") {
+			throw InvalidInputException("tresor secret: ASSERTION_TYPE is 'jwt-bearer' or 'jwt-spiffe', not '%s'",
+			                            value("assertion_type"));
+		}
+		if (type == "jwt-spiffe" && !given("assertion_file")) {
+			throw InvalidInputException(
+			    "tresor secret: ASSERTION_TYPE 'jwt-spiffe' goes with ASSERTION_FILE (a JWT-SVID, "
+			    "as spiffe-helper writes it)");
+		}
+	}
 
 	// a SCOPE is the service this credential is for: without one duckdb's lookup would offer it to every
 	// ATTACH 'tresor:...', and a scope not in the ATTACH path's shape would match none
@@ -195,7 +208,7 @@ void RegisterTresorSecret(ExtensionLoader &loader) {
 	function.function = CreateTresorSecret;
 	for (auto name : {"flow", "client_id", "client_secret", "token", "oauth_scope", "issuer", "private_key_file",
 	                  "key_id", "certificate_file", "assertion_file", "assertion_source", "assertion_audience",
-	                  "identity_client_id", "audience"}) {
+	                  "identity_client_id", "assertion_type", "audience"}) {
 		function.named_parameters[name] = LogicalType::VARCHAR;
 	}
 	loader.RegisterFunction(function);
