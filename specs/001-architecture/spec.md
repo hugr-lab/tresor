@@ -1,10 +1,15 @@
 # Spec 001: tresor — attach a secrets service, one OIDC login, role-based secrets
 
-- **Status**: accepted (scaffold implemented: the `tresor` ATTACH type is registered and loads the
-  extension by prefix; the attach itself is specs/002; the architecture implemented through specs/034, see
+- **Status**: superseded by [045](../045-architecture-0.1/spec.md) (implemented through specs/034, see
   [035](../035-release-readiness/spec.md))
 - **Date**: 2026-09-18
 - **Author**: VGSML
+
+> **Superseded.** This is the design as first written (2026-09-18), kept for its history. Read
+> [spec 045](../045-architecture-0.1/spec.md) for the architecture of tresor 0.1. Out of date here: the
+> permission model (users creating and sharing secrets, delegation rules and their `user`/`shared` modes -
+> replaced by [009](../009-permissions-v2/spec.md)), the *Pins* (now DuckDB `v2.0.0`, duckdb-ext-common
+> `v0.15.0`), the *Follow-ups*' numbering and the *Testing* plan.
 
 ## Summary
 

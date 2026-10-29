@@ -6,8 +6,8 @@ DuckDB's own secret lookup; the attached catalog is also the storage for `CREATE
 IN corp` and the SQL surface for grants (an administrator's). The service is anything implementing the
 open protocol `duckdb-secrets/1` — its normative text is **`website/docs/protocol.md`**.
 
-Read **[specs/001-architecture/spec.md](specs/001-architecture/spec.md)** first. Deeper research lives
-in the local, gitignored `design/001-secrets-service/` (`RESEARCH.md` = the full design history,
+Read **[specs/045-architecture-0.1/spec.md](specs/045-architecture-0.1/spec.md)** first (it supersedes
+001). Deeper research lives in the local, gitignored `design/001-secrets-service/` (`RESEARCH.md` = the full design history,
 revisions 1–10, with every verified duckdb seam; `extension-startup-autoload.md` = how loading by
 ATTACH prefix works).
 
