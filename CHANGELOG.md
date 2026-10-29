@@ -7,6 +7,10 @@ All notable changes to tresor are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- **The reference server** takes go-jose v4.1.6 (CVE-2026-116587, a denial of service parsing JWKs with RSA keys).
+
 ### Added
 
 - **windows_arm64**: built and tested by the distribution workflow, and opted into in the community descriptor.
