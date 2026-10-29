@@ -277,6 +277,145 @@ DETACH s;
 statement ok
 DROP SECRET svid;
 
+# --- ASSERTION_SOURCE 'spiffe': the JWT-SVID checked before it is sent (specs/046) -------------------------------
+
+statement error
+CREATE SECRET sp (TYPE tresor, SCOPE 'tresor:x', FLOW 'federated', CLIENT_ID 'spiffenode', ISSUER 'http://i',
+    ASSERTION_SOURCE 'spiffe');
+----
+ASSERTION_SOURCE 'spiffe' needs ASSERTION_FILE
+
+statement error
+CREATE SECRET sp (TYPE tresor, SCOPE 'tresor:x', FLOW 'federated', CLIENT_ID 'spiffenode', ISSUER 'http://i',
+    ASSERTION_FILE '/svid.jwt', SPIFFE_ID 'spiffe://tresor.test/node/spiffenode');
+----
+SPIFFE_ID goes with ASSERTION_SOURCE 'spiffe'
+
+statement error
+CREATE SECRET sp (TYPE tresor, SCOPE 'tresor:x', FLOW 'federated', CLIENT_ID 'spiffenode', ISSUER 'http://i',
+    ASSERTION_SOURCE 'spiffe', ASSERTION_FILE '/svid.jwt', SPIFFE_ID 'tresor.test/node/spiffenode');
+----
+is not a SPIFFE ID
+
+statement error
+CREATE SECRET sp (TYPE tresor, SCOPE 'tresor:x', FLOW 'federated', CLIENT_ID 'fednode', ISSUER 'http://i',
+    ASSERTION_SOURCE 'github_actions', ASSERTION_AUDIENCE 'a', ASSERTION_FILE '/t.jwt');
+----
+both only for ASSERTION_SOURCE 'spiffe'
+
+statement error
+CREATE SECRET sp (TYPE tresor, SCOPE 'tresor:x', FLOW 'federated', CLIENT_ID 'spiffenode', ISSUER 'http://i');
+----
+needs ASSERTION_FILE or ASSERTION_SOURCE
+
+# the node's SVID: jwt-spiffe is the source's default, the audience the issuer's
+statement ok
+CREATE SECRET sp (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'federated', CLIENT_ID 'spiffenode',
+    ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_SOURCE 'spiffe',
+    ASSERTION_FILE '{TRESOR_TEST_KEYS}/svid-node.jwt', SPIFFE_ID 'spiffe://tresor.test/node/spiffenode');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true, SECRET sp);
+
+query II
+SELECT subject, login FROM s.whoami();
+----
+client:spiffenode	federated
+
+statement ok
+DETACH s;
+
+# another workload's SVID: never sent - and the IdP's assertion count does not move
+statement ok
+CREATE TABLE sent AS SELECT idp('assertions') AS n;
+
+statement ok
+CREATE OR REPLACE SECRET sp (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'federated',
+    CLIENT_ID 'spiffenode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_SOURCE 'spiffe',
+    ASSERTION_FILE '{TRESOR_TEST_KEYS}/svid-other.jwt', SPIFFE_ID 'spiffe://tresor.test/node/spiffenode');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true, SECRET sp);
+----
+is spiffe://tresor.test/node/other, not SPIFFE_ID spiffe://tresor.test/node/spiffenode - never sent
+
+# for another audience
+statement ok
+CREATE OR REPLACE SECRET sp (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'federated',
+    CLIENT_ID 'spiffenode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_SOURCE 'spiffe',
+    ASSERTION_FILE '{TRESOR_TEST_KEYS}/svid-aud.jwt');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true, SECRET sp);
+----
+is not meant for http://127.0.0.1:{TRESOR_TEST_PORT}/idp (its aud: https://elsewhere.example) - never sent
+
+# ... unless ASSERTION_AUDIENCE names that audience: then it is sent, and this IdP refuses it as its own
+statement ok
+CREATE OR REPLACE SECRET sp (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'federated',
+    CLIENT_ID 'spiffenode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_SOURCE 'spiffe',
+    ASSERTION_FILE '{TRESOR_TEST_KEYS}/svid-node.jwt', ASSERTION_AUDIENCE 'https://elsewhere.example');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true, SECRET sp);
+----
+is not meant for https://elsewhere.example
+
+# expired: spiffe-helper is not renewing it
+statement ok
+CREATE OR REPLACE SECRET sp (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'federated',
+    CLIENT_ID 'spiffenode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_SOURCE 'spiffe',
+    ASSERTION_FILE '{TRESOR_TEST_KEYS}/svid-expired.jwt');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true, SECRET sp);
+----
+has expired - is spiffe-helper renewing it?
+
+# a token that is no JWT-SVID, and a file that holds no token
+statement ok
+CREATE OR REPLACE SECRET sp (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'federated',
+    CLIENT_ID 'spiffenode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_SOURCE 'spiffe',
+    ASSERTION_FILE '{TRESOR_TEST_KEYS}/svid-nosub.jwt');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true, SECRET sp);
+----
+does not hold a JWT-SVID: its sub is no SPIFFE ID - never sent
+
+statement ok
+CREATE OR REPLACE SECRET sp (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'federated',
+    CLIENT_ID 'spiffenode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_SOURCE 'spiffe',
+    ASSERTION_FILE '{TRESOR_TEST_KEYS}/keynode.pem');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true, SECRET sp);
+----
+does not hold a token (a JWT) - never sent
+
+# none of the refused SVIDs reached the identity provider
+query I
+SELECT idp('assertions') = (SELECT n FROM sent);
+----
+true
+
+# jwt-bearer for an IdP that federates SPIRE as an OIDC issuer: the checks hold, the type is the secret's
+statement ok
+CREATE OR REPLACE SECRET sp (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'federated',
+    CLIENT_ID 'spiffenode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_SOURCE 'spiffe',
+    ASSERTION_FILE '{TRESOR_TEST_KEYS}/svid-node.jwt', ASSERTION_TYPE 'jwt-bearer');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true, SECRET sp);
+----
+invalid_client
+
+statement ok
+DROP SECRET sp;
+
+statement ok
+DROP TABLE sent;
+
 # --- renewal: a service's token re-minted from the secret's files, a rotated token file picked up ------------------
 
 # the expiring realm answers 401 after two uses of a token as first issued: every renewal is a new mint
