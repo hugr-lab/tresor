@@ -40,6 +40,14 @@ wait_for() { # $1 what, $2.. the command
 }
 
 echo "spiffe_keycloak: SPIRE $SPIRE_VERSION, Keycloak $KEYCLOAK_VERSION"
+# docker first, in plain words: a desktop that is still starting has no context or daemon yet (Rancher Desktop
+# rewrites its context at startup)
+if ! docker_error="$(docker info --format '{{.ServerVersion}}' 2>&1 >/dev/null)"; then
+	echo "spiffe_keycloak: Docker is not reachable (context ${DOCKER_CONTEXT:-$(docker context show 2>/dev/null || echo default)})" \
+		"- is Rancher Desktop (or Docker Desktop) running? Retry once it is up." >&2
+	echo "spiffe_keycloak: docker said: ${docker_error##*$'\n'}" >&2
+	exit 1
+fi
 "${compose[@]}" up -d --quiet-pull spire-server keycloak
 wait_for "the SPIRE server" server_cli healthcheck
 if ! "${compose[@]}" ps --status running spire-agent | grep -q spire-agent; then
