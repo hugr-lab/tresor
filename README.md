@@ -91,7 +91,7 @@ infrastructure, with a demo identity provider:
 [tresor-server — Quickstart](https://hugr-lab.com/docs/tresor-server/quickstart/). Administrators then manage secrets
 and grants in its web console: [Using the console](https://hugr-lab.com/docs/tresor-server/console-guide/).
 
-For a trial you need only Docker and a host name that DuckDB can reach. To connect your own identity provider,
+The demo needs only Docker Compose on the machine where DuckDB runs. To connect your own identity provider,
 prepare:
 
 | You need | Example | Where it comes from |
