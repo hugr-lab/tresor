@@ -302,6 +302,10 @@ KEYS = os.environ.get("TRESOR_TEST_KEYS", "")
 KEY_CLIENTS = {"keynode": "keynode.pub", "eckeynode": "eckeynode.pub"}
 # federated tokens the fake's "federation" trusts: JWT-shaped, as a platform's are (tresor sends nothing else)
 FEDERATED = {"fednode": {"eyJhbGciOiJub25lIn0.eyJzdWIiOiJmZWRub2RlIn0.c2ln", "eyJhbGciOiJub25lIn0.eyJzdWIiOiJmZWRub2RlMiJ9.c2ln", "github-jwt"}}
+# specs/046: a JWT-SVID, which the fake's Keycloak-like SPIFFE authentication takes only as jwt-spiffe
+SPIFFE = {"spiffenode": "spiffe://tresor.test/node/spiffenode"}  # the client's federated subject
+JWT_BEARER = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+JWT_SPIFFE = "urn:ietf:params:oauth:client-assertion-type:jwt-spiffe"
 SEEN_JTI = set()
 # realms that serve a node acting for acl sessions (specs/008); auth0 too, for the pinned audience (specs/015)
 ACTING_REALMS = ("acting", "shifty", "auth0")
@@ -331,6 +335,14 @@ MINTED_VARS = {}  # specs/037: variable name -> values generated
 
 def b64url_decode(text):
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def jwt_claims(token):
+    """A JWT's payload, unverified ({} for anything else) - the fake reads, it does not verify."""
+    try:
+        return json.loads(b64url_decode(token.split(".")[1]))
+    except (IndexError, ValueError):
+        return {}
 
 
 def der_ecdsa(raw):
@@ -387,9 +399,11 @@ def client_ok(form, token_endpoint):
     client = form.get("client_id")
     assertion = form.get("client_assertion")
     if assertion is not None:
-        if form.get("client_assertion_type") != "urn:ietf:params:oauth:client-assertion-type:jwt-bearer":
+        if form.get("client_assertion_type") != (JWT_SPIFFE if client in SPIFFE else JWT_BEARER):
             return False
         IDP_STATS["assertions"] += 1
+        if client in SPIFFE:  # the SVID's sub names the client (its signature: not the fake's business)
+            return jwt_claims(assertion).get("sub") == SPIFFE[client]
         if client == "minode":  # specs/015: a managed identity's token as the federated credential
             return assertion in MI_ASSERTIONS
         if client in FEDERATED:

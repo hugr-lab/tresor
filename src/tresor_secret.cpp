@@ -27,9 +27,11 @@ const FlowRule &RuleOf(const string &flow) {
 	static const FlowRule client_credentials {{"client_id", "issuer"},
 	                                          {{"client_secret", "private_key_file"}},
 	                                          {"oauth_scope", "key_id", "certificate_file"}};
+	// ASSERTION_FILE or ASSERTION_SOURCE - both only for 'spiffe' (a JWT-SVID's file): checked below
 	static const FlowRule federated {{"client_id", "issuer"},
-	                                 {{"assertion_file", "assertion_source"}},
-	                                 {"oauth_scope", "assertion_audience", "identity_client_id"}};
+	                                 {},
+	                                 {"assertion_file", "assertion_source", "oauth_scope", "assertion_audience",
+	                                  "identity_client_id", "assertion_type", "spiffe_id"}};
 	static const FlowRule managed_identity {{"issuer", "audience"}, {}, {"client_id"}};
 	static const FlowRule token {{"token"}, {}, {}};
 	if (flow == "client_credentials") {
@@ -98,14 +100,36 @@ unique_ptr<BaseSecret> CreateTresorSecret(ClientContext &context, CreateSecretIn
 		throw InvalidInputException("tresor secret: KEY_ID and CERTIFICATE_FILE go with PRIVATE_KEY_FILE");
 	}
 	auto source = StringUtil::Lower(value("assertion_source"));
+	if (flow == "federated") {
+		if (!given("assertion_file") && !given("assertion_source")) {
+			throw InvalidInputException("tresor secret: FLOW 'federated' needs ASSERTION_FILE or ASSERTION_SOURCE");
+		}
+		if (source == "spiffe" && !given("assertion_file")) {
+			throw InvalidInputException("tresor secret: ASSERTION_SOURCE 'spiffe' needs ASSERTION_FILE (the JWT-SVID "
+			                            "spiffe-helper writes)");
+		}
+		if (source != "spiffe" && given("assertion_file") && given("assertion_source")) {
+			throw InvalidInputException("tresor secret: FLOW 'federated' takes ASSERTION_FILE or ASSERTION_SOURCE, "
+			                            "both only for ASSERTION_SOURCE 'spiffe'");
+		}
+	}
+	if (given("spiffe_id")) {
+		if (source != "spiffe") {
+			throw InvalidInputException("tresor secret: SPIFFE_ID goes with ASSERTION_SOURCE 'spiffe'");
+		}
+		if (!StringUtil::StartsWith(value("spiffe_id"), "spiffe://") || value("spiffe_id").size() <= 9) {
+			throw InvalidInputException(
+			    "tresor secret: SPIFFE_ID '%s' is not a SPIFFE ID (spiffe://<trust domain>/...)", value("spiffe_id"));
+		}
+	}
 	if (given("identity_client_id") && source != "azure_managed_identity") {
 		throw InvalidInputException("tresor secret: IDENTITY_CLIENT_ID goes with ASSERTION_SOURCE "
 		                            "'azure_managed_identity'");
 	}
 	if (given("assertion_source")) {
-		if (source != "github_actions" && source != "azure_managed_identity") {
+		if (source != "github_actions" && source != "azure_managed_identity" && source != "spiffe") {
 			throw InvalidInputException(
-			    "tresor secret: ASSERTION_SOURCE is 'github_actions' or 'azure_managed_identity', not '%s'",
+			    "tresor secret: ASSERTION_SOURCE is 'github_actions', 'azure_managed_identity' or 'spiffe', not '%s'",
 			    value("assertion_source"));
 		}
 		if (source == "github_actions" && !given("assertion_audience")) {
@@ -115,6 +139,19 @@ unique_ptr<BaseSecret> CreateTresorSecret(ClientContext &context, CreateSecretIn
 		}
 	} else if (given("assertion_audience")) {
 		throw InvalidInputException("tresor secret: ASSERTION_AUDIENCE goes with ASSERTION_SOURCE");
+	}
+	// how the assertion is presented (specs/046): Keycloak's SPIFFE authentication takes a JWT-SVID as jwt-spiffe
+	if (given("assertion_type")) {
+		auto type = StringUtil::Lower(value("assertion_type"));
+		if (type != "jwt-bearer" && type != "jwt-spiffe") {
+			throw InvalidInputException("tresor secret: ASSERTION_TYPE is 'jwt-bearer' or 'jwt-spiffe', not '%s'",
+			                            value("assertion_type"));
+		}
+		if (type == "jwt-spiffe" && !given("assertion_file")) {
+			throw InvalidInputException(
+			    "tresor secret: ASSERTION_TYPE 'jwt-spiffe' goes with ASSERTION_FILE (a JWT-SVID, "
+			    "as spiffe-helper writes it)");
+		}
 	}
 
 	// a SCOPE is the service this credential is for: without one duckdb's lookup would offer it to every
@@ -132,6 +169,10 @@ unique_ptr<BaseSecret> CreateTresorSecret(ClientContext &context, CreateSecretIn
 	}
 	auto secret = make_uniq<KeyValueSecret>(scope, input.type, input.provider, input.name);
 	for (auto &option : input.options) {
+		// a NULL option is not given (as validated above): stored, it would read as the string 'NULL'
+		if (option.second.IsNull()) {
+			continue;
+		}
 		auto key = StringUtil::Lower(option.first);
 		secret->secret_map[Identifier(key)] = key == "flow" ? Value(flow) : Value(option.second.ToString());
 	}
@@ -195,7 +236,7 @@ void RegisterTresorSecret(ExtensionLoader &loader) {
 	function.function = CreateTresorSecret;
 	for (auto name : {"flow", "client_id", "client_secret", "token", "oauth_scope", "issuer", "private_key_file",
 	                  "key_id", "certificate_file", "assertion_file", "assertion_source", "assertion_audience",
-	                  "identity_client_id", "audience"}) {
+	                  "identity_client_id", "assertion_type", "spiffe_id", "audience"}) {
 		function.named_parameters[name] = LogicalType::VARCHAR;
 	}
 	loader.RegisterFunction(function);

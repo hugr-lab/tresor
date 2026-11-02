@@ -6,8 +6,8 @@ DuckDB's own secret lookup; the attached catalog is also the storage for `CREATE
 IN corp` and the SQL surface for grants (an administrator's). The service is anything implementing the
 open protocol `duckdb-secrets/1` — its normative text is **`website/docs/protocol.md`**.
 
-Read **[specs/001-architecture/spec.md](specs/001-architecture/spec.md)** first. Deeper research lives
-in the local, gitignored `design/001-secrets-service/` (`RESEARCH.md` = the full design history,
+Read **[specs/045-architecture-0.1/spec.md](specs/045-architecture-0.1/spec.md)** first (it supersedes
+001). Deeper research lives in the local, gitignored `design/001-secrets-service/` (`RESEARCH.md` = the full design history,
 revisions 1–10, with every verified duckdb seam; `extension-startup-autoload.md` = how loading by
 ATTACH prefix works).
 
@@ -22,7 +22,7 @@ ATTACH prefix works).
   | --- | --- | --- |
   | duckdb | submodule `duckdb/` | tag `v2.0.0` (d54cbbe), commit = duckdb-acl's |
   | extension-ci-tools | submodule `extension-ci-tools/` | `main`, commit = duckdb-acl's |
-  | duckdb-ext-common | submodule `duckdb-ext-common/` | tag `v0.15.0` (keychain/ specs/012, service identities specs/013, the OIDC core's pluggable transport specs/020, its CA bundle specs/030, PKCE on the device flow specs/040, no built-in client in wasm specs/042); duckdb-acl is on v0.14.0 until its next bump (no header or contract change between them, so hugr-node's header check holds) - `acl_checkout.sh` checks the contract stamps match |
+  | duckdb-ext-common | submodule `duckdb-ext-common/` | tag `v0.15.0` + spec 019 (`ClientAuth::assertion_type`, specs/046; untagged until its next tag) (keychain/ specs/012, service identities specs/013, the OIDC core's pluggable transport specs/020, its CA bundle specs/030, PKCE on the device flow specs/040, no built-in client in wasm specs/042); duckdb-acl is on v0.14.0 until its next bump (no header or contract change between them, so hugr-node's header check holds) - `acl_checkout.sh` checks the contract stamps match |
   | distribution | `.github/workflows/distribution.yml` | `@main`, `duckdb_version: v2.0.0` |
   | duckdb-acl (tests only) | `ACL_COMMIT` in `scripts/ci/acl_checkout.sh` | a duckdb-acl commit whose duckdb is ours |
 

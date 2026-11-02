@@ -22,6 +22,7 @@ chmod 600 "$keys/keynode.pem" "$keys/eckeynode.pem"
 cp "$keys/keynode.pem" "$keys/keynode-open.pem"
 chmod 644 "$keys/keynode-open.pem"
 printf 'eyJhbGciOiJub25lIn0.eyJzdWIiOiJmZWRub2RlIn0.c2ln\n' >"$keys/fed.token"
+printf 'eyJhbGciOiJub25lIn0.eyJzdWIiOiJzcGlmZmU6Ly90cmVzb3IudGVzdC9ub2RlL3NwaWZmZW5vZGUifQ.c2ln\n' >"$keys/svid.token" # a JWT-SVID (specs/046)
 cp "$keys/keynode.pem" "$keys/keynode-group.pem"
 chmod 640 "$keys/keynode-group.pem"
 export TRESOR_TEST_KEYS="$keys"
@@ -50,6 +51,19 @@ for _ in $(seq 50); do [ -s "$work/port" ] && break; sleep 0.1; done
 [ -s "$work/port" ] || { echo "test_attach: the fake service did not start" >&2; exit 1; }
 export TRESOR_TEST_PORT="$(cat "$work/port")"
 export TRESOR_TEST_TLS_PORT="$(cat "$work/tls_port")" # written before the plain port
+# JWT-SVIDs for the fake's issuer (specs/046): the node's, another workload's, for another audience, expired, and a
+# token whose sub is no SPIFFE ID - unsigned, as the fake reads and does not verify
+python3 - "$keys" "http://127.0.0.1:$TRESOR_TEST_PORT/idp" <<'PY'
+import base64, json, sys, time
+keys, issuer = sys.argv[1:]
+seg = lambda d: base64.urlsafe_b64encode(json.dumps(d).encode()).decode().rstrip("=")
+node, now = "spiffe://tresor.test/node/spiffenode", int(time.time())
+for name, sub, aud, exp in [("svid-node", node, [issuer], now + 3600), ("svid-other", "spiffe://tresor.test/node/other",
+                            [issuer], now + 3600), ("svid-aud", node, ["https://elsewhere.example"], now + 3600),
+                            ("svid-expired", node, [issuer], now - 60), ("svid-nosub", "spiffenode", [issuer], now + 3600)]:
+    with open(f"{keys}/{name}.jwt", "w") as out:
+        out.write(f'{seg({"alg": "none"})}.{seg({"sub": sub, "aud": aud, "exp": exp})}.c2ln\n')
+PY
 export BROWSER="$root/test/fake/browser.sh"
 # the Azure App Service identity endpoint and GitHub Actions' token service, both the fake's (specs/013)
 export IDENTITY_ENDPOINT="http://127.0.0.1:$TRESOR_TEST_PORT/msi/token" IDENTITY_HEADER=test-mi
