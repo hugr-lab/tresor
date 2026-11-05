@@ -362,7 +362,7 @@ jobs:
   # Representative second platform; PRs stay on the Linux job to keep them fast
   build-test-osx:
     name: Build + test (osx_arm64)
-    runs-on: macos-14
+    runs-on: macos-15
     if: ${{ github.event_name != 'pull_request' }}
     env:
       GEN: ninja
