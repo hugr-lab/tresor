@@ -52,13 +52,12 @@ examples/spiffe-spike/spike.sh down      # stop everything, forget the trust dom
 | --- | --- | --- |
 | Keycloak's own SPIFFE support is available | the Keycloak version, the `spiffe` feature's state, the realm's identity provider of type `spiffe` (also printed by `spike.sh up`) | available: the route the spike takes |
 | SPIRE publishes the trust domain's JWT keys | `/keys` of the OIDC discovery provider: what Keycloak reads as the bundle | keys present |
-| The agent issues the node's JWT-SVID | its claims: `sub`, `aud` (the realm), `exp`, whether `iss` and `jti` are present | `iss` absent |
+| The agent issues the node's JWT-SVID | its claims: `sub`, `aud` (the realm), `exp`, whether `iss` and `jti` are present | either: Keycloak 26.8.1 takes it with or without `iss` |
 | Keycloak: the SVID as `jwt-spiffe` | the access token's claims (`azp`, `aud` = `duckdb-secrets`, `role:nodes`), or Keycloak's error | ok |
 | Keycloak: the SVID as `jwt-bearer` | the same, as tresor sends assertions today | a finding either way |
 | The administrator seeds a secret | `spike_lake` (s3) and its grant to `role:nodes`, through the protocol | ok |
 | tresor without `ASSERTION_TYPE` | `node_today.sql`: `FLOW 'federated'`, `ASSERTION_FILE`, sent as `jwt-bearer` | refused (`invalid_client`) |
-| tresor with `ASSERTION_TYPE 'jwt-spiffe'` | `node_type.sql`: whoami, secrets, the audit's rows | logged in |
-| tresor with `ASSERTION_SOURCE 'spiffe'` | `node_spiffe.sql`: `SPIFFE_ID`, jwt-spiffe by default | logged in |
+| tresor with `ASSERTION_SOURCE 'spiffe'` | `node_spiffe.sql`: `SPIFFE_ID`, jwt-spiffe by default; whoami, secrets, the audit's rows | logged in |
 | tresor given another workload's SVID | `node_spiffe.sql` with the intruder's SVID, `SPIFFE_ID` the node's | refused by tresor, never sent |
 | Another workload's SVID | `spiffe://tresor.example/node/intruder`, presented as `acl-node` | refused (`invalid_client`) |
 | An SVID for another audience | the node's SVID with `aud` = `https://elsewhere.example` | refused |
@@ -72,8 +71,7 @@ Keycloak 26.8.1, SPIRE 1.13.0, Rancher Desktop on macOS: every step answered as 
 SPIFFE support was available, and it accepted the SVID as `jwt-spiffe` (no `iss`, no `jti` needed). It refused
 the same SVID as `jwt-bearer`, so tresor's login today fails with `invalid_client`, which is why the
 `ASSERTION_TYPE` option is needed. Another workload's SVID and an SVID made for another audience were refused.
-With `ASSERTION_TYPE 'jwt-spiffe'`, and with `ASSERTION_SOURCE 'spiffe'` and `SPIFFE_ID` (both now implemented),
-tresor logs in and lists `spike_lake`; given the intruder's SVID it refuses to send it.
+With `ASSERTION_SOURCE 'spiffe'` and `SPIFFE_ID` (now implemented; `jwt-spiffe` is its default), tresor logs in and lists `spike_lake`; given the intruder's SVID it refuses to send it.
 The full table is in [spec 046](../../specs/046-spiffe-node-identity/spec.md#what-the-spike-found-2026-10-29).
 
 With Rancher Desktop while Docker Desktop is the CLI's current context, run the scripts with

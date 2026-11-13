@@ -1,10 +1,11 @@
 # Spec 046: a node proves itself with SPIFFE - a JWT-SVID as its federated assertion
 
-- **Status**: implemented (2026-10-29, with duckdb-ext-common spec 019) - `ASSERTION_TYPE`, `ASSERTION_SOURCE
-  'spiffe'`, `SPIFFE_ID` and the checks before sending; path B and sender-constrained tokens stay research. The
-  spike: `examples/spiffe-spike/`
+- **Status**: implemented (2026-10-29, with duckdb-ext-common spec 019, tagged v0.16.0) - `ASSERTION_TYPE`,
+  `ASSERTION_SOURCE 'spiffe'`, `SPIFFE_ID` and the checks before sending; review changes 2026-11-13 (below). Path B
+  is tresor-server's (its spec 038, v0.8.5), its client side specs/047; sender-constrained tokens stay research.
+  The spike: `examples/spiffe-spike/`
 - **Date**: 2026-10-29
-- **Author**: hugr lab
+- **Author**: Örjan Lundberg (@oluies); review changes by hugr lab
 - **Asked by**: the owner (2026-10-29): "an identity framework identifying the nodes for authenticated secret
   pull", SPIFFE or something newer, as a configurable option
 
@@ -109,9 +110,9 @@ On the `tresor` secret, `FLOW 'federated'`:
 | --- | --- | --- | --- |
 | `ASSERTION_SOURCE` | `'spiffe'` | - | the assertion is a JWT-SVID |
 | `ASSERTION_FILE` | a path | required | the file `spiffe-helper` writes (`jwt_svids[].jwt_svid_file_name`); no default from the environment, so the secret names every file a login reads |
-| `SPIFFE_ID` | `spiffe://…` | - (recommended) | the SVID's `sub` must be this, or it is never sent |
+| `SPIFFE_ID` | `spiffe://…` | required | the SVID's `sub` must be this, or it is never sent |
 | `ASSERTION_AUDIENCE` | text | the issuer | the SVID's `aud` must contain it, or it is never sent |
-| `ASSERTION_TYPE` | `'jwt-spiffe'`, `'jwt-bearer'` | `jwt-spiffe` with source `spiffe`, else `jwt-bearer` | the `client_assertion_type` sent |
+| `ASSERTION_TYPE` | `'jwt-spiffe'`, `'jwt-bearer'` | `jwt-spiffe` with source `spiffe` (the only one it goes with), else `jwt-bearer` | the `client_assertion_type` sent |
 
 ```sql
 CREATE SECRET node (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'federated',
@@ -126,7 +127,7 @@ Which assertion type, by identity provider:
 ```mermaid
 flowchart TD
   start(["a node with a JWT-SVID"]) --> q1{"Keycloak 26.4+ with the spiffe feature on<br/>and an IdP of type spiffe in the realm?"}
-  q1 -->|"yes: the route"| spiffeType["ASSERTION_TYPE 'jwt-spiffe' (the default)<br/>SVID without iss<br/>bundle endpoint configured at the IdP"]
+  q1 -->|"yes: the route"| spiffeType["ASSERTION_TYPE 'jwt-spiffe' (the default)<br/>SVID with or without iss<br/>bundle endpoint configured at the IdP"]
   q1 -->|"no"| q2{"does the IdP federate<br/>OIDC issuers?"}
   q2 -->|"yes: Keycloak's OIDC IdP type,<br/>Entra, Okta"| bearerType["ASSERTION_TYPE 'jwt-bearer'<br/>SPIRE jwt_issuer set,<br/>its OIDC discovery reachable by the IdP"]
   q2 -->|"no"| none["no SPIFFE login at this IdP:<br/>private_key_jwt, or path B below"]
@@ -165,9 +166,10 @@ sidecar) already does. Revisit only if a deployment cannot run the helper.
 where `client_assertion_type` is set today. A source change of the OIDC core, no contract stamp. Specced in
 duckdb-ext-common too (its next tag); tresor bumps to it.
 
-### Path B (research): the service verifies SVIDs itself
+### Path B: the service verifies SVIDs itself
 
-A fork for research, not proposed for version 1:
+Researched here; built by tresor-server (its spec 038, v0.8.5: SPIRE as an issuer, roles by SPIFFE ID with
+`role_rules`), its client side in tresor specs/047 (`TOKEN_FILE`). As first sketched:
 
 ```mermaid
 flowchart LR
@@ -183,7 +185,8 @@ flowchart LR
   a tresor-server feature); SVIDs live minutes, so tresor would re-read the token per call, not per login; and
   acting for users still needs an identity provider for the users' token exchange. So an IdP stays in the
   picture, and the gain is one hop less for the node.
-- The spike does not run path B; tresor-server is where it would be tried.
+- The spike does not run path B. tresor-server's stand ran it live (2026-11): roles by SPIFFE ID, another
+  workload and an SVID for another audience refused.
 
 ### Later: sender-constrained tokens
 
@@ -256,13 +259,13 @@ The part the spike showed is required, on its own:
 - **Tests**: `test/sql/attach/service_identities.test` against the fake's SPIFFE client (`spiffenode`, `jwt-spiffe`
   only): without the type `invalid_client`, with it logged in; `jwt-bearer` named is the old behaviour; the
   refusals at `CREATE SECRET`. Live: the spike's step "tresor with ASSERTION_TYPE", Keycloak 26.8.1.
-- **Pins**: the submodule moves to duckdb-ext-common's commit with spec 019, until it is tagged.
+- **Pins**: duckdb-ext-common v0.16.0 (spec 019); duckdb-acl takes the same tag (`oidc_core.hpp` changed).
 
 ### Implemented: `ASSERTION_SOURCE 'spiffe'` and `SPIFFE_ID`
 
 - **The options**: `ASSERTION_SOURCE 'spiffe'` needs `ASSERTION_FILE` (the only source that takes one: a federated
   login names `ASSERTION_FILE` or `ASSERTION_SOURCE`, both only for `spiffe`). `SPIFFE_ID` goes with it and must be
-  a SPIFFE ID (`spiffe://…`). `ASSERTION_AUDIENCE` overrides the expected `aud` (default: the issuer, as the login's
+  a SPIFFE ID (`spiffe://…`); it is required (review, below). `ASSERTION_AUDIENCE` overrides the expected `aud` (default: the issuer, as the login's
   discovery names it). `ASSERTION_TYPE` defaults to `jwt-spiffe` with this source; `jwt-bearer` is for an IdP that
   federates SPIRE as an OIDC issuer.
 - **The checks**, at every login and exchange, on the file as read (unverified claims - for refusing to send, never
@@ -305,10 +308,27 @@ SPIFFE login as `jwt-bearer`. A NULL option is now not stored (`test/sql/attach_
 
 ## Follow-ups
 
-- The spike's findings: above. Not tried yet: the fallback (`jwt-bearer` through Keycloak's OIDC identity provider
-  type, or Entra), and SPIRE's SPIFFE bundle endpoint in place of the OIDC `/keys`.
-- duckdb-ext-common: `ClientAuth.assertion_type` - done (its spec 019); a tag for it, and the pin moved to the tag.
+- The spike's findings: above. The fallback through Entra - checked by tresor-server's stand (below). Not tried
+  yet: Keycloak's OIDC identity provider type, and SPIRE's SPIFFE bundle endpoint in place of the OIDC `/keys`.
+- duckdb-ext-common: `ClientAuth.assertion_type` - done (its spec 019), tagged v0.16.0, the pin on the tag.
 - tresor: `ASSERTION_TYPE`, `ASSERTION_SOURCE 'spiffe'`, `SPIFFE_ID`, the checks, the fake IdP's SPIFFE client, the
   docs (`pipelines.md`'s SPIFFE section) - done.
 - The live check - done: specs/027's check 5, below.
-- tresor-server: path B, if the research asks for it.
+- tresor-server: path B - done (its spec 038, v0.8.5); tresor's side: specs/047 (`TOKEN_FILE`).
+
+## Review changes (2026-11-13, hugr lab)
+
+- **`SPIFFE_ID` is required** with `ASSERTION_SOURCE 'spiffe'`: the check that the SVID is the workload's is the
+  point of the source, and without it any SVID in the file would be sent.
+- **`ASSERTION_TYPE 'jwt-spiffe'` goes with `ASSERTION_SOURCE 'spiffe'` only**, no longer with a bare
+  `ASSERTION_FILE`: that file is sent unchecked, so a JWT-SVID would have left without its `sub`/`aud`/`exp` checks.
+  The spike's step "tresor with ASSERTION_TYPE" (`node_type.sql`) is gone with it; "tresor with ASSERTION_SOURCE
+  'spiffe'" covers the login.
+- The credential sets `ClientAuth::assertion_type` only with an assertion and clears it on every `Auth()`: the OIDC
+  core refuses a type without one (duckdb-ext-common spec 019).
+- **Checked live by tresor-server's stand** (SPIRE 1.13.0 with `jwt_issuer`, RSA keys, `set_key_use = true`):
+  Keycloak 26.8.1 takes an SVID **with** `iss` as `jwt-spiffe` (so SPIRE need not leave `jwt_issuer` unset), and
+  **Entra** takes it as `jwt-bearer` through a federated credential (issuer SPIRE's discovery URL, subject the SPIFFE
+  ID, audience `api://AzureADTokenExchange`; RS256 and `use: sig` only) - `ASSERTION_SOURCE 'spiffe'`,
+  `ASSERTION_TYPE 'jwt-bearer'`, `ASSERTION_AUDIENCE 'api://AzureADTokenExchange'`. The pipelines page says both.
+- The spike's console refuses a POST from another origin (a page elsewhere could otherwise start a run).

@@ -95,7 +95,7 @@ true
 statement ok
 CREATE SECRET n (TYPE tresor, SCOPE 'tresor:secrets.example.invalid', FLOW 'federated', CLIENT_ID 'node',
                  ISSUER 'https://idp.example.invalid', ASSERTION_SOURCE 'spiffe', ASSERTION_FILE '/run/svid.jwt',
-                 ASSERTION_TYPE nullif('', ''), OAUTH_SCOPE NULL);
+                 SPIFFE_ID 'spiffe://example.invalid/node', ASSERTION_TYPE nullif('', ''), OAUTH_SCOPE NULL);
 
 query II
 SELECT secret_string LIKE '%assertion_type%', secret_string LIKE '%oauth_scope%' FROM duckdb_secrets() WHERE name = 'n';

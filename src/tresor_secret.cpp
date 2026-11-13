@@ -108,6 +108,11 @@ unique_ptr<BaseSecret> CreateTresorSecret(ClientContext &context, CreateSecretIn
 			throw InvalidInputException("tresor secret: ASSERTION_SOURCE 'spiffe' needs ASSERTION_FILE (the JWT-SVID "
 			                            "spiffe-helper writes)");
 		}
+		// the workload the SVID must be: without it any SVID in the file would be sent, whoever's it is
+		if (source == "spiffe" && !given("spiffe_id")) {
+			throw InvalidInputException("tresor secret: ASSERTION_SOURCE 'spiffe' needs SPIFFE_ID (the workload the "
+			                            "JWT-SVID must be, spiffe://<trust domain>/...)");
+		}
 		if (source != "spiffe" && given("assertion_file") && given("assertion_source")) {
 			throw InvalidInputException("tresor secret: FLOW 'federated' takes ASSERTION_FILE or ASSERTION_SOURCE, "
 			                            "both only for ASSERTION_SOURCE 'spiffe'");
@@ -147,10 +152,11 @@ unique_ptr<BaseSecret> CreateTresorSecret(ClientContext &context, CreateSecretIn
 			throw InvalidInputException("tresor secret: ASSERTION_TYPE is 'jwt-bearer' or 'jwt-spiffe', not '%s'",
 			                            value("assertion_type"));
 		}
-		if (type == "jwt-spiffe" && !given("assertion_file")) {
+		// a JWT-SVID is sent only checked (its sub, aud, exp): so only with the source that checks it
+		if (type == "jwt-spiffe" && source != "spiffe") {
 			throw InvalidInputException(
-			    "tresor secret: ASSERTION_TYPE 'jwt-spiffe' goes with ASSERTION_FILE (a JWT-SVID, "
-			    "as spiffe-helper writes it)");
+			    "tresor secret: ASSERTION_TYPE 'jwt-spiffe' goes with ASSERTION_SOURCE 'spiffe' (a JWT-SVID, checked "
+			    "before it is sent)");
 		}
 	}
 

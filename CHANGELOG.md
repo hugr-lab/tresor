@@ -13,10 +13,10 @@ All notable changes to tresor are documented here. The format follows
 - **A SPIFFE workload's login** (specs/046): `ASSERTION_SOURCE 'spiffe'` with `ASSERTION_FILE` (the JWT-SVID
   spiffe-helper writes) and `SPIFFE_ID`. The SVID is checked before it is sent - its `sub`, its `aud` (the issuer,
   or `ASSERTION_AUDIENCE`), its expiry - and sent as `jwt-spiffe`, as Keycloak's SPIFFE client authentication
-  takes it. **`ASSERTION_TYPE`** (`'jwt-bearer'`, `'jwt-spiffe'`) names the type for any `ASSERTION_FILE`. Needs
-  duckdb-ext-common spec 019 (`ClientAuth::assertion_type`). A pipelines page section on SPIFFE; the spike in
-  `examples/spiffe-spike`; a live check against SPIRE and Keycloak, `scripts/live/spiffe_keycloak.sh` (`/live/check.sh
-  spiffe` in the image).
+  takes it; **`ASSERTION_TYPE 'jwt-bearer'`** for an IdP that federates SPIRE as an OIDC issuer (Entra, Okta). By
+  Örjan Lundberg (@oluies). duckdb-ext-common v0.16.0 (its spec 019, `ClientAuth::assertion_type`). A pipelines page
+  section on SPIFFE (Keycloak, Entra); the spike in `examples/spiffe-spike`; a live check against SPIRE and Keycloak,
+  `scripts/live/spiffe_keycloak.sh` (`/live/check.sh spiffe` in the image).
 
 ### Fixed
 
