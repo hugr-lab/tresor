@@ -150,6 +150,7 @@ static bool MeantForFederation(const vector<string> &audiences, const string &as
 bool ServiceCredential::Auth(oidc::ClientAuth &auth, string &why) const {
 	WipeAuth(auth);
 	auth.client_id = client_id;
+	auth.assertion_type.clear(); // set below only with an assertion: the OIDC core refuses a type without one
 	switch (kind) {
 	case Kind::SECRET:
 		auth.client_secret = client_secret;

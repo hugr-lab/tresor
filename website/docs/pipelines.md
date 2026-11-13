@@ -144,9 +144,10 @@ a file, with its audience the identity provider's (for Keycloak: the realm's iss
 at every login, so a rotated SVID is picked up.
 
 `ASSERTION_SOURCE 'spiffe'` checks the SVID at every login before it is sent, and never sends one that fails a
-check: its `sub` must be `SPIFFE_ID` (give it: a workload's file holds only its own SVID, but a misconfigured helper
-should not log in as another workload), its `aud` must name the issuer (or `ASSERTION_AUDIENCE`), and it must not
-have expired - "has expired - is spiffe-helper renewing it?" is the error when the helper stopped.
+check: its `sub` must be `SPIFFE_ID` (required: a misconfigured helper must not log in as another workload), its
+`aud` must name the issuer (or `ASSERTION_AUDIENCE`), and it must not have expired - "has expired - is
+spiffe-helper renewing it?" is the error when the helper stopped. A JWT-SVID goes only through this source:
+`ASSERTION_TYPE 'jwt-spiffe'` on a bare `ASSERTION_FILE` is refused, since that file would be sent unchecked.
 
 With **Keycloak's own SPIFFE support** (26.4 or later, a preview feature: start Keycloak with
 `--features=spiffe`), the SVID is sent as `jwt-spiffe`, the only type Keycloak's SPIFFE authentication takes and
@@ -157,8 +158,8 @@ the source's default:
 2. **The workload's client**: a confidential client with service accounts, *Client Authenticator* *Signed JWT -
    Federated*, *Identity provider* the SPIFFE provider's alias, *Federated subject* the workload's SPIFFE ID.
    Give it the audience mapper for the service, and its service account the role the workload uses.
-3. **SPIRE**: the SVID carries no `iss` (leave the server's `jwt_issuer` unset), as Keycloak's SPIFFE
-   authentication expects.
+3. **SPIRE**: nothing special. Keycloak 26.8.1 takes the SVID with or without `iss` (the server's `jwt_issuer`),
+   so one SPIRE can serve Keycloak and an IdP that federates it as an OIDC issuer.
 
 ```sql
 CREATE SECRET node (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'federated',
@@ -168,12 +169,30 @@ CREATE SECRET node (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'fede
 ATTACH 'tresor:secrets.corp.example' AS corp;
 ```
 
-Keycloak refuses the same SVID as `jwt-bearer` (`invalid_client`). An identity provider that federates SPIRE as an
-ordinary OIDC issuer (Entra, Okta, or Keycloak's OpenID Connect provider type) takes it as `jwt-bearer`: add
-`ASSERTION_TYPE 'jwt-bearer'`, set SPIRE's `jwt_issuer`, and make its OIDC discovery reachable by the identity
-provider (with Entra, `ASSERTION_AUDIENCE 'api://AzureADTokenExchange'`, the audience its federation expects).
-Checked against Keycloak 26.8.1 and SPIRE 1.13.0 (`scripts/live/spiffe_keycloak.sh`, and the spike in
-`examples/spiffe-spike`; specs/046).
+Keycloak's SPIFFE support is a preview feature: it follows an IETF draft and may change with it. Keycloak refuses
+the same SVID as `jwt-bearer` (`invalid_client`). Checked against Keycloak 26.8.1 and SPIRE 1.13.0
+(`scripts/live/spiffe_keycloak.sh`, and the spike in `examples/spiffe-spike`; specs/046).
+
+**An identity provider that federates SPIRE as an OIDC issuer** (Entra, Okta, or Keycloak's OpenID Connect
+provider type) takes the SVID as `jwt-bearer`: add `ASSERTION_TYPE 'jwt-bearer'`, set SPIRE's `jwt_issuer`, and
+make its OIDC discovery reachable by the identity provider. With **Entra**, the app registration's federated
+credential names SPIRE's discovery URL as the issuer, the SPIFFE ID as the subject and `api://AzureADTokenExchange`
+as the audience. Entra takes only RS256 keys with `use: sig`: SPIRE's `jwt_key_type = "rsa-2048"`, and
+`set_key_use = true` on its OIDC discovery provider.
+
+```sql
+CREATE SECRET node (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'federated',
+    CLIENT_ID '<app registration client id>', ISSUER 'https://login.microsoftonline.com/<tenant>/v2.0',
+    ASSERTION_SOURCE 'spiffe', ASSERTION_FILE '/run/spiffe/svid.jwt',
+    SPIFFE_ID 'spiffe://corp.example/ns/data/sa/acl-node',
+    ASSERTION_TYPE 'jwt-bearer', ASSERTION_AUDIENCE 'api://AzureADTokenExchange');
+```
+
+This is the same `FLOW 'federated'` as for [Kubernetes](#kubernetes): SPIFFE is one more platform whose token is the
+job's assertion, not a flow of its own. Checked against Entra with SPIRE 1.13.0 (by tresor-server's stand).
+
+A secrets service may also trust SPIRE itself, with no identity provider in between: see
+[tresor-server - SPIFFE workloads](https://hugr-lab.com/docs/tresor-server/spiffe/).
 
 ## GitHub Actions
 

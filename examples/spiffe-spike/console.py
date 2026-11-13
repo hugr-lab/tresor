@@ -367,7 +367,7 @@ def step_seed(cfg: Config) -> Step:
     )
 
 
-def step_tresor(cfg: Config, script: str, kind: Literal["today", "type", "spiffe", "intruder"]) -> Step:
+def step_tresor(cfg: Config, script: str, kind: Literal["today", "spiffe", "intruder"]) -> Step:
     workload = cfg.intruder_id if kind == "intruder" else cfg.node_id
     path = write_svid("acl-node", fetch_svid(workload, cfg.issuer))
     facts = tresor_facts(run_tresor(cfg, script, path))
@@ -376,8 +376,6 @@ def step_tresor(cfg: Config, script: str, kind: Literal["today", "type", "spiffe
     match kind:
         case "today":
             title = "tresor without ASSERTION_TYPE: FLOW 'federated', ASSERTION_FILE (sent as jwt-bearer)"
-        case "type":
-            title = "tresor with ASSERTION_TYPE 'jwt-spiffe'"
         case "spiffe":
             title = "tresor with ASSERTION_SOURCE 'spiffe' and SPIFFE_ID (jwt-spiffe by default)"
         case "intruder":
@@ -427,7 +425,6 @@ STEPS: tuple[tuple[str, str, Callable[[Config], Step]], ...] = (
     ("kc-jwt-bearer", "Keycloak: the SVID as jwt-bearer", lambda c: step_keycloak(c, "jwt-bearer")),
     ("seed", "The administrator puts a secret in the service", step_seed),
     ("node_today.sql", "tresor without ASSERTION_TYPE", lambda c: step_tresor(c, "node_today.sql", "today")),
-    ("node_type.sql", "tresor with ASSERTION_TYPE", lambda c: step_tresor(c, "node_type.sql", "type")),
     ("node_spiffe.sql", "tresor with ASSERTION_SOURCE 'spiffe'", lambda c: step_tresor(c, "node_spiffe.sql", "spiffe")),
     (
         "node_spiffe.sql-intruder",
@@ -510,6 +507,10 @@ def serve(cfg: Config) -> None:
                     self.send(404, b"{}", "application/json")
 
         def do_POST(self) -> None:
+            # only this page may start a run: a page from elsewhere could post here (a simple request, no preflight)
+            if self.headers.get("Origin") not in (None, f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"):
+                self.send(403, b'{"detail": "another origin"}', "application/json")
+                return
             match self.path:
                 case "/run" if journal.start():
                     threading.Thread(target=run_all, args=(cfg, journal), daemon=True).start()
