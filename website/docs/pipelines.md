@@ -146,8 +146,9 @@ at every login, so a rotated SVID is picked up.
 `ASSERTION_SOURCE 'spiffe'` checks the SVID at every login before it is sent, and never sends one that fails a
 check: its `sub` must be `SPIFFE_ID` (required: a misconfigured helper must not log in as another workload), its
 `aud` must name the issuer (or `ASSERTION_AUDIENCE`), and it must not have expired - "has expired - is
-spiffe-helper renewing it?" is the error when the helper stopped. A JWT-SVID goes only through this source:
-`ASSERTION_TYPE 'jwt-spiffe'` on a bare `ASSERTION_FILE` is refused, since that file would be sent unchecked.
+spiffe-helper renewing it?" is the error when the helper stopped (an SVID with no `exp` is refused too; trailing
+slashes of an audience do not count). Use this source for an SVID: a bare `ASSERTION_FILE` is sent unchecked, so
+`ASSERTION_TYPE 'jwt-spiffe'` is refused there.
 
 With **Keycloak's own SPIFFE support** (26.4 or later, a preview feature: start Keycloak with
 `--features=spiffe`), the SVID is sent as `jwt-spiffe`, the only type Keycloak's SPIFFE authentication takes and

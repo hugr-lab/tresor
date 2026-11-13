@@ -365,7 +365,7 @@ ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true, SECRET sp
 ----
 is not meant for http://127.0.0.1:{TRESOR_TEST_PORT}/idp (its aud: https://elsewhere.example) - never sent
 
-# ... unless ASSERTION_AUDIENCE names that audience: then it is sent, and this IdP refuses it as its own
+# ASSERTION_AUDIENCE is what is expected instead of the issuer: the node's SVID (aud the issuer) is then refused here
 statement ok
 CREATE OR REPLACE SECRET sp (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'federated',
     CLIENT_ID 'spiffenode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_SOURCE 'spiffe',
@@ -414,6 +414,24 @@ query I
 SELECT idp('assertions') = (SELECT n FROM sent);
 ----
 true
+
+# an SVID whose aud is ASSERTION_AUDIENCE (trailing slashes aside) is sent - and logs in at this IdP
+statement ok
+CREATE OR REPLACE SECRET sp (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'federated',
+    CLIENT_ID 'spiffenode', ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp', ASSERTION_SOURCE 'spiffe',
+    ASSERTION_FILE '{TRESOR_TEST_KEYS}/svid-aud.jwt', SPIFFE_ID 'spiffe://tresor.test/node/spiffenode',
+    ASSERTION_AUDIENCE 'https://elsewhere.example/');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true, SECRET sp);
+
+query I
+SELECT subject FROM s.whoami();
+----
+client:spiffenode
+
+statement ok
+DETACH s;
 
 # jwt-bearer for an IdP that federates SPIRE as an OIDC issuer: the checks hold, the type is the secret's
 statement ok

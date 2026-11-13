@@ -635,7 +635,9 @@ JwtClaims ReadJwtClaims(const string &token) {
 	out.subject = Str(root, "sub");
 	auto exp = yyjson_obj_get(root, "exp");
 	if (exp && yyjson_is_num(exp)) {
-		out.expires_at = int64_t(yyjson_get_num(exp));
+		// clamped: a double past int64's range is undefined to cast (and "never expires" on some platforms)
+		auto seconds = yyjson_get_num(exp);
+		out.expires_at = seconds >= 9.2e18 ? int64_t(9200000000000000000LL) : seconds <= 0 ? 0 : int64_t(seconds);
 	}
 	return out;
 }
