@@ -44,6 +44,54 @@ bool JwtShaped(const string &text) {
 	return dots == 2 && text.size() > 16;
 }
 
+//! What the file says goes into an error only shortened: it is not secret, but it is the file's, unchecked.
+string Shown(const string &text) {
+	return text.size() > 200 ? text.substr(0, 200) + "..." : text;
+}
+
+string WithoutTrailingSlashes(string url) {
+	while (!url.empty() && url.back() == '/') {
+		url.pop_back();
+	}
+	return url;
+}
+
+bool MeantFor(const JwtClaims &claims, const string &audience) {
+	return std::any_of(claims.audiences.begin(), claims.audiences.end(), [&](const string &aud) {
+		return WithoutTrailingSlashes(aud) == WithoutTrailingSlashes(audience);
+	});
+}
+
+//! Why a JWT-SVID read from `path` is not sent (specs/046, 047), or nothing: it is a JWT whose `sub` is the SPIFFE ID
+//! named, for `audience`, alive - an SVID is a credential wherever it is accepted.
+string SvidRefusal(const string &token, const JwtClaims &claims, const string &path, const string &spiffe_id,
+                   const string &audience) {
+	if (!JwtShaped(token) || !claims.is_jwt) {
+		return path + " does not hold a token (a JWT) - never sent";
+	}
+	if (!StringUtil::StartsWith(claims.subject, "spiffe://")) {
+		return path + " does not hold a JWT-SVID: its sub is no SPIFFE ID - never sent";
+	}
+	if (spiffe_id.empty()) {
+		// CREATE SECRET requires it; a persistent secret read back is not validated again
+		return "the tresor secret names no SPIFFE_ID for the JWT-SVID in " + path + " - never sent";
+	}
+	if (claims.subject != spiffe_id) {
+		return "the JWT-SVID in " + path + " is " + Shown(claims.subject) + ", not SPIFFE_ID " + spiffe_id +
+		       " - never sent";
+	}
+	if (!MeantFor(claims, audience)) {
+		return "the JWT-SVID in " + path + " is not meant for " + audience +
+		       " (its aud: " + Shown(StringUtil::Join(claims.audiences, ", ")) + ") - never sent";
+	}
+	if (claims.expires_at <= int64_t(std::time(nullptr))) {
+		return "the JWT-SVID in " + path +
+		       (claims.expires_at == 0 ? " has no expiry" : " has expired - is spiffe-helper renewing it?") +
+		       " - never sent";
+	}
+	return string();
+}
+
 } // namespace
 
 bool ReadCredentialFile(const string &path, bool private_to_owner, bool trim, string &out, string &why) {
@@ -124,7 +172,7 @@ void ServiceCredential::CheckAccess(ClientContext &context) const {
 	// DuckDB's own sandbox (enable_external_access, allowed_directories/paths): a file read_text() may not read
 	// is not one a login may read and send to an identity provider either
 	auto &config = DBConfig::GetConfig(context);
-	for (auto *path : {&private_key_file, &certificate_file, &assertion_file}) {
+	for (auto *path : {&private_key_file, &certificate_file, &assertion_file, &token_file}) {
 		if (!path->empty() && !config.CanAccessFile(*path, FileType::FILE_TYPE_REGULAR)) {
 			throw PermissionException("tresor: %s is outside what this DuckDB may read (enable_external_access, "
 			                          "allowed_directories)",
@@ -184,42 +232,13 @@ bool ServiceCredential::Auth(oidc::ClientAuth &auth, string &why) const {
 		if (!ReadCredentialFile(assertion_file, false, true, auth.assertion, why)) {
 			return false;
 		}
-		auto claims = ReadJwtClaims(auth.assertion);
-		// what the file says goes into an error only shortened: it is not secret, but it is the file's, unchecked
-		auto shown = [](const string &text) {
-			return text.size() > 200 ? text.substr(0, 200) + "..." : text;
-		};
-		auto trimmed = [](string url) {
-			while (!url.empty() && url.back() == '/') {
-				url.pop_back();
-			}
-			return url;
-		};
-		auto meant = std::any_of(claims.audiences.begin(), claims.audiences.end(),
-		                         [&](const string &aud) { return trimmed(aud) == trimmed(assertion_audience); });
-		if (!JwtShaped(auth.assertion) || !claims.is_jwt) {
-			why = assertion_file + " does not hold a token (a JWT) - never sent";
-		} else if (!StringUtil::StartsWith(claims.subject, "spiffe://")) {
-			why = assertion_file + " does not hold a JWT-SVID: its sub is no SPIFFE ID - never sent";
-		} else if (spiffe_id.empty()) {
-			// CREATE SECRET requires it; a persistent secret read back is not validated again
-			why = "the tresor secret names no SPIFFE_ID for the JWT-SVID in " + assertion_file + " - never sent";
-		} else if (claims.subject != spiffe_id) {
-			why = "the JWT-SVID in " + assertion_file + " is " + shown(claims.subject) + ", not SPIFFE_ID " +
-			      spiffe_id + " - never sent";
-		} else if (!meant) {
-			why = "the JWT-SVID in " + assertion_file + " is not meant for " + assertion_audience +
-			      " (its aud: " + shown(StringUtil::Join(claims.audiences, ", ")) + ") - never sent";
-		} else if (claims.expires_at <= int64_t(std::time(nullptr))) {
-			why = "the JWT-SVID in " + assertion_file +
-			      (claims.expires_at == 0 ? " has no expiry" : " has expired - is spiffe-helper renewing it?") +
-			      " - never sent";
-		} else {
-			auth.assertion_type = assertion_type;
-			return true;
+		why = SvidRefusal(auth.assertion, ReadJwtClaims(auth.assertion), assertion_file, spiffe_id, assertion_audience);
+		if (!why.empty()) {
+			WipeAuth(auth);
+			return false;
 		}
-		WipeAuth(auth);
-		return false;
+		auth.assertion_type = assertion_type;
+		return true;
 	}
 	case Kind::GITHUB_ACTIONS: {
 		auto token = oidc::GithubActionsToken(assertion_audience);
@@ -255,12 +274,69 @@ bool ServiceCredential::Auth(oidc::ClientAuth &auth, string &why) const {
 	case Kind::MANAGED_IDENTITY:
 		why = "a managed identity is no client at the identity provider";
 		return false;
+	case Kind::TOKEN_FILE:
+		why = "a token is no client at the identity provider";
+		return false;
 	}
 	return false;
 }
 
+oidc::TokenSet ServiceCredential::ReadToken() const {
+	// the service's bearer token (specs/047): re-read at the login, before it expires and after a 401 (a platform
+	// rotates it - spiffe-helper in minutes)
+	string token;
+	string why;
+	if (!ReadCredentialFile(token_file, false, true, token, why)) {
+		oidc::TokenSet out;
+		out.error = why;
+		return out;
+	}
+	return CheckToken(std::move(token));
+}
+
+oidc::TokenSet ServiceCredential::CheckToken(string token) const {
+	// sent only when it is for this service - an IdP token goes only to its audience
+	oidc::TokenSet out;
+	out.access_token = std::move(token);
+	auto claims = ReadJwtClaims(out.access_token);
+	string why;
+	if (!spiffe_id.empty() || StringUtil::StartsWith(claims.subject, "spiffe://")) {
+		why = SvidRefusal(out.access_token, claims, token_file, spiffe_id, token_audience);
+	} else if (claims.is_jwt) {
+		if (token_audience.empty()) {
+			why = token_file + " held no JWT at the login, and does now - never sent (ATTACH again)";
+		} else if (!MeantFor(claims, token_audience)) {
+			why = "the token in " + token_file + " is not meant for " + token_audience +
+			      " (its aud: " + Shown(StringUtil::Join(claims.audiences, ", ")) + ") - never sent";
+		} else if (claims.expires_at != 0 && claims.expires_at <= int64_t(std::time(nullptr))) {
+			why = "the token in " + token_file + " has expired - is the platform renewing it? - never sent";
+		}
+	} else if (!token_audience.empty()) {
+		// the login's was a JWT, checked: what is not one now (a torn write, another kind of token) is not sent
+		// unchecked - the 401 retry reads the file again
+		why = token_file + " held a JWT at the login, and does not now - never sent";
+	}
+	// a JWT names its issuer: the one the service listed and the login chose, or none (one issuer listed)
+	if (why.empty() && claims.is_jwt && !claims.issuer.empty() &&
+	    WithoutTrailingSlashes(claims.issuer) != WithoutTrailingSlashes(token_issuer)) {
+		why = "the token in " + token_file + " is from " + Shown(claims.issuer) + ", not the issuer " + token_issuer +
+		      " - never sent";
+	}
+	if (!why.empty()) {
+		tresor::Wipe(out.access_token);
+		out = oidc::TokenSet();
+		out.error = why;
+		return out;
+	}
+	out.expires_at = claims.expires_at;
+	return out;
+}
+
 oidc::TokenSet ServiceCredential::Mint(const oidc::Endpoints &endpoints, const string &scope,
                                        const std::map<std::string, std::string> &extra) const {
+	if (kind == Kind::TOKEN_FILE) {
+		return ReadToken();
+	}
 	oidc::TokenSet out;
 	if (kind == Kind::MANAGED_IDENTITY) {
 		// the audience the secret names - never the service's own word for it (a service could name another
@@ -303,6 +379,8 @@ string ServiceCredential::LoginName() const {
 		return "federated";
 	case Kind::MANAGED_IDENTITY:
 		return "managed_identity";
+	case Kind::TOKEN_FILE:
+		return "token";
 	case Kind::SECRET:
 		return "client_credentials";
 	}

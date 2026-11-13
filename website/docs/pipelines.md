@@ -29,7 +29,7 @@ Best first. Use the first row that fits where the job runs.
 | [Azure](#azure-managed-identity) (VM, App Service, Functions, Container Apps) | `managed_identity`, or `federated` through it | none |
 | [A VM or a worker with no platform identity](#a-key-on-the-machine) | `client_credentials` with a private key (`private_key_jwt`) | a key file (`0600`) |
 | [Last resort](#a-client-secret) | `client_credentials` with a client secret | a shared secret |
-| [A token already held](#a-token-already-held) | `FLOW 'token'` | a token, which expires |
+| [A token already held](#a-token-already-held) | `FLOW 'token'`: `TOKEN`, or `TOKEN_FILE` a platform rotates | a token |
 
 Each flow is tested against the fake service in CI, and a key login against Keycloak. Checked live
 against Entra: a key, a client secret, GitHub Actions' token, a managed identity (on Azure Container
@@ -192,8 +192,22 @@ CREATE SECRET node (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'fede
 This is the same `FLOW 'federated'` as for [Kubernetes](#kubernetes): SPIFFE is one more platform whose token is the
 job's assertion, not a flow of its own. Checked against Entra with SPIRE 1.13.0 (by tresor-server's stand).
 
-A secrets service may also trust SPIRE itself, with no identity provider in between: see
-[tresor-server - SPIFFE workloads](https://hugr-lab.com/docs/tresor-server/spiffe/).
+**A secrets service that trusts SPIRE itself**, with no identity provider in between, takes the SVID as the
+bearer token: `FLOW 'token'` with `TOKEN_FILE` and `SPIFFE_ID`. spiffe-helper asks for an SVID whose audience is the
+service's (`audience` in its [discovery](./protocol.md#discovery)). Set SPIRE's `jwt_issuer` to an issuer the service
+lists; an SVID without `iss` goes only to a service that lists one issuer (or the ATTACH's `ISSUER`):
+
+```sql
+CREATE SECRET node (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'token',
+    TOKEN_FILE '/run/spiffe/svid.jwt', SPIFFE_ID 'spiffe://corp.example/ns/data/sa/acl-node');
+ATTACH 'tresor:secrets.corp.example' AS corp;
+```
+
+The SVID is checked as above, against the service instead of an identity provider: its `sub` is `SPIFFE_ID`, its
+`aud` is the service's audience, its `iss` (when it has one) one of the issuers the service lists, and it has not
+expired. The file is read at the login, again before the SVID expires and again after a 401, so the rotated one is
+picked up. The service gives the workload its roles by its SPIFFE ID:
+[tresor-server - SPIFFE workloads](https://hugr-lab.com/docs/tresor-server/spiffe/) (specs/047).
 
 ## GitHub Actions
 
@@ -307,8 +321,20 @@ ATTACH 'tresor:secrets.corp.example' AS corp;
 
 It is never renewed. When it expires, or the service refuses it, calls fail with "the token of the
 tresor secret for … has expired or was refused": replace the secret and ATTACH again. Use it for
-short jobs. A token the runner renews is not picked up: each time, the job replaces the secret and
-ATTACHes again.
+short jobs.
+
+A token the runner renews goes in a file, `TOKEN_FILE`, instead: it is read at the login, again a minute before it
+expires and again when the service answers 401, so the renewed one is picked up:
+
+```sql
+CREATE SECRET etl (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'token', TOKEN_FILE '/run/secrets/token');
+```
+
+A JWT from the file is sent only when it is for the service: its `aud` must be the service's audience (from the
+[discovery](./protocol.md#discovery)), its `iss`, when it has one, an issuer the service lists, and it must not have
+expired. The audience is the one the service's discovery names: the secret's `SCOPE` decides which service that is.
+A file that held a JWT at the login must hold one at every read. An opaque token is the service's alone to judge, as
+with `TOKEN`. A JWT-SVID needs `SPIFFE_ID` ([SPIFFE](#spiffe)).
 
 ## dbt
 
@@ -369,7 +395,7 @@ A service's login renews itself, and a long job does not fall off:
   is read again (a rotated one included); GitHub Actions and a managed identity are asked again;
 - a service's login is never remembered in the OS credential store: each process logs in from its
   secret;
-- `FLOW 'token'` is the exception: it is never renewed.
+- `FLOW 'token'` reads its `TOKEN_FILE` again; a `TOKEN` is never renewed.
 
 ## Many workers
 

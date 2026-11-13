@@ -73,6 +73,7 @@ CLIENTS = {"etl": "s3cr3t"}
 WEB_DIR = None
 WEB_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript", ".wasm": "application/wasm"}
 STATIC_TOKENS = {"static-token": {"subject": "client:static", "roles": [], "create": False}}
+SVID_USES = {}  # specs/047: a JWT-SVID taken as the bearer -> how often whoami took it
 REALMS = {"", "multi", "wrong", "expiring", "revoking", "noflows", "broken", "nolist", "acting", "shifty", "picky",
           "second", "auth0", "novars", "consumers"}
 ISSUERS = {"idp", "idp2", "idp-revoking"}
@@ -343,6 +344,27 @@ def jwt_claims(token):
         return json.loads(b64url_decode(token.split(".")[1]))
     except (IndexError, ValueError):
         return {}
+
+
+def held_identity(token, count=False):
+    """A token held (FLOW 'token'), or a JWT as the bearer itself (specs/047: a JWT-SVID, path B - the service trusts
+    SPIRE as an issuer - or a Kubernetes token; other JWTs are the IdP's, in TOKENS) - read, not verified, like every token here: from /idp or no issuer,
+    for duckdb-secrets, alive. A claim `uses` caps how often whoami (count=True) takes it, as a platform's token
+    rotated away; `roles` are the test's. Called under LOCK."""
+    if token in STATIC_TOKENS:
+        return STATIC_TOKENS[token]
+    claims = jwt_claims(token)
+    sub, aud = claims.get("sub", ""), claims.get("aud", [])
+    aud = [aud] if isinstance(aud, str) else aud
+    platform = isinstance(sub, str) and sub.startswith(("spiffe://", "system:serviceaccount:"))  # an SVID, a k8s token
+    if not platform or "duckdb-secrets" not in aud \
+            or not str(claims.get("iss", "/idp")).endswith("/idp") or claims.get("exp", 0) <= time.time():
+        return None
+    if count:
+        SVID_USES[token] = SVID_USES.get(token, 0) + 1
+    if "uses" in claims and SVID_USES.get(token, 0) > claims["uses"]:
+        return None
+    return {"subject": "client:" + sub, "roles": claims.get("roles", []), "create": False}
 
 
 def der_ecdsa(raw):
@@ -797,7 +819,7 @@ class Handler(BaseHTTPRequestHandler):
             token = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
             with LOCK:
                 entry = TOKENS.get(token)
-                identity = entry["identity"] if entry else STATIC_TOKENS.get(token)
+                identity = entry["identity"] if entry else held_identity(token, count=True)
                 if entry:
                     entry["uses"] += 1
                     if realm == "picky" and entry["renewed"]:
@@ -824,7 +846,7 @@ class Handler(BaseHTTPRequestHandler):
             auth = self.headers.get("Authorization", "")
             token = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
             with LOCK:
-                known = token in TOKENS or token in STATIC_TOKENS
+                known = token in TOKENS or held_identity(token) is not None
                 caller = TOKENS[token]["identity"]["subject"] if token in TOKENS else ""
             if not known:
                 self.problem(401, "unauthenticated", "token missing, invalid or expired")
@@ -1130,7 +1152,7 @@ class Handler(BaseHTTPRequestHandler):
         auth = self.headers.get("Authorization", "")
         token = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
         with LOCK:
-            if token in TOKENS or token in STATIC_TOKENS:
+            if token in TOKENS or held_identity(token) is not None:
                 return True
         self.problem(401, "unauthenticated", "token missing, invalid or expired")
         return False

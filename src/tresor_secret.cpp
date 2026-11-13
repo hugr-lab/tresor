@@ -33,7 +33,8 @@ const FlowRule &RuleOf(const string &flow) {
 	                                 {"assertion_file", "assertion_source", "oauth_scope", "assertion_audience",
 	                                  "identity_client_id", "assertion_type", "spiffe_id"}};
 	static const FlowRule managed_identity {{"issuer", "audience"}, {}, {"client_id"}};
-	static const FlowRule token {{"token"}, {}, {}};
+	// a token held, or its file (specs/047) - SPIFFE_ID when the file holds a JWT-SVID: checked below
+	static const FlowRule token {{}, {{"token", "token_file"}}, {"spiffe_id"}};
 	if (flow == "client_credentials") {
 		return client_credentials;
 	}
@@ -119,7 +120,10 @@ unique_ptr<BaseSecret> CreateTresorSecret(ClientContext &context, CreateSecretIn
 		}
 	}
 	if (given("spiffe_id")) {
-		if (source != "spiffe") {
+		if (flow == "token" && !given("token_file")) {
+			throw InvalidInputException("tresor secret: SPIFFE_ID goes with TOKEN_FILE (a JWT-SVID's file)");
+		}
+		if (flow != "token" && source != "spiffe") {
 			throw InvalidInputException("tresor secret: SPIFFE_ID goes with ASSERTION_SOURCE 'spiffe'");
 		}
 		if (!StringUtil::StartsWith(value("spiffe_id"), "spiffe://") || value("spiffe_id").size() <= 9) {
@@ -240,9 +244,9 @@ void RegisterTresorSecret(ExtensionLoader &loader) {
 	function.secret_type = "tresor";
 	function.provider = Identifier("config");
 	function.function = CreateTresorSecret;
-	for (auto name : {"flow", "client_id", "client_secret", "token", "oauth_scope", "issuer", "private_key_file",
-	                  "key_id", "certificate_file", "assertion_file", "assertion_source", "assertion_audience",
-	                  "identity_client_id", "assertion_type", "spiffe_id", "audience"}) {
+	for (auto name : {"flow", "client_id", "client_secret", "token", "token_file", "oauth_scope", "issuer",
+	                  "private_key_file", "key_id", "certificate_file", "assertion_file", "assertion_source",
+	                  "assertion_audience", "identity_client_id", "assertion_type", "spiffe_id", "audience"}) {
 		function.named_parameters[name] = LogicalType::VARCHAR;
 	}
 	loader.RegisterFunction(function);
