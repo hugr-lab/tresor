@@ -75,10 +75,11 @@ token is for this service before it is sent.
 - **Live, 2026-11-13** (tresor-server's stand, `scripts/dev/spire_live.sh`): tresor main 19a1cae (the Distribution
   build's osx_arm64 extension) in DuckDB 2.0.0 (Python), SPIRE 1.13 with `jwt_issuer` and RS256 keys, SVIDs of 5
   minutes written atomically by a loop playing spiffe-helper (aud `duckdb-secrets`), tresor-server 0.8.5 trusting SPIRE
-  as an issuer with `role_rules` (`role:nodes`, granted a secret). One ATTACH, probed for 12 minutes across four SVIDs
-  with no ATTACH again: every probe's whoami was the SPIFFE ID with `role:nodes`, `secrets()` the granted secret, and
-  the service logged no 401 - the read before `exp`, which the tests here cannot wait for, carried the session across
-  every expiry.
+  as an issuer with `role_rules` (`role:nodes`, granted a secret). One secret (`FLOW 'token'`, `TOKEN_FILE`,
+  `SPIFFE_ID`) and one ATTACH, probed at 0, 3, 6, 9 and 12 minutes without a re-ATTACH: four SVIDs (expiring 16:24:49,
+  16:28:50, 16:32:50, 16:36:50), three expiries crossed. Every probe's whoami was the SPIFFE ID with `role:nodes`,
+  `secrets()` the granted secret, and the service logged no 401 - the renewal before a request (`AccessToken`'s margin
+  and expiry check, which the tests here cannot wait for), not the 401 path, read each new SVID.
 
 ## Alternatives considered
 
