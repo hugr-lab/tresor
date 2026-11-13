@@ -194,8 +194,8 @@ job's assertion, not a flow of its own. Checked against Entra with SPIRE 1.13.0 
 
 **A secrets service that trusts SPIRE itself**, with no identity provider in between, takes the SVID as the
 bearer token: `FLOW 'token'` with `TOKEN_FILE` and `SPIFFE_ID`. spiffe-helper asks for an SVID whose audience is the
-service's (`audience` in its [discovery](./protocol.md#discovery)), and SPIRE's `jwt_issuer` must be an issuer the
-service lists:
+service's (`audience` in its [discovery](./protocol.md#discovery)). Set SPIRE's `jwt_issuer` to an issuer the service
+lists; an SVID without `iss` goes only to a service that lists one issuer (or the ATTACH's `ISSUER`):
 
 ```sql
 CREATE SECRET node (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'token',
@@ -332,8 +332,9 @@ CREATE SECRET etl (TYPE tresor, SCOPE 'tresor:secrets.corp.example', FLOW 'token
 
 A JWT from the file is sent only when it is for the service: its `aud` must be the service's audience (from the
 [discovery](./protocol.md#discovery)), its `iss`, when it has one, an issuer the service lists, and it must not have
-expired. An opaque token is the service's alone to judge, as with `TOKEN`. A JWT-SVID needs `SPIFFE_ID`
-([SPIFFE](#spiffe)).
+expired. The audience is the one the service's discovery names: the secret's `SCOPE` decides which service that is.
+A file that held a JWT at the login must hold one at every read. An opaque token is the service's alone to judge, as
+with `TOKEN`. A JWT-SVID needs `SPIFFE_ID` ([SPIFFE](#spiffe)).
 
 ## dbt
 

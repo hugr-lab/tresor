@@ -53,13 +53,15 @@ struct ServiceCredential {
 	                    const std::map<std::string, std::string> &extra) const;
 	//! TOKEN_FILE: the file's token, checked (an SVID's sub, aud and exp; a JWT's aud, iss and exp), with its `exp`.
 	oidc::TokenSet ReadToken() const;
+	//! TOKEN_FILE: a token read from the file, checked as ReadToken checks it (wiped when refused).
+	oidc::TokenSet CheckToken(string token) const;
 	//! Refused (PermissionException) when a file it names is outside DuckDB's sandbox for `context`.
 	void CheckAccess(ClientContext &context) const;
 	//! What whoami and the audit call the login: client_credentials, private_key_jwt, federated, managed_identity.
 	string LoginName() const;
-	//! Can it act for duckdb-acl's sessions: a confidential client at the IdP (not a managed identity, not a token).
+	//! Can it act for duckdb-acl's sessions: a confidential client at the IdP (not a managed identity).
 	bool ExchangesTokens() const {
-		return kind != Kind::MANAGED_IDENTITY && kind != Kind::TOKEN_FILE;
+		return kind != Kind::MANAGED_IDENTITY;
 	}
 	void Wipe();
 };

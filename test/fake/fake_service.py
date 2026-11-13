@@ -347,16 +347,17 @@ def jwt_claims(token):
 
 
 def held_identity(token, count=False):
-    """A token held (FLOW 'token'), or a JWT-SVID as the bearer itself (specs/047, path B: the service trusts SPIRE as
-    an issuer) - read, not verified, like every token here: from /idp or no issuer, for duckdb-secrets, alive. A claim
-    `uses` caps how often whoami (count=True) takes it, as a platform's token rotated away; `roles` are the test's.
-    Called under LOCK."""
+    """A token held (FLOW 'token'), or a JWT as the bearer itself (specs/047: a JWT-SVID, path B - the service trusts
+    SPIRE as an issuer - or a Kubernetes token; other JWTs are the IdP's, in TOKENS) - read, not verified, like every token here: from /idp or no issuer,
+    for duckdb-secrets, alive. A claim `uses` caps how often whoami (count=True) takes it, as a platform's token
+    rotated away; `roles` are the test's. Called under LOCK."""
     if token in STATIC_TOKENS:
         return STATIC_TOKENS[token]
     claims = jwt_claims(token)
     sub, aud = claims.get("sub", ""), claims.get("aud", [])
     aud = [aud] if isinstance(aud, str) else aud
-    if not (isinstance(sub, str) and sub.startswith("spiffe://")) or "duckdb-secrets" not in aud \
+    platform = isinstance(sub, str) and sub.startswith(("spiffe://", "system:serviceaccount:"))  # an SVID, a k8s token
+    if not platform or "duckdb-secrets" not in aud \
             or not str(claims.get("iss", "/idp")).endswith("/idp") or claims.get("exp", 0) <= time.time():
         return None
     if count:

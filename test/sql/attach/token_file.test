@@ -225,6 +225,77 @@ client:static	token
 statement ok
 DETACH s;
 
+# a platform's JWT for the service (a Kubernetes token the service trusts)
+statement ok
+CREATE OR REPLACE SECRET node (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'token',
+    TOKEN_FILE '{TRESOR_TEST_KEYS}/tok-k8s.jwt');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true);
+
+query II
+SELECT subject, login FROM s.whoami();
+----
+client:system:serviceaccount:data:etl	token
+
+statement ok
+DETACH s;
+
+statement ok
+CREATE OR REPLACE SECRET node (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'token',
+    TOKEN_FILE '{TRESOR_TEST_KEYS}/tok-k8s-expired.jwt');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true);
+----
+has expired - is the platform renewing it? - never sent
+
+# --- what the file holds after a 401 is checked as at the login ---------------------------------------------------
+
+# a JWT at the login, an opaque token now (a torn write): not sent unchecked
+statement ok
+CREATE OR REPLACE SECRET node (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'token',
+    TOKEN_FILE '{TRESOR_TEST_KEYS}/svid-rotating.jwt');
+
+statement ok
+COPY (SELECT trim(content, chr(10)) FROM read_text('{TRESOR_TEST_KEYS}/tok-k8s-once.jwt')) TO '{TRESOR_TEST_KEYS}/svid-rotating.jwt' (FORMAT csv, HEADER false);
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true);
+
+statement ok
+COPY (SELECT 'static-token') TO '{TRESOR_TEST_KEYS}/svid-rotating.jwt' (FORMAT csv, HEADER false);
+
+statement error
+SELECT roles FROM s.whoami();
+----
+held a JWT at the login, and does not now - never sent
+
+statement ok
+DETACH s;
+
+# an SVID from another issuer than the login's
+statement ok
+CREATE OR REPLACE SECRET node (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'token',
+    TOKEN_FILE '{TRESOR_TEST_KEYS}/svid-rotating.jwt', SPIFFE_ID 'spiffe://tresor.test/node/spiffenode');
+
+statement ok
+COPY (SELECT trim(content, chr(10)) FROM read_text('{TRESOR_TEST_KEYS}/tok-once-b.jwt')) TO '{TRESOR_TEST_KEYS}/svid-rotating.jwt' (FORMAT csv, HEADER false);
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true);
+
+statement ok
+COPY (SELECT trim(content, chr(10)) FROM read_text('{TRESOR_TEST_KEYS}/tok-otheriss.jwt')) TO '{TRESOR_TEST_KEYS}/svid-rotating.jwt' (FORMAT csv, HEADER false);
+
+statement error
+SELECT roles FROM s.whoami();
+----
+is from https://spire.elsewhere.example, not the issuer http://127.0.0.1:{TRESOR_TEST_PORT}/idp - never sent
+
+statement ok
+DETACH s;
+
 # the service allowed (specs/036: the sandbox stops tresor's requests too), the file is not: refused before it is read
 statement ok
 SET allowed_directories = ['http://127.0.0.1:{TRESOR_TEST_PORT}/'];

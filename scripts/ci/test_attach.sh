@@ -65,11 +65,12 @@ for name, sub, aud, exp in [("svid-node", node, [issuer], now + 3600), ("svid-ot
         out.write(f'{seg({"alg": "none"})}.{seg({"sub": sub, "aud": aud, "exp": exp})}.c2ln\n')
 # the service's own token in a file (specs/047): SVIDs as the bearer (path B, aud = the service's audience) - the
 # node's, one the fake takes once (a token rotated away), without iss, for the IdP instead, from another issuer, another
-# workload's, expired, without exp; a JWT that is no SVID for another audience; an opaque token held
+# workload's, expired, without exp; JWTs that are no SVID (a platform's token): for another audience, for the service,
+# expired; an opaque token held
 service = "duckdb-secrets"
 for name, claims in [("tok-svid", {"sub": node, "aud": [service], "iss": issuer, "exp": now + 3600, "roles": ["nodes"]}),
-                     ("tok-once", {"sub": node, "aud": [service], "iss": issuer, "exp": now + 3600, "uses": 1,
-                                   "roles": ["first"]}),
+                     *[(f"tok-once{n}", {"sub": node, "aud": [service], "iss": issuer, "exp": now + 3600, "uses": 1,
+                                         "roles": ["first"], "n": n}) for n in ("", "-b")],
                      ("tok-noiss", {"sub": node, "aud": service, "exp": now + 3600}),
                      ("tok-foridp", {"sub": node, "aud": [issuer], "iss": issuer, "exp": now + 3600}),
                      ("tok-otheriss", {"sub": node, "aud": [service], "iss": "https://spire.elsewhere.example",
@@ -78,7 +79,13 @@ for name, claims in [("tok-svid", {"sub": node, "aud": [service], "iss": issuer,
                                     "exp": now + 3600}),
                      ("tok-expired", {"sub": node, "aud": [service], "iss": issuer, "exp": now - 60}),
                      ("tok-noexp", {"sub": node, "aud": [service], "iss": issuer}),
-                     ("tok-jwt-aud", {"sub": "client-x", "aud": ["payroll-api"], "iss": issuer, "exp": now + 3600})]:
+                     ("tok-jwt-aud", {"sub": "client-x", "aud": ["payroll-api"], "iss": issuer, "exp": now + 3600}),
+                     ("tok-k8s", {"sub": "system:serviceaccount:data:etl", "aud": [service], "iss": issuer,
+                                  "exp": now + 3600}),
+                     ("tok-k8s-once", {"sub": "system:serviceaccount:data:etl", "aud": [service], "iss": issuer,
+                                       "exp": now + 3600, "uses": 1}),
+                     ("tok-k8s-expired", {"sub": "system:serviceaccount:data:etl", "aud": [service], "iss": issuer,
+                                          "exp": now - 60})]:
     with open(f"{keys}/{name}.jwt", "w") as out:
         out.write(f'{seg({"alg": "none"})}.{seg(claims)}.c2ln\n')
 with open(f"{keys}/static.token", "w") as out:

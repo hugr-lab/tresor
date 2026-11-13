@@ -1028,8 +1028,13 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 	if (service_secret && secret_flow == "token") {
 		flow = LoginFlow::TOKEN;
 		credential.token_file = SecretString(*service_secret, "token_file");
+		credential.spiffe_id = SecretString(*service_secret, "spiffe_id");
 		if (credential.token_file.empty()) {
 			// a token already held: no identity provider is involved, the service alone judges it
+			if (!credential.spiffe_id.empty()) {
+				// CREATE SECRET refuses it; a persistent secret read back is not validated again
+				throw InvalidInputException("tresor: the tresor secret names SPIFFE_ID without TOKEN_FILE");
+			}
 			tokens.access_token = SecretString(*service_secret, "token");
 		} else {
 			// the service's token in a file (specs/047): a JWT is for one of the issuers the service lists - the one
@@ -1038,29 +1043,42 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 				throw InvalidInputException("tresor: the tresor secret names both TOKEN and TOKEN_FILE");
 			}
 			credential.kind = ServiceCredential::Kind::TOKEN_FILE;
-			credential.spiffe_id = SecretString(*service_secret, "spiffe_id");
 			credential.CheckAccess(context);
-			string peeked;
+			string token;
 			string why;
-			if (!ReadCredentialFile(credential.token_file, false, true, peeked, why)) {
+			if (!ReadCredentialFile(credential.token_file, false, true, token, why)) {
 				throw InvalidInputException("tresor: the token login to %s failed: %s", request.host, why);
 			}
-			auto claims = ReadJwtClaims(peeked);
-			Wipe(peeked);
+			// read once: the issuer is chosen from the token that is checked and sent
+			auto claims = ReadJwtClaims(token);
 			if (claims.is_jwt) {
 				auto named = claims.issuer.empty() ? request.issuer : claims.issuer;
 				if (!claims.issuer.empty() && !request.issuer.empty() &&
 				    StripSlashes(claims.issuer) != StripSlashes(request.issuer)) {
+					Wipe(token);
 					throw InvalidInputException("tresor: ISSUER '%s' is not the issuer of the token in %s",
 					                            request.issuer, credential.token_file);
 				}
-				auto &issuer = ChooseIssuer(request, discovered, named);
+				const Discovered::Issuer *chosen;
+				try {
+					chosen = &ChooseIssuer(request, discovered, named);
+				} catch (...) {
+					Wipe(token);
+					throw;
+				}
+				auto &issuer = *chosen;
+				if (issuer.audience.empty()) {
+					Wipe(token);
+					throw InvalidInputException("tresor: %s names no audience for the issuer %s - the token in %s is "
+					                            "not sent",
+					                            request.host, issuer.issuer, credential.token_file);
+				}
 				credential.token_issuer = StripSlashes(issuer.issuer);
 				credential.token_audience = issuer.audience;
 				info.issuer = credential.token_issuer;
 				info.audience = issuer.audience;
 			}
-			tokens = credential.ReadToken();
+			tokens = credential.CheckToken(std::move(token));
 			if (!tokens.Ok()) {
 				throw InvalidInputException("tresor: the token login to %s failed: %s", request.host, tokens.error);
 			}

@@ -283,26 +283,38 @@ bool ServiceCredential::Auth(oidc::ClientAuth &auth, string &why) const {
 
 oidc::TokenSet ServiceCredential::ReadToken() const {
 	// the service's bearer token (specs/047): re-read at the login, before it expires and after a 401 (a platform
-	// rotates it - spiffe-helper in minutes), and sent only when it is for this service - an IdP token goes only to
-	// its audience
-	oidc::TokenSet out;
+	// rotates it - spiffe-helper in minutes)
+	string token;
 	string why;
-	if (!ReadCredentialFile(token_file, false, true, out.access_token, why)) {
+	if (!ReadCredentialFile(token_file, false, true, token, why)) {
+		oidc::TokenSet out;
 		out.error = why;
 		return out;
 	}
+	return CheckToken(std::move(token));
+}
+
+oidc::TokenSet ServiceCredential::CheckToken(string token) const {
+	// sent only when it is for this service - an IdP token goes only to its audience
+	oidc::TokenSet out;
+	out.access_token = std::move(token);
 	auto claims = ReadJwtClaims(out.access_token);
+	string why;
 	if (!spiffe_id.empty() || StringUtil::StartsWith(claims.subject, "spiffe://")) {
 		why = SvidRefusal(out.access_token, claims, token_file, spiffe_id, token_audience);
 	} else if (claims.is_jwt) {
 		if (token_audience.empty()) {
-			why = token_file + " held no JWT at the login, and does now - ATTACH again";
+			why = token_file + " held no JWT at the login, and does now - never sent (ATTACH again)";
 		} else if (!MeantFor(claims, token_audience)) {
 			why = "the token in " + token_file + " is not meant for " + token_audience +
 			      " (its aud: " + Shown(StringUtil::Join(claims.audiences, ", ")) + ") - never sent";
 		} else if (claims.expires_at != 0 && claims.expires_at <= int64_t(std::time(nullptr))) {
-			why = "the token in " + token_file + " has expired - is the platform renewing it?";
+			why = "the token in " + token_file + " has expired - is the platform renewing it? - never sent";
 		}
+	} else if (!token_audience.empty()) {
+		// the login's was a JWT, checked: what is not one now (a torn write, another kind of token) is not sent
+		// unchecked - the 401 retry reads the file again
+		why = token_file + " held a JWT at the login, and does not now - never sent";
 	}
 	// a JWT names its issuer: the one the service listed and the login chose, or none (one issuer listed)
 	if (why.empty() && claims.is_jwt && !claims.issuer.empty() &&
