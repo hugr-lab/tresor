@@ -37,7 +37,7 @@ struct ServiceCredential {
 	string assertion_file;     // ASSERTION_FILE, SPIFFE
 	string assertion_type;     // ASSERTION_FILE, SPIFFE: client_assertion_type's URN; empty: jwt-bearer
 	string assertion_audience; // GITHUB_ACTIONS, AZURE_MANAGED_IDENTITY_ASSERTION; SPIFFE: the SVID's aud
-	string spiffe_id;          // SPIFFE, optional: the `sub` the SVID must be
+	string spiffe_id;          // SPIFFE, required: the `sub` the SVID must be
 	string identity_client_id; // AZURE_MANAGED_IDENTITY_ASSERTION: a user-assigned identity; empty: system-assigned
 	string audience;           // MANAGED_IDENTITY: the resource its token is for - the secret's, never the service's
 

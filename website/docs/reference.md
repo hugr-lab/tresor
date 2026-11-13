@@ -42,7 +42,7 @@ names. Only `FLOW` and the options of that flow are accepted:
 | `FLOW` | Required | One of | Optional |
 | --- | --- | --- | --- |
 | `client_credentials` | `CLIENT_ID`, `ISSUER` | `CLIENT_SECRET`, `PRIVATE_KEY_FILE` | `OAUTH_SCOPE`, `KEY_ID`, `CERTIFICATE_FILE` (both with `PRIVATE_KEY_FILE`) |
-| `federated` | `CLIENT_ID`, `ISSUER` | `ASSERTION_FILE`, `ASSERTION_SOURCE` (`'github_actions'` with `ASSERTION_AUDIENCE`, `'azure_managed_identity'`, `'spiffe'` with `ASSERTION_FILE` and `SPIFFE_ID`: a JWT-SVID whose `sub` must be it) | `OAUTH_SCOPE`, `ASSERTION_AUDIENCE` (with `ASSERTION_SOURCE`; for `spiffe` the SVID's `aud`, default the issuer), `IDENTITY_CLIENT_ID` (with `azure_managed_identity`), `ASSERTION_TYPE` (`'jwt-bearer'`, or `'jwt-spiffe'` with `spiffe`, its default) |
+| `federated` | `CLIENT_ID`, `ISSUER` | `ASSERTION_FILE`, `ASSERTION_SOURCE` (`'github_actions'` with `ASSERTION_AUDIENCE`, `'azure_managed_identity'`, or both for `'spiffe'`: `ASSERTION_FILE` the JWT-SVID, with `SPIFFE_ID`, the `sub` it must be) | `OAUTH_SCOPE`, `ASSERTION_AUDIENCE` (with `ASSERTION_SOURCE`; for `spiffe` the SVID's `aud`, default the issuer), `IDENTITY_CLIENT_ID` (with `azure_managed_identity`), `ASSERTION_TYPE` (`'jwt-bearer'`, or `'jwt-spiffe'` with `spiffe`, its default) |
 | `managed_identity` | `ISSUER`, `AUDIENCE` | — | `CLIENT_ID` (a user-assigned identity) |
 | `token` | `TOKEN` | — | — |
 

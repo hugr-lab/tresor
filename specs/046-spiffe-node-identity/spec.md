@@ -147,10 +147,11 @@ login's error says to check the feature and the realm's identity provider. Where
 **Checks before sending** (as for a managed identity's token, specs/015: an assertion goes only where it is
 meant to go):
 - the file holds one JWT (as `ASSERTION_FILE` today);
-- `sub` is a SPIFFE ID, and `SPIFFE_ID` when given; a mismatch names both IDs, never the token;
+- `sub` is a SPIFFE ID, and `SPIFFE_ID` (required); a mismatch names both IDs, never the token;
 - `aud` contains `ASSERTION_AUDIENCE` (default: the issuer, which is what Keycloak requires); an SVID for another
   audience is never sent;
-- `exp` has not passed (so a dead helper reads as "the SVID in … expired at …", not as the IdP's `invalid_client`).
+- `exp` is present and has not passed (so a dead helper reads as "… has expired - is spiffe-helper renewing it?",
+  not as the IdP's `invalid_client`).
 
 **What does not change:** `whoami.login` stays `federated`, and so does the audit's `login` (no `detail` for the
 source: a login's detail is not plumbed to where the credential is chosen); discovery's
@@ -269,7 +270,7 @@ The part the spike showed is required, on its own:
   discovery names it). `ASSERTION_TYPE` defaults to `jwt-spiffe` with this source; `jwt-bearer` is for an IdP that
   federates SPIRE as an OIDC issuer.
 - **The checks**, at every login and exchange, on the file as read (unverified claims - for refusing to send, never
-  for trusting): a JWT; `sub` a SPIFFE ID, and `SPIFFE_ID` when given; `aud` containing the expected audience
+  for trusting): a JWT; `sub` a SPIFFE ID, and `SPIFFE_ID` (required since the review); `aud` containing the expected audience
   (trailing slashes aside); `exp` present and not passed. A refusal names the file, the IDs and audiences (none is
   secret), never the token, and says "never sent".
 - **The credential**: a kind of its own (`SPIFFE`), a `federated` login for whoami and the audit.
@@ -325,7 +326,9 @@ SPIFFE login as `jwt-bearer`. A NULL option is now not stored (`test/sql/attach_
   The spike's step "tresor with ASSERTION_TYPE" (`node_type.sql`) is gone with it; "tresor with ASSERTION_SOURCE
   'spiffe'" covers the login.
 - The credential sets `ClientAuth::assertion_type` only with an assertion and clears it on every `Auth()`: the OIDC
-  core refuses a type without one (duckdb-ext-common spec 019).
+  core refuses a type without one (duckdb-ext-common spec 019). A SPIFFE credential with no `SPIFFE_ID` (a
+  persistent secret read back is not validated again) is refused at login too, "never sent"; the SVID's `sub`/`aud`
+  are shown in an error at most 200 characters, and an `exp` past int64's range is clamped.
 - **Checked live by tresor-server's stand** (SPIRE 1.13.0 with `jwt_issuer`, RSA keys, `set_key_use = true`):
   Keycloak 26.8.1 takes an SVID **with** `iss` as `jwt-spiffe` (so SPIRE need not leave `jwt_issuer` unset), and
   **Entra** takes it as `jwt-bearer` through a federated credential (issuer SPIRE's discovery URL, subject the SPIFFE

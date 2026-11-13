@@ -185,6 +185,10 @@ bool ServiceCredential::Auth(oidc::ClientAuth &auth, string &why) const {
 			return false;
 		}
 		auto claims = ReadJwtClaims(auth.assertion);
+		// what the file says goes into an error only shortened: it is not secret, but it is the file's, unchecked
+		auto shown = [](const string &text) {
+			return text.size() > 200 ? text.substr(0, 200) + "..." : text;
+		};
 		auto trimmed = [](string url) {
 			while (!url.empty() && url.back() == '/') {
 				url.pop_back();
@@ -197,12 +201,15 @@ bool ServiceCredential::Auth(oidc::ClientAuth &auth, string &why) const {
 			why = assertion_file + " does not hold a token (a JWT) - never sent";
 		} else if (!StringUtil::StartsWith(claims.subject, "spiffe://")) {
 			why = assertion_file + " does not hold a JWT-SVID: its sub is no SPIFFE ID - never sent";
-		} else if (!spiffe_id.empty() && claims.subject != spiffe_id) {
-			why = "the JWT-SVID in " + assertion_file + " is " + claims.subject + ", not SPIFFE_ID " + spiffe_id +
-			      " - never sent";
+		} else if (spiffe_id.empty()) {
+			// CREATE SECRET requires it; a persistent secret read back is not validated again
+			why = "the tresor secret names no SPIFFE_ID for the JWT-SVID in " + assertion_file + " - never sent";
+		} else if (claims.subject != spiffe_id) {
+			why = "the JWT-SVID in " + assertion_file + " is " + shown(claims.subject) + ", not SPIFFE_ID " +
+			      spiffe_id + " - never sent";
 		} else if (!meant) {
 			why = "the JWT-SVID in " + assertion_file + " is not meant for " + assertion_audience +
-			      " (its aud: " + StringUtil::Join(claims.audiences, ", ") + ") - never sent";
+			      " (its aud: " + shown(StringUtil::Join(claims.audiences, ", ")) + ") - never sent";
 		} else if (claims.expires_at <= int64_t(std::time(nullptr))) {
 			why = "the JWT-SVID in " + assertion_file +
 			      (claims.expires_at == 0 ? " has no expiry" : " has expired - is spiffe-helper renewing it?") +

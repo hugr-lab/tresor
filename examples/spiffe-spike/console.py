@@ -194,8 +194,9 @@ def fetch_svid(spiffe_id: str, audience: str) -> str:
 def write_svid(name: str, jwt: str) -> Path:
     path = RUN / "svid" / f"{name}.jwt"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(jwt)
-    path.chmod(0o600)
+    path.unlink(missing_ok=True)
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as out:  # never readable by others
+        out.write(jwt)
     return path
 
 
