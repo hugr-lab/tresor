@@ -143,6 +143,10 @@ string TresorSession::AccessToken(bool force) {
 	}
 	case LoginFlow::PAGE: // PageAccessToken, above
 	case LoginFlow::TOKEN:
+		if (credential.kind == ServiceCredential::Kind::TOKEN_FILE) {
+			renewed = credential.ReadToken(); // the file read again (specs/047): the platform's rotated token
+			break;
+		}
 		throw InvalidInputException("tresor: the token of the tresor secret for %s has expired or was refused - "
 		                            "replace the secret and ATTACH again",
 		                            info.host);

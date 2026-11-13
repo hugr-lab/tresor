@@ -44,7 +44,7 @@ names. Only `FLOW` and the options of that flow are accepted:
 | `client_credentials` | `CLIENT_ID`, `ISSUER` | `CLIENT_SECRET`, `PRIVATE_KEY_FILE` | `OAUTH_SCOPE`, `KEY_ID`, `CERTIFICATE_FILE` (both with `PRIVATE_KEY_FILE`) |
 | `federated` | `CLIENT_ID`, `ISSUER` | `ASSERTION_FILE`, `ASSERTION_SOURCE` (`'github_actions'` with `ASSERTION_AUDIENCE`, `'azure_managed_identity'`, or both for `'spiffe'`: `ASSERTION_FILE` the JWT-SVID, with `SPIFFE_ID`, the `sub` it must be) | `OAUTH_SCOPE`, `ASSERTION_AUDIENCE` (with `ASSERTION_SOURCE`; for `spiffe` the SVID's `aud`, default the issuer), `IDENTITY_CLIENT_ID` (with `azure_managed_identity`), `ASSERTION_TYPE` (`'jwt-bearer'`, or `'jwt-spiffe'` with `spiffe`, its default) |
 | `managed_identity` | `ISSUER`, `AUDIENCE` | — | `CLIENT_ID` (a user-assigned identity) |
-| `token` | `TOKEN` | — | — |
+| `token` | — | `TOKEN`, `TOKEN_FILE` (read at the login, before it expires and after a 401) | `SPIFFE_ID` (with `TOKEN_FILE`: the file holds a JWT-SVID, the `sub` it must be) |
 
 `CLIENT_SECRET` and `TOKEN` are redacted. A file option names a path that is read at each login, never
 stored. Recipes for each platform: [Pipelines](./pipelines.md).

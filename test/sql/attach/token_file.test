@@ -1,0 +1,238 @@
+# name: test/sql/attach/token_file.test
+# description: FLOW 'token' with TOKEN_FILE - the service's bearer token read from a file, a JWT-SVID checked (specs/047)
+# group: [attach]
+
+require-env TRESOR_TEST_PORT
+
+require-env TRESOR_TEST_KEYS
+
+statement ok
+LOAD '__BUILD_DIRECTORY__/extension/tresor/tresor.duckdb_extension';
+
+statement ok
+SET autoload_known_extensions = false;
+
+# --- what the flow takes ----------------------------------------------------------------------------------------
+
+statement error
+CREATE SECRET t (TYPE tresor, SCOPE 'tresor:x', FLOW 'token');
+----
+needs exactly one of TOKEN, TOKEN_FILE
+
+statement error
+CREATE SECRET t (TYPE tresor, SCOPE 'tresor:x', FLOW 'token', TOKEN 't', TOKEN_FILE '/run/svid.jwt');
+----
+needs exactly one of TOKEN, TOKEN_FILE
+
+statement error
+CREATE SECRET t (TYPE tresor, SCOPE 'tresor:x', FLOW 'token', TOKEN 't', SPIFFE_ID 'spiffe://tresor.test/node/a');
+----
+SPIFFE_ID goes with TOKEN_FILE
+
+statement error
+CREATE SECRET t (TYPE tresor, SCOPE 'tresor:x', FLOW 'token', TOKEN_FILE '/run/svid.jwt', SPIFFE_ID 'node/a');
+----
+is not a SPIFFE ID
+
+statement error
+CREATE SECRET t (TYPE tresor, SCOPE 'tresor:x', FLOW 'token', TOKEN_FILE '/run/svid.jwt', ISSUER 'https://idp');
+----
+does not take ISSUER
+
+statement error
+CREATE SECRET t (TYPE tresor, SCOPE 'tresor:x', FLOW 'federated', CLIENT_ID 'c', ISSUER 'http://i', TOKEN_FILE '/t');
+----
+does not take TOKEN_FILE
+
+# --- path B: the workload's JWT-SVID is the bearer, for the service's audience ------------------------------------
+
+statement ok
+CREATE SECRET node (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'token',
+    TOKEN_FILE '{TRESOR_TEST_KEYS}/tok-svid.jwt', SPIFFE_ID 'spiffe://tresor.test/node/spiffenode');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true);
+
+query III
+SELECT subject, roles, login FROM s.whoami();
+----
+client:spiffe://tresor.test/node/spiffenode	[nodes]	token
+
+statement ok
+DETACH s;
+
+# the token's path is no secret: duckdb_secrets() shows it
+query I
+SELECT secret_string LIKE '%token_file=%tok-svid.jwt%' FROM duckdb_secrets() WHERE name = 'node';
+----
+true
+
+# an SVID without iss: the one issuer the service lists
+statement ok
+CREATE OR REPLACE SECRET node (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'token',
+    TOKEN_FILE '{TRESOR_TEST_KEYS}/tok-noiss.jwt', SPIFFE_ID 'spiffe://tresor.test/node/spiffenode');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true);
+
+query I
+SELECT subject FROM s.whoami();
+----
+client:spiffe://tresor.test/node/spiffenode
+
+statement ok
+DETACH s;
+
+# --- rotated: the file is read again after a 401 (spiffe-helper wrote a new SVID) --------------------------------
+
+statement ok
+COPY (SELECT trim(content, chr(10)) FROM read_text('{TRESOR_TEST_KEYS}/tok-once.jwt')) TO '{TRESOR_TEST_KEYS}/svid-rotating.jwt' (FORMAT csv, HEADER false);
+
+statement ok
+CREATE OR REPLACE SECRET node (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'token',
+    TOKEN_FILE '{TRESOR_TEST_KEYS}/svid-rotating.jwt', SPIFFE_ID 'spiffe://tresor.test/node/spiffenode');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true);
+
+statement ok
+COPY (SELECT trim(content, chr(10)) FROM read_text('{TRESOR_TEST_KEYS}/tok-svid.jwt')) TO '{TRESOR_TEST_KEYS}/svid-rotating.jwt' (FORMAT csv, HEADER false);
+
+# the first SVID is refused now: the file's new one is taken
+query I
+SELECT roles FROM s.whoami();
+----
+[nodes]
+
+statement ok
+DETACH s;
+
+# --- never sent: the SVID is checked before it goes anywhere ----------------------------------------------------
+
+# an SVID for the identity provider (Keycloak's jwt-spiffe), not for the service
+statement ok
+CREATE OR REPLACE SECRET node (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'token',
+    TOKEN_FILE '{TRESOR_TEST_KEYS}/tok-foridp.jwt', SPIFFE_ID 'spiffe://tresor.test/node/spiffenode');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true);
+----
+is not meant for duckdb-secrets
+
+# from an issuer the service does not list
+statement ok
+CREATE OR REPLACE SECRET node (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'token',
+    TOKEN_FILE '{TRESOR_TEST_KEYS}/tok-otheriss.jwt', SPIFFE_ID 'spiffe://tresor.test/node/spiffenode');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true);
+----
+does not accept the issuer 'https://spire.elsewhere.example'
+
+# ISSUER named at ATTACH is the token's, or the login is refused
+statement ok
+CREATE OR REPLACE SECRET node (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'token',
+    TOKEN_FILE '{TRESOR_TEST_KEYS}/tok-svid.jwt', SPIFFE_ID 'spiffe://tresor.test/node/spiffenode');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true, ISSUER 'http://127.0.0.1:{TRESOR_TEST_PORT}/idp2');
+----
+is not the issuer of the token in
+
+# another workload's
+statement ok
+CREATE OR REPLACE SECRET node (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'token',
+    TOKEN_FILE '{TRESOR_TEST_KEYS}/tok-other.jwt', SPIFFE_ID 'spiffe://tresor.test/node/spiffenode');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true);
+----
+is spiffe://tresor.test/node/other, not SPIFFE_ID spiffe://tresor.test/node/spiffenode - never sent
+
+statement ok
+CREATE OR REPLACE SECRET node (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'token',
+    TOKEN_FILE '{TRESOR_TEST_KEYS}/tok-expired.jwt', SPIFFE_ID 'spiffe://tresor.test/node/spiffenode');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true);
+----
+has expired - is spiffe-helper renewing it?
+
+# an SVID always expires
+statement ok
+CREATE OR REPLACE SECRET node (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'token',
+    TOKEN_FILE '{TRESOR_TEST_KEYS}/tok-noexp.jwt', SPIFFE_ID 'spiffe://tresor.test/node/spiffenode');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true);
+----
+has no expiry - never sent
+
+# an SVID in the file and no SPIFFE_ID: whoever's it is, it is not sent
+statement ok
+CREATE OR REPLACE SECRET node (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'token',
+    TOKEN_FILE '{TRESOR_TEST_KEYS}/tok-svid.jwt');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true);
+----
+names no SPIFFE_ID for the JWT-SVID
+
+# SPIFFE_ID named: the file must hold a JWT-SVID
+statement ok
+CREATE OR REPLACE SECRET node (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'token',
+    TOKEN_FILE '{TRESOR_TEST_KEYS}/static.token', SPIFFE_ID 'spiffe://tresor.test/node/spiffenode');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true);
+----
+does not hold a token (a JWT) - never sent
+
+statement ok
+CREATE OR REPLACE SECRET node (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'token',
+    TOKEN_FILE '{TRESOR_TEST_KEYS}/no-such.jwt');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true);
+----
+cannot read
+
+# --- any other token in a file ----------------------------------------------------------------------------------
+
+# a JWT for another audience is not sent
+statement ok
+CREATE OR REPLACE SECRET node (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'token',
+    TOKEN_FILE '{TRESOR_TEST_KEYS}/tok-jwt-aud.jwt');
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true);
+----
+is not meant for duckdb-secrets (its aud: payroll-api) - never sent
+
+# an opaque token: the service alone judges it, as TOKEN's
+statement ok
+CREATE OR REPLACE SECRET node (TYPE tresor, SCOPE 'tresor:127.0.0.1:{TRESOR_TEST_PORT}', FLOW 'token',
+    TOKEN_FILE '{TRESOR_TEST_KEYS}/static.token');
+
+statement ok
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true);
+
+query II
+SELECT subject, login FROM s.whoami();
+----
+client:static	token
+
+statement ok
+DETACH s;
+
+# the service allowed (specs/036: the sandbox stops tresor's requests too), the file is not: refused before it is read
+statement ok
+SET allowed_directories = ['http://127.0.0.1:{TRESOR_TEST_PORT}/'];
+
+statement ok
+SET enable_external_access = false;
+
+statement error
+ATTACH 'tresor:127.0.0.1:{TRESOR_TEST_PORT}' AS s (INSECURE_HTTP true);
+----
+is outside what this DuckDB may read

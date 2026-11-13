@@ -1026,9 +1026,45 @@ shared_ptr<TresorSession> Login(ClientContext &context, const AttachRequest &req
 	oidc::TokenSet tokens;
 	ServiceCredential credential;
 	if (service_secret && secret_flow == "token") {
-		// a token already held: no identity provider is involved, the service alone judges it
 		flow = LoginFlow::TOKEN;
-		tokens.access_token = SecretString(*service_secret, "token");
+		credential.token_file = SecretString(*service_secret, "token_file");
+		if (credential.token_file.empty()) {
+			// a token already held: no identity provider is involved, the service alone judges it
+			tokens.access_token = SecretString(*service_secret, "token");
+		} else {
+			// the service's token in a file (specs/047): a JWT is for one of the issuers the service lists - the one
+			// its iss names - and carries that issuer's audience; read again before it expires and after a 401
+			if (!SecretString(*service_secret, "token").empty()) {
+				throw InvalidInputException("tresor: the tresor secret names both TOKEN and TOKEN_FILE");
+			}
+			credential.kind = ServiceCredential::Kind::TOKEN_FILE;
+			credential.spiffe_id = SecretString(*service_secret, "spiffe_id");
+			credential.CheckAccess(context);
+			string peeked;
+			string why;
+			if (!ReadCredentialFile(credential.token_file, false, true, peeked, why)) {
+				throw InvalidInputException("tresor: the token login to %s failed: %s", request.host, why);
+			}
+			auto claims = ReadJwtClaims(peeked);
+			Wipe(peeked);
+			if (claims.is_jwt) {
+				auto named = claims.issuer.empty() ? request.issuer : claims.issuer;
+				if (!claims.issuer.empty() && !request.issuer.empty() &&
+				    StripSlashes(claims.issuer) != StripSlashes(request.issuer)) {
+					throw InvalidInputException("tresor: ISSUER '%s' is not the issuer of the token in %s",
+					                            request.issuer, credential.token_file);
+				}
+				auto &issuer = ChooseIssuer(request, discovered, named);
+				credential.token_issuer = StripSlashes(issuer.issuer);
+				credential.token_audience = issuer.audience;
+				info.issuer = credential.token_issuer;
+				info.audience = issuer.audience;
+			}
+			tokens = credential.ReadToken();
+			if (!tokens.Ok()) {
+				throw InvalidInputException("tresor: the token login to %s failed: %s", request.host, tokens.error);
+			}
+		}
 	} else {
 		auto asked_issuer = request.issuer;
 		if (service_secret) {

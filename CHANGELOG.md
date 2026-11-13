@@ -17,6 +17,10 @@ All notable changes to tresor are documented here. The format follows
   Örjan Lundberg (@oluies). duckdb-ext-common v0.16.0 (its spec 019, `ClientAuth::assertion_type`). A pipelines page
   section on SPIFFE (Keycloak, Entra); the spike in `examples/spiffe-spike`; a live check against SPIRE and Keycloak,
   `scripts/live/spiffe_keycloak.sh` (`/live/check.sh spiffe` in the image).
+- **`TOKEN_FILE` on `FLOW 'token'`** (specs/047): the service's bearer token read from a file - at the login, before
+  it expires and after a 401 - so a token the platform rotates is picked up. A JWT is sent only for the service's
+  audience, from an issuer it lists, unexpired; with **`SPIFFE_ID`** the file holds a JWT-SVID, checked as specs/046
+  checks one: the workload's login to a service that trusts SPIRE itself (tresor-server's spec 038, "path B").
 
 ### Fixed
 
