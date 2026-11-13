@@ -71,8 +71,14 @@ token is for this service before it is sent.
   another audience, expired; an opaque token from a file; after a 401 - an opaque token where the login's was a JWT,
   an SVID from another issuer than the login's; the sandbox. Also on DuckDB's HTTP client (`TRESOR_HTTP_CLIENT=duckdb`).
 - Not tested here: the read a minute before `exp` (a sqllogictest cannot wait for it). It is the path every service
-  flow renews on (`AccessToken`'s margin); the 401 path, tested, reads the file the same way.
-- Live: tresor-server's `scripts/dev/spire_live.sh up|check` (SPIRE 1.13.0, SVIDs of 5 minutes).
+  flow renews on (`AccessToken`'s margin); the 401 path, tested, reads the file the same way; checked live (below).
+- **Live, 2026-11-13** (tresor-server's stand, `scripts/dev/spire_live.sh`): tresor main 19a1cae (the Distribution
+  build's osx_arm64 extension) in DuckDB 2.0.0 (Python), SPIRE 1.13 with `jwt_issuer` and RS256 keys, SVIDs of 5
+  minutes written atomically by a loop playing spiffe-helper (aud `duckdb-secrets`), tresor-server 0.8.5 trusting SPIRE
+  as an issuer with `role_rules` (`role:nodes`, granted a secret). One ATTACH, probed for 12 minutes across four SVIDs
+  with no ATTACH again: every probe's whoami was the SPIFFE ID with `role:nodes`, `secrets()` the granted secret, and
+  the service logged no 401 - the read before `exp`, which the tests here cannot wait for, carried the session across
+  every expiry.
 
 ## Alternatives considered
 
